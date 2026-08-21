@@ -204,8 +204,49 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	var err error
 
 	switch msg := message.(type) {
+	// Profile 0: Basic Communication
 	case xml.Heartbeat:
 		err = c.handleHeartbeat(ctx, msg)
+	case xml.KeepAlive:
+		err = c.handleKeepAlive(ctx, msg)
+	case xml.ReqMachInfo:
+		err = c.handleReqMachInfo(ctx, msg)
+	case xml.ListMachInfo:
+		err = c.handleListMachInfo(ctx, msg)
+
+	// Profile 1: Basic Object Based Workflow
+	case xml.MosObj:
+		err = c.handleMosObj(ctx, msg)
+	case xml.MosReqObj:
+		err = c.handleMosReqObj(ctx, msg)
+	case xml.MosReqAll:
+		err = c.handleMosReqAll(ctx, msg)
+	case xml.MosListAll:
+		err = c.handleMosListAll(ctx, msg)
+
+	// Profile 2: Basic Running Order Workflow
+	case xml.ROReplace:
+		err = c.handleROReplace(ctx, msg)
+	case xml.RODelete:
+		err = c.handleRODelete(ctx, msg)
+	case xml.ROMetadataReplace:
+		err = c.handleROMetadataReplace(ctx, msg)
+	case xml.ROListAll:
+		err = c.handleROListAll(ctx, msg)
+	case xml.ROAck:
+		err = c.handleROAck(ctx, msg)
+
+	// Profile 3: Advanced Object Based Workflow
+	case xml.MosObjCreate:
+		err = c.handleMosObjCreate(ctx, msg)
+	case xml.MosItemReplace:
+		err = c.handleMosItemReplace(ctx, msg)
+	case xml.MosReqSearchableSchema:
+		err = c.handleMosReqSearchableSchema(ctx, msg)
+	case xml.MosListSearchableSchema:
+		err = c.handleMosListSearchableSchema(ctx, msg)
+
+	// Running Order messages (existing)
 	case xml.ReqRunningOrderList:
 		err = c.handleReqRunningOrderList(ctx, msg)
 	case xml.ReqRunningOrder:
@@ -214,8 +255,31 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 		err = c.handleRunningOrderInfo(ctx, msg)
 	case xml.MOSAck:
 		err = c.handleMOSAck(ctx, msg)
+
+	// Profile 4: Advanced RO/Content List Workflow
+	case xml.ROElementAction:
+		err = c.handleROElementAction(ctx, msg)
+	case xml.ROReadyToAir:
+		err = c.handleROReadyToAir(ctx, msg)
+	case xml.ROElementStat:
+		err = c.handleROElementStat(ctx, msg)
+
+	// Profile 5: Item Control
+	case xml.ROCtrl:
+		err = c.handleROCtrl(ctx, msg)
+	case xml.ROItemCue:
+		err = c.handleROItemCue(ctx, msg)
+
+	// Profile 6: MOS Redirection / Story Send
+	case xml.ROStorySend:
+		err = c.handleROStorySend(ctx, msg)
+	case xml.ROReqStoryAction:
+		err = c.handleROReqStoryAction(ctx, msg)
+
+	// Story messages
 	case xml.NCSReqStoryAction:
 		err = c.handleNCSReqStoryAction(ctx, msg)
+
 	default:
 		err = fmt.Errorf("unknown message type: %T", message)
 	}

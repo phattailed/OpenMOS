@@ -3,6 +3,8 @@ package xml
 import (
 	"encoding/xml"
 	"fmt"
+
+	"airshift/openmos/internal/config"
 )
 
 // GenerateMessage serializes a MOS message to XML
@@ -86,4 +88,104 @@ func CreateStoryResponse(requestID, source, status, description string) ([]byte,
 	}
 
 	return GenerateMessage(ack)
+}
+
+// CreateKeepAlive creates a keepAlive message (Profile 0)
+func CreateKeepAlive() KeepAlive {
+	return KeepAlive{}
+}
+
+// CreateListMachInfo creates a listMachInfo response message from config (Profile 0)
+func CreateListMachInfo(cfg *config.Config) ListMachInfo {
+	profiles := make([]MosProfile, 8)
+	for i := 0; i < 8; i++ {
+		profiles[i] = MosProfile{
+			Number: i,
+			Value:  true,
+		}
+	}
+
+	return ListMachInfo{
+		Manufacturer: cfg.MOS.Manufacturer,
+		Model:        cfg.MOS.Model,
+		HwRev:        cfg.MOS.HwRev,
+		SwRev:        cfg.MOS.SwRev,
+		DOM:          cfg.MOS.DOM,
+		SN:           cfg.MOS.SN,
+		ID:           cfg.MOS.ID,
+		Time:         Now(),
+		MosRev:       "4.0.0",
+		SupportedProfiles: SupportedProfiles{
+			DeviceType: "MOS",
+			Profiles:   profiles,
+		},
+	}
+}
+
+// CreateMosObj creates a mosObj message from object data (Profile 1)
+func CreateMosObj(objID, objSlug, mosAbstract, objGroup, objType string,
+	objTB, objRev, objDur int, status string,
+	createdBy, created, changedBy, changed, description string) MosObj {
+
+	return MosObj{
+		ObjID:       objID,
+		ObjSlug:     objSlug,
+		MosAbstract: mosAbstract,
+		ObjGroup:    objGroup,
+		ObjType:     objType,
+		ObjTB:       objTB,
+		ObjRev:      objRev,
+		ObjDur:      objDur,
+		Status:      status,
+		CreatedBy:   createdBy,
+		Created:     created,
+		ChangedBy:   changedBy,
+		Changed:     changed,
+		Description: description,
+	}
+}
+
+// CreateMosListAll creates a mosListAll response message (Profile 1)
+func CreateMosListAll(objects []MosObj) MosListAll {
+	return MosListAll{
+		MosObjs: objects,
+	}
+}
+
+// CreateMosObjAck creates an object acknowledgment message (Profile 1)
+func CreateMosObjAck(objID string, objRev int, status, statusDescription string) MosObjAck {
+	return MosObjAck{
+		ObjID:             objID,
+		ObjRev:            objRev,
+		Status:            status,
+		StatusDescription: statusDescription,
+	}
+}
+
+// --- Profile 2 generators ---
+
+// CreateROAck creates a running order acknowledgment message (Profile 2)
+func CreateROAck(roID, roStatus string, stories []ROAckStory) ROAck {
+	return ROAck{
+		ID:      roID,
+		Status:  roStatus,
+		Stories: stories,
+	}
+}
+
+// CreateROListAll creates a roListAll response message (Profile 2)
+func CreateROListAll(items []ROListAllItem) ROListAll {
+	return ROListAll{
+		ROs: items,
+	}
+}
+
+// --- Profile 3 generators ---
+
+// CreateMosListSearchableSchema creates a mosListSearchableSchema response (Profile 3)
+func CreateMosListSearchableSchema(username, mosSchema string) MosListSearchableSchema {
+	return MosListSearchableSchema{
+		Username:  username,
+		MosSchema: mosSchema,
+	}
 }

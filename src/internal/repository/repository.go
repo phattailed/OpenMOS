@@ -35,6 +35,9 @@ type StoryRepository interface {
 	// Update updates a story
 	Update(ctx context.Context, story *model.Story) error
 
+	// DeleteMultiple deletes multiple stories by their IDs
+	DeleteMultiple(ctx context.Context, ids []string) error
+
 	// Delete deletes a story
 	Delete(ctx context.Context, id string) error
 
@@ -52,6 +55,9 @@ type ItemRepository interface {
 
 	// Update updates an item
 	Update(ctx context.Context, item *model.Item) error
+
+	// DeleteMultiple deletes multiple items by their IDs
+	DeleteMultiple(ctx context.Context, ids []string) error
 
 	// Delete deletes an item
 	Delete(ctx context.Context, id string) error

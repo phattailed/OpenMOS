@@ -114,3 +114,18 @@ func (r *MongoItemRepository) ListByStory(ctx context.Context, storyID string) (
 
 	return items, nil
 }
+
+// DeleteMultiple deletes multiple items by their IDs
+func (r *MongoItemRepository) DeleteMultiple(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	filter := bson.M{"_id": bson.M{"$in": ids}}
+	_, err := r.collection.DeleteMany(ctx, filter)
+	if err != nil {
+		return fmt.Errorf("failed to delete multiple items: %w", err)
+	}
+
+	return nil
+}

@@ -19,6 +19,8 @@ func (a NCSReqStoryAction) GetMessageType() string {
 }
 
 // ROStorySend represents a story send operation
+// Can be used both as a child element (within ncsReqStoryAction/roReqStoryAction)
+// and as a standalone top-level message (Profile 6)
 type ROStorySend struct {
 	XMLName      xml.Name              `xml:"roStorySend"`
 	ROID         string                `xml:"roID"`
@@ -27,6 +29,11 @@ type ROStorySend struct {
 	StoryNum     string                `xml:"storyNum,omitempty"`
 	StoryBody    StoryBody             `xml:"storyBody"`
 	ExternalMeta []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+// GetMessageType returns the type of the message
+func (r ROStorySend) GetMessageType() string {
+	return "roStorySend"
 }
 
 // StoryBody represents the body content of a story

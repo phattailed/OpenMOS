@@ -62,9 +62,16 @@ func (p *MessageParser) HasCompleteMessage() bool {
 
 	tagName := string(p.buffer[start+1 : start+nameEnd])
 
-	// Check for self-closing tag like <heartbeat/>
-	selfClosingEnd := bytes.Index(p.buffer[start:], []byte("/>"))
-	if selfClosingEnd != -1 {
+	// Determine where the root opening tag ends (first > or />).
+	// Only treat /> as self-closing if it is part of the root tag itself,
+	// not a child self-closing element like <mosExternalMetadata/>.
+	afterName := p.buffer[start+nameEnd:]
+	closeBracket := bytes.IndexByte(afterName, '>')
+	if closeBracket == -1 {
+		return false
+	}
+	// Check if the root tag is self-closing: the > is preceded by /
+	if closeBracket > 0 && afterName[closeBracket-1] == '/' {
 		return true
 	}
 
@@ -100,6 +107,69 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 			return nil, p.buffer, err
 		}
 		message = heartbeat
+		p.buffer = remaining
+
+	case "keepAlive":
+		var keepAlive KeepAlive
+		remaining, err := p.parseMessage(&keepAlive)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = keepAlive
+		p.buffer = remaining
+
+	case "reqMachInfo":
+		var reqMachInfo ReqMachInfo
+		remaining, err := p.parseMessage(&reqMachInfo)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = reqMachInfo
+		p.buffer = remaining
+
+	case "listMachInfo":
+		var listMachInfo ListMachInfo
+		remaining, err := p.parseMessage(&listMachInfo)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = listMachInfo
+		p.buffer = remaining
+
+	case "mosObj":
+		var mosObj MosObj
+		remaining, err := p.parseMessage(&mosObj)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosObj
+		p.buffer = remaining
+
+	case "mosReqObj":
+		var mosReqObj MosReqObj
+		remaining, err := p.parseMessage(&mosReqObj)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosReqObj
+		p.buffer = remaining
+
+	case "mosReqAll":
+		var mosReqAll MosReqAll
+		remaining, err := p.parseMessage(&mosReqAll)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosReqAll
+		p.buffer = remaining
+
+	case "mosListAll":
+		var mosListAll MosListAll
+		remaining, err := p.parseMessage(&mosListAll)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosListAll
 		p.buffer = remaining
 
 	case "roReq":
@@ -156,6 +226,155 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		message = ncsReqStoryAction
 		p.buffer = remaining
 
+	// Profile 2: Basic Running Order Workflow
+	case "roReplace":
+		var roReplace ROReplace
+		remaining, err := p.parseMessage(&roReplace)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roReplace
+		p.buffer = remaining
+
+	case "roDelete":
+		var roDelete RODelete
+		remaining, err := p.parseMessage(&roDelete)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roDelete
+		p.buffer = remaining
+
+	case "roMetadataReplace":
+		var roMetadataReplace ROMetadataReplace
+		remaining, err := p.parseMessage(&roMetadataReplace)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roMetadataReplace
+		p.buffer = remaining
+
+	case "roListAll":
+		var roListAll ROListAll
+		remaining, err := p.parseMessage(&roListAll)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roListAll
+		p.buffer = remaining
+
+	case "roAck":
+		var roAck ROAck
+		remaining, err := p.parseMessage(&roAck)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roAck
+		p.buffer = remaining
+
+	// Profile 3: Advanced Object Based Workflow
+	case "mosObjCreate":
+		var mosObjCreate MosObjCreate
+		remaining, err := p.parseMessage(&mosObjCreate)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosObjCreate
+		p.buffer = remaining
+
+	case "mosItemReplace":
+		var mosItemReplace MosItemReplace
+		remaining, err := p.parseMessage(&mosItemReplace)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosItemReplace
+		p.buffer = remaining
+
+	case "mosReqSearchableSchema":
+		var mosReqSearchableSchema MosReqSearchableSchema
+		remaining, err := p.parseMessage(&mosReqSearchableSchema)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosReqSearchableSchema
+		p.buffer = remaining
+
+	case "mosListSearchableSchema":
+		var mosListSearchableSchema MosListSearchableSchema
+		remaining, err := p.parseMessage(&mosListSearchableSchema)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosListSearchableSchema
+		p.buffer = remaining
+
+	// Profile 4: Advanced RO/Content List Workflow
+	case "roElementAction":
+		var roElementAction ROElementAction
+		remaining, err := p.parseMessage(&roElementAction)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roElementAction
+		p.buffer = remaining
+
+	case "roReadyToAir":
+		var roReadyToAir ROReadyToAir
+		remaining, err := p.parseMessage(&roReadyToAir)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roReadyToAir
+		p.buffer = remaining
+
+	case "roElementStat":
+		var roElementStat ROElementStat
+		remaining, err := p.parseMessage(&roElementStat)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roElementStat
+		p.buffer = remaining
+
+	// Profile 5: Item Control
+	case "roCtrl":
+		var roCtrl ROCtrl
+		remaining, err := p.parseMessage(&roCtrl)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roCtrl
+		p.buffer = remaining
+
+	case "roItemCue":
+		var roItemCue ROItemCue
+		remaining, err := p.parseMessage(&roItemCue)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roItemCue
+		p.buffer = remaining
+
+	// Profile 6: MOS Redirection / Story Send
+	case "roStorySend":
+		var roStorySend ROStorySend
+		remaining, err := p.parseMessage(&roStorySend)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roStorySend
+		p.buffer = remaining
+
+	case "roReqStoryAction":
+		var roReqStoryAction ROReqStoryAction
+		remaining, err := p.parseMessage(&roReqStoryAction)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roReqStoryAction
+		p.buffer = remaining
+
 	default:
 		return nil, p.buffer, fmt.Errorf("%w: %s", ErrUnknownMessage, messageType)
 	}
@@ -194,11 +413,18 @@ func (p *MessageParser) parseMessage(message interface{}) ([]byte, error) {
 	// Find the end of the message
 	var messageEnd int
 
-	// Check for self-closing tag
-	selfClosingEnd := bytes.Index(p.buffer, []byte("/>"))
-	if selfClosingEnd != -1 && bytes.IndexAny(p.buffer[:selfClosingEnd], "<") == bytes.IndexByte(p.buffer, '<') {
-		// This is a self-closing tag
-		messageEnd = selfClosingEnd + 2
+	// Find where the root opening tag ends to determine if it is self-closing.
+	// Only treat /> as the message boundary when it belongs to the root tag itself,
+	// not when it appears inside a child element (e.g. <mosExternalMetadata/>).
+	start := bytes.IndexByte(p.buffer, '<')
+	nameEnd := bytes.IndexAny(p.buffer[start:], " \t\n\r/>")
+	afterName := p.buffer[start+nameEnd:]
+	closeBracket := bytes.IndexByte(afterName, '>')
+
+	// Check if the root tag is self-closing (its first > is preceded by /)
+	if closeBracket > 0 && afterName[closeBracket-1] == '/' {
+		// Self-closing root tag: end is at the > position
+		messageEnd = start + nameEnd + closeBracket + 1
 	} else {
 		// Look for closing tag
 		closingTag := fmt.Sprintf("</%s>", messageType)

@@ -13,6 +13,15 @@ const (
 	// StatusActive indicates the element is currently active
 	StatusActive StatusType = "ACTIVE"
 
+	// StatusPlaying indicates the element is currently playing (Profile 5)
+	StatusPlaying StatusType = "PLAY"
+
+	// StatusPaused indicates the element is paused (Profile 5)
+	StatusPaused StatusType = "PAUSED"
+
+	// StatusStopped indicates the element has been stopped (Profile 5)
+	StatusStopped StatusType = "STOPPED"
+
 	// StatusCompleted indicates the element has been successfully completed
 	StatusCompleted StatusType = "COMPLETED"
 
