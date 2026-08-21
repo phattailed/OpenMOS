@@ -2,53 +2,63 @@
 
 ![MOS Project Official Logo](/res/mosproject-logo.jpg)
 
-An implementation of Media Object Server using MOS Protocol 4.0 with TCP socket communication.
-The project will aim at compliance with Profile 7.
+A minimal, honest MOS Protocol 4.0 implementation providing WebSocket transport
+for newsroom automation interoperability.
 
-> [!NOTE]
-> The MOS protocol specification requires TCP socket connections (default port 10540). At initial stages, message attributes differ from the protocol specification due to practical reasons.
+> **Current status:** Lab-compatible MOS 4 slice. Not yet verified against a real NCS.
 
-Implementation status:
-* [x]  Core
-* [x]  MongoDB Data Repository
-* [x]  Sentry Observability
-* [x]  TCP Socket Server
-* [x]  Profile 0 - Basic Communication
-* [x]  Profile 1 - Basic Object Based Workflow
-* [x]  Profile 2 - Basic Running Order / Content List Workflow
-* [x]  Profile 3 - Advanced Object Based Workflow
-* [x]  Profile 4 - Advanced RO/Content List Workflow
-* [x]  Profile 5 - Item Control
-* [x]  Profile 6 - MOS Redirection
-* [x]  Profile 7 - MOS RO/Content List Modification
+## Implementation Status
+
+| Capability | Implemented | Automated proof | Live NCS proof | Remaining risk |
+|---|---|---|---|---|
+| WebSocket transport (ws://) | Yes | Loopback tests | No | TLS config untested with real certs |
+| Identity/channel validation (mosID, ncsID, channel=ro) | Yes | Unit tests | No | Only `ro` channel supported |
+| MOS envelope (`<mos>` with mosID/ncsID/messageID) | Yes | Unit tests | No | Subset of operations handled |
+| Profile 0: keepAlive (no response) | Yes | Unit test proves no reply | No | - |
+| Profile 0: reqMachInfo/listMachInfo | Yes | Unit test verifies Profile 0 only | No | - |
+| Profile 0: heartbeat timeout (bounded) | Yes | Server closes on timeout | No | - |
+| roCreate: validate, persist, ack-after-persist | Yes | Integration test | No | In-memory storage only |
+| Message deduplication (ncsID+messageID) | Yes | Unit + integration tests | No | In-memory store, not crash-durable |
+| Message-ID conflict detection | Yes | Unit test | No | - |
+| Persistence across restart | Yes | Test with shared backing store | No | Requires external durable store in production |
+| Reconnect without duplication | Yes | Integration test | No | - |
+| Passive mode (NCS connects to server) | Yes | All tests use this model | No | - |
+| Profile 1-7 operations | No | - | - | Message types parsed but not tested end-to-end |
+| TLS/WSS | Configurable | Not tested | No | Needs real certificates |
+| MongoDB backing | Code exists | Not tested (no MongoDB in CI) | No | In-memory repos used for all tests |
+| Multi-instance HA | No | - | - | Unsupported; single process per identity |
+
+### What this is NOT
+
+- Not a complete MOS 4 implementation (only Profile 0 + roCreate on the `ro` channel)
+- Not verified against a real NCS (ENPS or other)
+- Not claiming Profiles 1-7 compliance
+- Not suitable for production without durable storage (MongoDB) and TLS
 
 ## Architecture
 
-OpenMOS implements the MOS protocol using:
-- **TCP Socket Server**: Maintains persistent connections with MOS clients (NCS systems)
-- **MongoDB**: Stores running orders, stories, items, and MOS objects
-- **Sentry**: Provides error tracking and performance monitoring
+OpenMOS implements the MOS 4 protocol using:
+- **WebSocket server**: NCS connects to `ws://host:port/mos?mosID=X&ncsID=Y&channel=ro`
+- **MOS envelope**: All messages wrapped in `<mos>` with mosID, ncsID, messageID
+- **In-memory repositories**: For testing; MongoDB implementations exist but require a running instance
+- **Event bus**: Internal pub-sub for running order change notifications
+- **Sentry** (optional): Error tracking when DSN is configured
 
-The server handles multiple concurrent client connections, processes MOS XML messages, and manages the lifecycle of running orders and their associated content.
+The server operates in **passive mode**: the NCS (protected peer) initiates the WebSocket
+connection to this MOS device.
 
-## Experimental Features
+## Connection
 
-As an experimental feature, the Profile 5 roCtrl will be implemented in a way that it can support IoT device
-control using MQTT protocol. An example use case is the red light control. In the future this could be expanded to actual machine controls with protocols like Ember+ (https://github.com/Lawo/ember-plus) or VDCP.
+```
+ws://host:10541/mos?mosID=<configured_mos_id>&ncsID=<your_ncs_id>&channel=ro
+```
 
-## More Information
-
-For more information about the MOS protocol, see https://www.mosprotocol.com
-
-This project is not affiliated with MOS Group and will use the word compliance according to the requirements set by the MOS Group.
-
-Logging system utilizes Sentry observability layer. Developer subscription is available for free at https://www.sentry.io
-
-When the maturity level reaches early beta, the project shall make available a Docker image. Dependencies are to be kept as minimal as possible, using frameworks that are still maintained and active.
+Query parameters:
+- `mosID` - must match the server's configured MOS ID (rejected with 403 otherwise)
+- `ncsID` - identifies the connecting NCS (required, rejected with 400 if empty)
+- `channel` - must be `ro` (only running-order channel supported)
 
 ## Configuration
-
-### Configuration file:
 
 ```yaml
 app:
@@ -61,14 +71,25 @@ server:
     readtimeout: 5s
     writetimeout: 5s
     shutdowntimeout: 30s
+websocket:
+    port: 10541
+    tlscertfile: ""
+    tlskeyfile: ""
 mongo:
-    uri: "mongodb+srv://localhost"
-    database: openmosdb01
+    uri: "mongodb://localhost:27017"
+    database: openmos
     timeout: 10s
 mos:
-    id: mos01.station.com
+    id: OpenMOS_Server
+    ncsid: ""
     heartbeatinterval: 30s
     clienttimeout: 2m0s
+    manufacturer: OpenMOS Project
+    model: OpenMOS Server
+    hwrev: "1.0"
+    swrev: "1.0.0"
+    dom: "2024-01-01"
+    sn: OPENMOS-001
 logging:
     level: info
 sentry:
@@ -79,6 +100,8 @@ sentry:
     samplerate: 1
     tracessamplerate: 0.2
 ```
+
+Environment variables override YAML (e.g., `WS_PORT`, `MOS_ID`, `MOS_NCS_ID`, `WS_TLS_CERT_FILE`, `WS_TLS_KEY_FILE`).
 
 ### Generate default configuration file:
 ```bash
@@ -93,9 +116,6 @@ sentry:
 
 # With specific configuration file
 ./openmos --config=/path/to/config.yaml
-
-# Generate default configuration
-./openmos --generate-config=config.yaml
 ```
 
 ## Building from Source
@@ -105,11 +125,34 @@ cd src
 go build -o openmos
 ```
 
+## Running Tests
+
+```bash
+cd src
+go test ./...           # all tests
+go test -race ./...     # with race detector
+go vet ./...            # static analysis
+```
+
 ## Requirements
 
 - Go 1.24.1 or later
-- MongoDB 4.4 or later
-- Network access on port 10540 (default MOS port)
+- No external dependencies required for tests (in-memory storage)
+- MongoDB 4.4+ required for production durable storage
+- Network access on port 10541 (default WebSocket port)
+
+## More Information
+
+- MOS Protocol specification: https://www.mosprotocol.com
+- MOS 4.0 documentation: https://mosprotocol.com/wp-content/MOS-Protocol-Documents/MOSProtocolVersion40/index.html
+
+This project is not affiliated with MOS Group.
+
+## Next Steps
+
+The single best next interoperability action is to test against a real NCS (e.g., AP ENPS)
+to validate WebSocket connection establishment, envelope handling, and roCreate/roAck exchange
+in a production-like environment.
 
 ## License
 

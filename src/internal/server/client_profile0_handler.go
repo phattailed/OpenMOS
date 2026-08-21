@@ -8,21 +8,13 @@ import (
 )
 
 // handleKeepAlive processes a keepAlive message (Profile 0)
-// Responds with a keepAlive to acknowledge
+// Per MOS 4 spec: keepAlive receives NO response.
 func (c *ClientConnection) handleKeepAlive(ctx context.Context, keepAlive xml.KeepAlive) error {
 	logger.Infof("Received keepAlive from client %s", c.id)
 
-	// Record as heartbeat activity
+	// Record as heartbeat activity - no response sent per MOS 4 spec
 	c.heartbeat.RecordHeartbeat()
-
-	// Respond with keepAlive
-	response := xml.CreateKeepAlive()
-	data, err := xml.GenerateMessage(response)
-	if err != nil {
-		return err
-	}
-
-	return c.Write(data)
+	return nil
 }
 
 // handleReqMachInfo processes a reqMachInfo request (Profile 0)
