@@ -13,14 +13,14 @@ Implementation status:
 * [x]  MongoDB Data Repository
 * [x]  Sentry Observability
 * [x]  TCP Socket Server
-* [ ]  Profile 0 - Basic Communication
-* [ ]  Profile 1 - Basic Object Based Workflow
-* [ ]  Profile 2 - Basic Running Order / Content List Workflow
-* [ ]  Profile 3 - Advanced Object Based Workflow
-* [ ]  Profile 4 - Advanced RO/Content List Workflow
-* [ ]  Profile 5 - Item Control
-* [ ]  Profile 6 - MOS Redirection
-* [ ]  Profile 7 - MOS RO/Content List Modification
+* [x]  Profile 0 - Basic Communication
+* [x]  Profile 1 - Basic Object Based Workflow
+* [x]  Profile 2 - Basic Running Order / Content List Workflow
+* [x]  Profile 3 - Advanced Object Based Workflow
+* [x]  Profile 4 - Advanced RO/Content List Workflow
+* [x]  Profile 5 - Item Control
+* [x]  Profile 6 - MOS Redirection
+* [x]  Profile 7 - MOS RO/Content List Modification
 
 ## Architecture
 
