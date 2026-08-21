@@ -8,11 +8,15 @@ import (
 type EventType string
 
 const (
-	RunningOrderUpdated EventType = "ro.updated"
-	StoryModified       EventType = "story.modified"
-	ItemChanged         EventType = "item.changed"
-	ObjectCreated       EventType = "object.created"
-	ObjectUpdated       EventType = "object.updated"
+	RunningOrderUpdated     EventType = "ro.updated"
+	StoryModified           EventType = "story.modified"
+	ItemChanged             EventType = "item.changed"
+	ObjectCreated           EventType = "object.created"
+	ObjectUpdated           EventType = "object.updated"
+	ItemControlled          EventType = "item.controlled"
+	ItemCued                EventType = "item.cued"
+	StoryReceived           EventType = "story.received"
+	ROModificationInitiated EventType = "ro.modification_initiated"
 )
 
 // Event represents an event in the system

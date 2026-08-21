@@ -264,6 +264,18 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	case xml.ROElementStat:
 		err = c.handleROElementStat(ctx, msg)
 
+	// Profile 5: Item Control
+	case xml.ROCtrl:
+		err = c.handleROCtrl(ctx, msg)
+	case xml.ROItemCue:
+		err = c.handleROItemCue(ctx, msg)
+
+	// Profile 6: MOS Redirection / Story Send
+	case xml.ROStorySend:
+		err = c.handleROStorySend(ctx, msg)
+	case xml.ROReqStoryAction:
+		err = c.handleROReqStoryAction(ctx, msg)
+
 	// Story messages
 	case xml.NCSReqStoryAction:
 		err = c.handleNCSReqStoryAction(ctx, msg)

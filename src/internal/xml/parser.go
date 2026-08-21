@@ -330,6 +330,44 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		message = roElementStat
 		p.buffer = remaining
 
+	// Profile 5: Item Control
+	case "roCtrl":
+		var roCtrl ROCtrl
+		remaining, err := p.parseMessage(&roCtrl)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roCtrl
+		p.buffer = remaining
+
+	case "roItemCue":
+		var roItemCue ROItemCue
+		remaining, err := p.parseMessage(&roItemCue)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roItemCue
+		p.buffer = remaining
+
+	// Profile 6: MOS Redirection / Story Send
+	case "roStorySend":
+		var roStorySend ROStorySend
+		remaining, err := p.parseMessage(&roStorySend)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roStorySend
+		p.buffer = remaining
+
+	case "roReqStoryAction":
+		var roReqStoryAction ROReqStoryAction
+		remaining, err := p.parseMessage(&roReqStoryAction)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roReqStoryAction
+		p.buffer = remaining
+
 	default:
 		return nil, p.buffer, fmt.Errorf("%w: %s", ErrUnknownMessage, messageType)
 	}
