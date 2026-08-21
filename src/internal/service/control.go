@@ -25,33 +25,35 @@ func (s *MOSService) ProcessROCtrl(ctx context.Context, ctrl xml.ROCtrl) error {
 	// Update the item status if it exists
 	if ctrl.ItemID != "" {
 		item, err := s.itemRepo.Get(ctx, ctrl.ItemID)
-		if err == nil {
-			// Map command to status
-			var newStatus model.StatusType
-			switch ctrl.Command {
-			case "READY":
-				newStatus = model.StatusReady
-			case "EXECUTE":
-				newStatus = model.StatusPlaying
-			case "PAUSE":
-				newStatus = model.StatusPaused
-			case "STOP":
-				newStatus = model.StatusStopped
-			case "SIGNAL":
-				newStatus = model.StatusType("SIGNAL")
-			}
+		if err != nil {
+			return fmt.Errorf("item %s not found for roCtrl command %s: %w", ctrl.ItemID, ctrl.Command, err)
+		}
 
-			item.Status = newStatus
-			item.UpdatedAt = time.Now()
-			if item.Metadata == nil {
-				item.Metadata = make(map[string]string)
-			}
-			item.Metadata["lastCommand"] = ctrl.Command
-			item.Metadata["lastCommandTime"] = time.Now().Format(time.RFC3339)
+		// Map command to status
+		var newStatus model.StatusType
+		switch ctrl.Command {
+		case "READY":
+			newStatus = model.StatusReady
+		case "EXECUTE":
+			newStatus = model.StatusPlaying
+		case "PAUSE":
+			newStatus = model.StatusPaused
+		case "STOP":
+			newStatus = model.StatusStopped
+		case "SIGNAL":
+			newStatus = model.StatusType("SIGNAL")
+		}
 
-			if err := s.itemRepo.Update(ctx, item); err != nil {
-				return fmt.Errorf("failed to update item status: %w", err)
-			}
+		item.Status = newStatus
+		item.UpdatedAt = time.Now()
+		if item.Metadata == nil {
+			item.Metadata = make(map[string]string)
+		}
+		item.Metadata["lastCommand"] = ctrl.Command
+		item.Metadata["lastCommandTime"] = time.Now().Format(time.RFC3339)
+
+		if err := s.itemRepo.Update(ctx, item); err != nil {
+			return fmt.Errorf("failed to update item status: %w", err)
 		}
 	}
 
@@ -80,7 +82,9 @@ func (s *MOSService) ProcessROItemCue(ctx context.Context, cue xml.ROItemCue) er
 	// Update item metadata with cue event timing
 	if cue.ItemID != "" {
 		item, err := s.itemRepo.Get(ctx, cue.ItemID)
-		if err == nil {
+		if err != nil {
+			logger.Warningf("roItemCue references unknown item %s: %v", cue.ItemID, err)
+		} else {
 			if item.Metadata == nil {
 				item.Metadata = make(map[string]string)
 			}

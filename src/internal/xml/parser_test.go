@@ -696,3 +696,43 @@ func TestParseMessageHelper(t *testing.T) {
 		})
 	}
 }
+
+// TestParserChildSelfClosingTag verifies that a self-closing child element does not
+// cause premature message boundary detection in the parser.
+func TestParserChildSelfClosingTag(t *testing.T) {
+	// This XML has a self-closing child <mosExternalMetadata/> inside a non-self-closing root.
+	// The parser must NOT treat the child's /> as the end of the root message.
+	xmlData := `<roCtrl><roID>RO1</roID><storyID>S1</storyID><itemID>I1</itemID><command>EXECUTE</command><mosExternalMetadata/></roCtrl>`
+
+	parser := NewMessageParser()
+	parser.AppendData([]byte(xmlData))
+
+	if !parser.HasCompleteMessage() {
+		t.Fatal("expected HasCompleteMessage to return true for complete message with child self-closing tag")
+	}
+
+	msg, _, err := parser.Parse()
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	ctrl, ok := msg.(ROCtrl)
+	if !ok {
+		t.Fatalf("expected ROCtrl, got %T", msg)
+	}
+	if ctrl.ROID != "RO1" {
+		t.Errorf("expected ROID=RO1, got %s", ctrl.ROID)
+	}
+	if ctrl.Command != "EXECUTE" {
+		t.Errorf("expected command=EXECUTE, got %s", ctrl.Command)
+	}
+
+	// Test that an incomplete message with a child self-closing tag is NOT marked complete
+	incompleteXML := `<roCtrl><roID>RO1</roID><mosExternalMetadata/>`
+	parser2 := NewMessageParser()
+	parser2.AppendData([]byte(incompleteXML))
+
+	if parser2.HasCompleteMessage() {
+		t.Error("expected HasCompleteMessage to return false for incomplete message with child self-closing tag")
+	}
+}

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"airshift/openmos/internal/events"
@@ -179,6 +180,11 @@ func (s *MOSService) InsertStories(ctx context.Context, roID string, target *xml
 				CreatedAt: time.Now(),
 				UpdatedAt: time.Now(),
 			}
+			if itemInfo.Duration != "" {
+				if dur, parseErr := strconv.Atoi(itemInfo.Duration); parseErr == nil {
+					item.Duration = dur
+				}
+			}
 			if _, err := s.itemRepo.Create(ctx, item); err != nil {
 				logger.Warningf("Failed to insert item %s for story %s: %v", itemInfo.ID, storyInfo.ID, err)
 			}
@@ -229,6 +235,11 @@ func (s *MOSService) InsertItems(ctx context.Context, roID, storyID, beforeItemI
 			Status:    model.StatusPending,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
+		}
+		if itemInfo.Duration != "" {
+			if dur, parseErr := strconv.Atoi(itemInfo.Duration); parseErr == nil {
+				item.Duration = dur
+			}
 		}
 
 		if _, err := s.itemRepo.Create(ctx, item); err != nil {
@@ -311,6 +322,11 @@ func (s *MOSService) ReplaceStories(ctx context.Context, roID string, target *xm
 				CreatedAt: time.Now(),
 				UpdatedAt: time.Now(),
 			}
+			if itemInfo.Duration != "" {
+				if dur, parseErr := strconv.Atoi(itemInfo.Duration); parseErr == nil {
+					item.Duration = dur
+				}
+			}
 			if _, err := s.itemRepo.Create(ctx, item); err != nil {
 				logger.Warningf("Failed to insert item %s: %v", itemInfo.ID, err)
 			}
@@ -368,6 +384,11 @@ func (s *MOSService) ReplaceItems(ctx context.Context, roID, storyID, targetItem
 			Status:    model.StatusPending,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
+		}
+		if itemInfo.Duration != "" {
+			if dur, parseErr := strconv.Atoi(itemInfo.Duration); parseErr == nil {
+				item.Duration = dur
+			}
 		}
 
 		if _, err := s.itemRepo.Create(ctx, item); err != nil {
@@ -508,19 +529,27 @@ func (s *MOSService) MoveItems(ctx context.Context, roID, storyID, targetItemID 
 
 // DeleteStories deletes stories from a running order by their IDs
 func (s *MOSService) DeleteStories(ctx context.Context, roID string, storyIDs []string) error {
+	// Collect all item IDs to delete across all stories being removed
+	var allItemIDs []string
 	for _, storyID := range storyIDs {
-		// Delete items belonging to this story
 		items, err := s.itemRepo.ListByStory(ctx, storyID)
 		if err == nil {
 			for _, item := range items {
-				_ = s.itemRepo.Delete(ctx, item.ID)
+				allItemIDs = append(allItemIDs, item.ID)
 			}
 		}
+	}
 
-		// Delete the story
-		if err := s.storyRepo.Delete(ctx, storyID); err != nil {
-			return fmt.Errorf("failed to delete story %s: %w", storyID, err)
+	// Batch delete items
+	if len(allItemIDs) > 0 {
+		if err := s.itemRepo.DeleteMultiple(ctx, allItemIDs); err != nil {
+			return fmt.Errorf("failed to delete items for stories: %w", err)
 		}
+	}
+
+	// Batch delete stories
+	if err := s.storyRepo.DeleteMultiple(ctx, storyIDs); err != nil {
+		return fmt.Errorf("failed to delete stories: %w", err)
 	}
 
 	// Reorder remaining stories
@@ -540,10 +569,8 @@ func (s *MOSService) DeleteStories(ctx context.Context, roID string, storyIDs []
 
 // DeleteItems deletes items from a story by their IDs
 func (s *MOSService) DeleteItems(ctx context.Context, roID, storyID string, itemIDs []string) error {
-	for _, itemID := range itemIDs {
-		if err := s.itemRepo.Delete(ctx, itemID); err != nil {
-			return fmt.Errorf("failed to delete item %s: %w", itemID, err)
-		}
+	if err := s.itemRepo.DeleteMultiple(ctx, itemIDs); err != nil {
+		return fmt.Errorf("failed to delete items: %w", err)
 	}
 
 	// Reorder remaining items

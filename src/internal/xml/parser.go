@@ -62,9 +62,16 @@ func (p *MessageParser) HasCompleteMessage() bool {
 
 	tagName := string(p.buffer[start+1 : start+nameEnd])
 
-	// Check for self-closing tag like <heartbeat/>
-	selfClosingEnd := bytes.Index(p.buffer[start:], []byte("/>"))
-	if selfClosingEnd != -1 {
+	// Determine where the root opening tag ends (first > or />).
+	// Only treat /> as self-closing if it is part of the root tag itself,
+	// not a child self-closing element like <mosExternalMetadata/>.
+	afterName := p.buffer[start+nameEnd:]
+	closeBracket := bytes.IndexByte(afterName, '>')
+	if closeBracket == -1 {
+		return false
+	}
+	// Check if the root tag is self-closing: the > is preceded by /
+	if closeBracket > 0 && afterName[closeBracket-1] == '/' {
 		return true
 	}
 
@@ -406,11 +413,18 @@ func (p *MessageParser) parseMessage(message interface{}) ([]byte, error) {
 	// Find the end of the message
 	var messageEnd int
 
-	// Check for self-closing tag
-	selfClosingEnd := bytes.Index(p.buffer, []byte("/>"))
-	if selfClosingEnd != -1 && bytes.IndexAny(p.buffer[:selfClosingEnd], "<") == bytes.IndexByte(p.buffer, '<') {
-		// This is a self-closing tag
-		messageEnd = selfClosingEnd + 2
+	// Find where the root opening tag ends to determine if it is self-closing.
+	// Only treat /> as the message boundary when it belongs to the root tag itself,
+	// not when it appears inside a child element (e.g. <mosExternalMetadata/>).
+	start := bytes.IndexByte(p.buffer, '<')
+	nameEnd := bytes.IndexAny(p.buffer[start:], " \t\n\r/>")
+	afterName := p.buffer[start+nameEnd:]
+	closeBracket := bytes.IndexByte(afterName, '>')
+
+	// Check if the root tag is self-closing (its first > is preceded by /)
+	if closeBracket > 0 && afterName[closeBracket-1] == '/' {
+		// Self-closing root tag: end is at the > position
+		messageEnd = start + nameEnd + closeBracket + 1
 	} else {
 		// Look for closing tag
 		closingTag := fmt.Sprintf("</%s>", messageType)

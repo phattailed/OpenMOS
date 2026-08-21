@@ -11,6 +11,7 @@ import (
 	"airshift/openmos/internal/repository"
 	"airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
+	"airshift/openmos/pkg/utils"
 )
 
 // MOSService provides business logic for MOS operations
@@ -540,8 +541,11 @@ func (s *MOSService) ListAllRunningOrdersCompact(ctx context.Context) ([]xml.ROL
 // CreateObjectFromNCS creates a new MOS object from an NCS request (Profile 3)
 // Returns the new object ID
 func (s *MOSService) CreateObjectFromNCS(ctx context.Context, mosObjCreate xml.MosObjCreate) (string, error) {
-	// Generate a unique object ID
-	objID := fmt.Sprintf("OBJ_%d", time.Now().UnixNano())
+	// Generate a unique object ID using crypto/rand
+	objID, err := utils.GenerateID("OBJ")
+	if err != nil {
+		return "", fmt.Errorf("failed to generate object ID: %w", err)
+	}
 
 	metadata := map[string]string{
 		"createdBy":   mosObjCreate.CreatedBy,
@@ -561,7 +565,7 @@ func (s *MOSService) CreateObjectFromNCS(ctx context.Context, mosObjCreate xml.M
 		UpdatedAt:  time.Now(),
 	}
 
-	_, err := s.objectRepo.Create(ctx, obj)
+	_, err = s.objectRepo.Create(ctx, obj)
 	if err != nil {
 		return "", fmt.Errorf("failed to create object: %w", err)
 	}
