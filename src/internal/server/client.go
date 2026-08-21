@@ -204,8 +204,27 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	var err error
 
 	switch msg := message.(type) {
+	// Profile 0: Basic Communication
 	case xml.Heartbeat:
 		err = c.handleHeartbeat(ctx, msg)
+	case xml.KeepAlive:
+		err = c.handleKeepAlive(ctx, msg)
+	case xml.ReqMachInfo:
+		err = c.handleReqMachInfo(ctx, msg)
+	case xml.ListMachInfo:
+		err = c.handleListMachInfo(ctx, msg)
+
+	// Profile 1: Basic Object Based Workflow
+	case xml.MosObj:
+		err = c.handleMosObj(ctx, msg)
+	case xml.MosReqObj:
+		err = c.handleMosReqObj(ctx, msg)
+	case xml.MosReqAll:
+		err = c.handleMosReqAll(ctx, msg)
+	case xml.MosListAll:
+		err = c.handleMosListAll(ctx, msg)
+
+	// Running Order messages
 	case xml.ReqRunningOrderList:
 		err = c.handleReqRunningOrderList(ctx, msg)
 	case xml.ReqRunningOrder:
@@ -214,8 +233,11 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 		err = c.handleRunningOrderInfo(ctx, msg)
 	case xml.MOSAck:
 		err = c.handleMOSAck(ctx, msg)
+
+	// Story messages
 	case xml.NCSReqStoryAction:
 		err = c.handleNCSReqStoryAction(ctx, msg)
+
 	default:
 		err = fmt.Errorf("unknown message type: %T", message)
 	}

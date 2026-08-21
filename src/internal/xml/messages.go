@@ -26,6 +26,7 @@ type Heartbeat struct {
 	RequestID string   `xml:"requestID,attr,omitempty"`
 	Timestamp string   `xml:"timestamp,attr,omitempty"`
 	Source    string   `xml:"source,attr,omitempty"`
+	Time      string   `xml:"time,omitempty"`
 }
 
 // GetMessageType returns the type of the message
@@ -33,8 +34,66 @@ func (h Heartbeat) GetMessageType() string {
 	return "heartbeat"
 }
 
+// KeepAlive represents a MOS keepAlive message (Profile 0)
+// Per XSD: empty element
+type KeepAlive struct {
+	XMLName xml.Name `xml:"keepAlive"`
+}
+
+// GetMessageType returns the type of the message
+func (k KeepAlive) GetMessageType() string {
+	return "keepAlive"
+}
+
+// ReqMachInfo represents a request for machine info (Profile 0)
+// Per XSD: empty element
+type ReqMachInfo struct {
+	XMLName xml.Name `xml:"reqMachInfo"`
+}
+
+// GetMessageType returns the type of the message
+func (r ReqMachInfo) GetMessageType() string {
+	return "reqMachInfo"
+}
+
+// ListMachInfo represents a machine info response (Profile 0)
+// Per XSD: manufacturer, model, hwRev, swRev, DOM, SN, ID, time, opTime, mosRev, supportedProfiles
+type ListMachInfo struct {
+	XMLName           xml.Name          `xml:"listMachInfo"`
+	Manufacturer      string            `xml:"manufacturer,omitempty"`
+	Model             string            `xml:"model,omitempty"`
+	HwRev             string            `xml:"hwRev,omitempty"`
+	SwRev             string            `xml:"swRev,omitempty"`
+	DOM               string            `xml:"DOM,omitempty"`
+	SN                string            `xml:"SN,omitempty"`
+	ID                string            `xml:"ID,omitempty"`
+	Time              string            `xml:"time,omitempty"`
+	OpTime            string            `xml:"opTime,omitempty"`
+	MosRev            string            `xml:"mosRev,omitempty"`
+	SupportedProfiles SupportedProfiles `xml:"supportedProfiles"`
+}
+
+// GetMessageType returns the type of the message
+func (l ListMachInfo) GetMessageType() string {
+	return "listMachInfo"
+}
+
+// SupportedProfiles represents the supported MOS profiles with device type
+type SupportedProfiles struct {
+	XMLName    xml.Name     `xml:"supportedProfiles"`
+	DeviceType string       `xml:"deviceType,attr,omitempty"`
+	Profiles   []MosProfile `xml:"mosProfile"`
+}
+
+// MosProfile represents a single profile support entry
+type MosProfile struct {
+	XMLName xml.Name `xml:"mosProfile"`
+	Number  int      `xml:"number,attr"`
+	Value   bool     `xml:",chardata"`
+}
+
 // ReqRunningOrderList represents a request for running order list
-// Format: <reqMachInfo/>
+// Format: <roReq/>
 type ReqRunningOrderList struct {
 	XMLName   xml.Name `xml:"roReq"`
 	RequestID string   `xml:"requestID,attr,omitempty"`

@@ -43,6 +43,13 @@ type Config struct {
 		HeartbeatInterval time.Duration
 		// Timeout for client connections without heartbeats
 		ClientTimeout time.Duration
+		// Machine info fields (Profile 0)
+		Manufacturer string
+		Model        string
+		HwRev        string
+		SwRev        string
+		DOM          string
+		SN           string
 	}
 
 	// Logging configuration
@@ -145,6 +152,25 @@ func LoadConfig() (*Config, error) {
 	}
 	if envVal := getEnv("MOS_CLIENT_TIMEOUT", ""); envVal != "" || !yamlLoaded {
 		config.MOS.ClientTimeout = getEnvAsDuration("MOS_CLIENT_TIMEOUT", getDefaultDuration(config.MOS.ClientTimeout, 2*time.Minute))
+	}
+	// MOS machine info (Profile 0)
+	if envVal := getEnv("MOS_MANUFACTURER", ""); envVal != "" || !yamlLoaded {
+		config.MOS.Manufacturer = getEnv("MOS_MANUFACTURER", getDefaultString(config.MOS.Manufacturer, "OpenMOS Project"))
+	}
+	if envVal := getEnv("MOS_MODEL", ""); envVal != "" || !yamlLoaded {
+		config.MOS.Model = getEnv("MOS_MODEL", getDefaultString(config.MOS.Model, "OpenMOS Server"))
+	}
+	if envVal := getEnv("MOS_HW_REV", ""); envVal != "" || !yamlLoaded {
+		config.MOS.HwRev = getEnv("MOS_HW_REV", getDefaultString(config.MOS.HwRev, "1.0"))
+	}
+	if envVal := getEnv("MOS_SW_REV", ""); envVal != "" || !yamlLoaded {
+		config.MOS.SwRev = getEnv("MOS_SW_REV", getDefaultString(config.MOS.SwRev, "1.0.0"))
+	}
+	if envVal := getEnv("MOS_DOM", ""); envVal != "" || !yamlLoaded {
+		config.MOS.DOM = getEnv("MOS_DOM", getDefaultString(config.MOS.DOM, "2024-01-01"))
+	}
+	if envVal := getEnv("MOS_SN", ""); envVal != "" || !yamlLoaded {
+		config.MOS.SN = getEnv("MOS_SN", getDefaultString(config.MOS.SN, "OPENMOS-001"))
 	}
 
 	// Logging config
@@ -250,6 +276,12 @@ func GenerateDefaultConfig(filePath string) error {
 	config.MOS.ID = "OpenMOS_Server"
 	config.MOS.HeartbeatInterval = 30 * time.Second
 	config.MOS.ClientTimeout = 2 * time.Minute
+	config.MOS.Manufacturer = "OpenMOS Project"
+	config.MOS.Model = "OpenMOS Server"
+	config.MOS.HwRev = "1.0"
+	config.MOS.SwRev = "1.0.0"
+	config.MOS.DOM = "2024-01-01"
+	config.MOS.SN = "OPENMOS-001"
 
 	// Logging config
 	config.Logging.Level = "info"

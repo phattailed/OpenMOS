@@ -102,6 +102,69 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		message = heartbeat
 		p.buffer = remaining
 
+	case "keepAlive":
+		var keepAlive KeepAlive
+		remaining, err := p.parseMessage(&keepAlive)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = keepAlive
+		p.buffer = remaining
+
+	case "reqMachInfo":
+		var reqMachInfo ReqMachInfo
+		remaining, err := p.parseMessage(&reqMachInfo)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = reqMachInfo
+		p.buffer = remaining
+
+	case "listMachInfo":
+		var listMachInfo ListMachInfo
+		remaining, err := p.parseMessage(&listMachInfo)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = listMachInfo
+		p.buffer = remaining
+
+	case "mosObj":
+		var mosObj MosObj
+		remaining, err := p.parseMessage(&mosObj)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosObj
+		p.buffer = remaining
+
+	case "mosReqObj":
+		var mosReqObj MosReqObj
+		remaining, err := p.parseMessage(&mosReqObj)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosReqObj
+		p.buffer = remaining
+
+	case "mosReqAll":
+		var mosReqAll MosReqAll
+		remaining, err := p.parseMessage(&mosReqAll)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosReqAll
+		p.buffer = remaining
+
+	case "mosListAll":
+		var mosListAll MosListAll
+		remaining, err := p.parseMessage(&mosListAll)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosListAll
+		p.buffer = remaining
+
 	case "roReq":
 		var roReq ReqRunningOrderList
 		remaining, err := p.parseMessage(&roReq)

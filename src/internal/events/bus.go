@@ -11,6 +11,8 @@ const (
 	RunningOrderUpdated EventType = "ro.updated"
 	StoryModified       EventType = "story.modified"
 	ItemChanged         EventType = "item.changed"
+	ObjectCreated       EventType = "object.created"
+	ObjectUpdated       EventType = "object.updated"
 )
 
 // Event represents an event in the system
