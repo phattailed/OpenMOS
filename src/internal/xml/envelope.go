@@ -48,21 +48,23 @@ type InnerBody struct {
 
 // ParseEnvelope parses a complete <mos> envelope and returns the envelope
 // metadata plus the inner MOS message. It delegates inner-operation parsing
-// to the existing ParseMessage function.
-func ParseEnvelope(data []byte) (*MosEnvelope, MOSMessage, error) {
+// to the existing ParseMessage function. The returned innerOpXML is the raw
+// bytes of the inner operation element (excluding envelope metadata), suitable
+// for deduplication hashing.
+func ParseEnvelope(data []byte) (*MosEnvelope, MOSMessage, []byte, error) {
 	var raw rawMosEnvelope
 	if err := xml.Unmarshal(data, &raw); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse mos envelope: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse mos envelope: %w", err)
 	}
 
 	if raw.MosID == "" {
-		return nil, nil, fmt.Errorf("mos envelope missing mosID")
+		return nil, nil, nil, fmt.Errorf("mos envelope missing mosID")
 	}
 	if raw.NcsID == "" {
-		return nil, nil, fmt.Errorf("mos envelope missing ncsID")
+		return nil, nil, nil, fmt.Errorf("mos envelope missing ncsID")
 	}
 	if raw.MessageID == "" {
-		return nil, nil, fmt.Errorf("mos envelope missing messageID")
+		return nil, nil, nil, fmt.Errorf("mos envelope missing messageID")
 	}
 
 	env := &MosEnvelope{
@@ -86,16 +88,16 @@ func ParseEnvelope(data []byte) (*MosEnvelope, MOSMessage, error) {
 	}
 
 	if operationXML == nil {
-		return env, nil, nil // Envelope with no operation body (valid for some messages)
+		return env, nil, nil, nil // Envelope with no operation body (valid for some messages)
 	}
 
 	// Parse the inner operation using the existing parser
 	msg, err := ParseMessage(string(operationXML))
 	if err != nil {
-		return env, nil, fmt.Errorf("failed to parse inner operation: %w", err)
+		return env, nil, nil, fmt.Errorf("failed to parse inner operation: %w", err)
 	}
 
-	return env, msg, nil
+	return env, msg, operationXML, nil
 }
 
 // reconstructElement rebuilds an XML element from InnerBody.

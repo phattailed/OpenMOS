@@ -21,6 +21,9 @@ const (
 // DedupStore tracks (ncsID, messageID) -> content hash for deduplication.
 type DedupStore interface {
 	// Check returns the dedup status for a given ncsID+messageID combination.
+	// The content parameter should be the inner operation XML only (not the
+	// full envelope), so that re-deliveries with different envelope whitespace
+	// or field ordering are correctly identified as duplicates.
 	// If the combination is new, it records it and returns DedupNew.
 	// If the combination exists with the same hash, returns DedupDuplicate.
 	// If the combination exists with a different hash, returns DedupConflict.

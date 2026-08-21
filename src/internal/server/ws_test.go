@@ -226,7 +226,7 @@ func TestWSReqMachInfo(t *testing.T) {
 	}
 
 	// Parse the response envelope
-	env, msg, err := mosxml.ParseEnvelope(data)
+	env, msg, _, err := mosxml.ParseEnvelope(data)
 	if err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}

@@ -8,7 +8,7 @@ import (
 func TestParseEnvelope_Basic(t *testing.T) {
 	input := `<mos><mosID>MOS_SERVER</mosID><ncsID>NCS_001</ncsID><messageID>msg-123</messageID><keepAlive/></mos>`
 
-	env, msg, err := ParseEnvelope([]byte(input))
+	env, msg, _, err := ParseEnvelope([]byte(input))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestParseEnvelope_Basic(t *testing.T) {
 func TestParseEnvelope_ReqMachInfo(t *testing.T) {
 	input := `<mos><mosID>MOS_SERVER</mosID><ncsID>NCS_001</ncsID><messageID>msg-456</messageID><reqMachInfo/></mos>`
 
-	env, msg, err := ParseEnvelope([]byte(input))
+	env, msg, _, err := ParseEnvelope([]byte(input))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestParseEnvelope_RoCreate(t *testing.T) {
   </roCreate>
 </mos>`
 
-	env, msg, err := ParseEnvelope([]byte(input))
+	env, msg, innerOpXML, err := ParseEnvelope([]byte(input))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,11 +89,26 @@ func TestParseEnvelope_RoCreate(t *testing.T) {
 	if roCreate.Stories[0].ID != "STORY_001" {
 		t.Errorf("storyID = %q, want %q", roCreate.Stories[0].ID, "STORY_001")
 	}
+
+	// Verify innerOpXML contains the operation element, not envelope metadata
+	if innerOpXML == nil {
+		t.Fatal("expected non-nil innerOpXML")
+	}
+	s := string(innerOpXML)
+	if !strings.Contains(s, "<roCreate>") {
+		t.Errorf("innerOpXML should contain <roCreate>, got: %s", s)
+	}
+	if strings.Contains(s, "<mosID>") {
+		t.Errorf("innerOpXML should NOT contain <mosID>, got: %s", s)
+	}
+	if strings.Contains(s, "<messageID>") {
+		t.Errorf("innerOpXML should NOT contain <messageID>, got: %s", s)
+	}
 }
 
 func TestParseEnvelope_MissingMosID(t *testing.T) {
 	input := `<mos><ncsID>NCS</ncsID><messageID>1</messageID><keepAlive/></mos>`
-	_, _, err := ParseEnvelope([]byte(input))
+	_, _, _, err := ParseEnvelope([]byte(input))
 	if err == nil {
 		t.Fatal("expected error for missing mosID")
 	}
@@ -104,7 +119,7 @@ func TestParseEnvelope_MissingMosID(t *testing.T) {
 
 func TestParseEnvelope_MissingNcsID(t *testing.T) {
 	input := `<mos><mosID>MOS</mosID><messageID>1</messageID><keepAlive/></mos>`
-	_, _, err := ParseEnvelope([]byte(input))
+	_, _, _, err := ParseEnvelope([]byte(input))
 	if err == nil {
 		t.Fatal("expected error for missing ncsID")
 	}
@@ -115,7 +130,7 @@ func TestParseEnvelope_MissingNcsID(t *testing.T) {
 
 func TestParseEnvelope_MissingMessageID(t *testing.T) {
 	input := `<mos><mosID>MOS</mosID><ncsID>NCS</ncsID><keepAlive/></mos>`
-	_, _, err := ParseEnvelope([]byte(input))
+	_, _, _, err := ParseEnvelope([]byte(input))
 	if err == nil {
 		t.Fatal("expected error for missing messageID")
 	}
@@ -126,7 +141,7 @@ func TestParseEnvelope_MissingMessageID(t *testing.T) {
 
 func TestParseEnvelope_MalformedXML(t *testing.T) {
 	input := `<mos><mosID>MOS</ncsID>`
-	_, _, err := ParseEnvelope([]byte(input))
+	_, _, _, err := ParseEnvelope([]byte(input))
 	if err == nil {
 		t.Fatal("expected error for malformed XML")
 	}
@@ -174,7 +189,7 @@ func TestWrapEnvelope_EscapesSpecialChars(t *testing.T) {
 func TestParseEnvelope_EmptyBody(t *testing.T) {
 	// An envelope with no operation body is valid
 	input := `<mos><mosID>MOS</mosID><ncsID>NCS</ncsID><messageID>1</messageID></mos>`
-	env, msg, err := ParseEnvelope([]byte(input))
+	env, msg, innerOpXML, err := ParseEnvelope([]byte(input))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,5 +198,8 @@ func TestParseEnvelope_EmptyBody(t *testing.T) {
 	}
 	if msg != nil {
 		t.Errorf("expected nil message for empty body, got %T", msg)
+	}
+	if innerOpXML != nil {
+		t.Errorf("expected nil innerOpXML for empty body, got %v", innerOpXML)
 	}
 }

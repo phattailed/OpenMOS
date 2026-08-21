@@ -165,9 +165,10 @@ func (s *WSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Allow any origin for now; production should restrict.
-	})
+	// NOTE: CORS/origin restriction is absent. websocket.AcceptOptions{} accepts
+	// connections from any origin. This is acceptable for a lab slice but must be
+	// restricted before any network-facing or production deployment.
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
 	if err != nil {
 		logger.Errorf("WebSocket upgrade failed: %v", err)
 		return
@@ -227,6 +228,29 @@ func (s *WSServer) handleSession(sess *WSSession) {
 		}
 	}()
 
+	// Feed incoming messages through a channel so the select can multiplex
+	// reads with timer expiry and context cancellation without busy-spinning.
+	type readResult struct {
+		msgType websocket.MessageType
+		data    []byte
+		err     error
+	}
+	msgCh := make(chan readResult, 1)
+
+	go func() {
+		for {
+			msgType, data, err := sess.conn.Read(ctx)
+			select {
+			case msgCh <- readResult{msgType, data, err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -234,36 +258,33 @@ func (s *WSServer) handleSession(sess *WSSession) {
 		case <-heartbeatTimer.C:
 			logger.Infof("Session timed out (no messages): ncsID=%s", sess.ncsID)
 			return
-		default:
-		}
-
-		// Read next WebSocket message (one XML message per WS frame)
-		msgType, data, err := sess.conn.Read(ctx)
-		if err != nil {
-			// Connection closed or context canceled
-			return
-		}
-		if msgType != websocket.MessageText {
-			continue // Ignore binary frames
-		}
-
-		// Reset heartbeat timer on any message
-		if !heartbeatTimer.Stop() {
-			select {
-			case <-heartbeatTimer.C:
-			default:
+		case msg := <-msgCh:
+			if msg.err != nil {
+				// Connection closed or context canceled
+				return
 			}
-		}
-		heartbeatTimer.Reset(s.config.MOS.ClientTimeout)
+			if msg.msgType != websocket.MessageText {
+				continue // Ignore binary frames
+			}
 
-		// Process the message
-		s.processMessage(ctx, sess, data)
+			// Reset heartbeat timer on any message
+			if !heartbeatTimer.Stop() {
+				select {
+				case <-heartbeatTimer.C:
+				default:
+				}
+			}
+			heartbeatTimer.Reset(s.config.MOS.ClientTimeout)
+
+			// Process the message
+			s.processMessage(ctx, sess, msg.data)
+		}
 	}
 }
 
 // processMessage handles a single MOS message within its envelope.
 func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []byte) {
-	env, msg, err := mosxml.ParseEnvelope(data)
+	env, msg, innerOpXML, err := mosxml.ParseEnvelope(data)
 	if err != nil {
 		logger.Errorf("Envelope parse error from ncsID=%s: %v", sess.ncsID, err)
 		s.sendNack(ctx, sess, "", "NACK", "invalid envelope")
@@ -286,7 +307,7 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 		return
 
 	case mosxml.RunningOrderInfo:
-		s.handleRoCreate(ctx, sess, env, m, data)
+		s.handleRoCreate(ctx, sess, env, m, innerOpXML)
 		return
 
 	default:
@@ -305,13 +326,18 @@ func (s *WSServer) handleReqMachInfo(ctx context.Context, sess *WSSession, env *
 	}
 
 	response := mosxml.WrapEnvelope(s.config.MOS.ID, sess.ncsID, env.MessageID, innerXML)
-	_ = sess.conn.Write(ctx, websocket.MessageText, response)
+	if err := sess.conn.Write(ctx, websocket.MessageText, response); err != nil {
+		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
+		sess.close()
+	}
 }
 
 // handleRoCreate processes a roCreate message with dedup and ack-after-persist.
-func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mosxml.MosEnvelope, roInfo mosxml.RunningOrderInfo, rawData []byte) {
-	// Check dedup
-	result := s.dedup.Check(env.NcsID, env.MessageID, rawData)
+func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mosxml.MosEnvelope, roInfo mosxml.RunningOrderInfo, innerOpXML []byte) {
+	// Check dedup using only the inner operation XML (not the full envelope),
+	// so that re-deliveries with different envelope whitespace or ordering are
+	// correctly identified as duplicates rather than conflicts.
+	result := s.dedup.Check(env.NcsID, env.MessageID, innerOpXML)
 	switch result {
 	case DedupDuplicate:
 		// Silently discard re-delivery
@@ -341,7 +367,10 @@ func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mos
 	}
 
 	response := mosxml.WrapEnvelope(s.config.MOS.ID, sess.ncsID, env.MessageID, innerXML)
-	_ = sess.conn.Write(ctx, websocket.MessageText, response)
+	if err := sess.conn.Write(ctx, websocket.MessageText, response); err != nil {
+		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
+		sess.close()
+	}
 }
 
 // sendNack sends a NACK response envelope.
@@ -355,7 +384,10 @@ func (s *WSServer) sendNack(ctx context.Context, sess *WSSession, messageID, sta
 		return
 	}
 	response := mosxml.WrapEnvelope(s.config.MOS.ID, sess.ncsID, messageID, innerXML)
-	_ = sess.conn.Write(ctx, websocket.MessageText, response)
+	if err := sess.conn.Write(ctx, websocket.MessageText, response); err != nil {
+		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
+		sess.close()
+	}
 }
 
 // close terminates a WebSocket session.
