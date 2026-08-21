@@ -1,0 +1,25 @@
+services:
+  openmos:
+    build: .
+    ports:
+      - "10540:10540"
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017
+      - MONGODB_DATABASE=openmos
+      - MOS_ID=OpenMOS
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=10540
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  mongo_data:

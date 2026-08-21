@@ -1,0 +1,26 @@
+.git
+*.md
+!README.md
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Compiled binary
+src/openmos
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Resource and documentation directories
+res/
+doc/
+
+# Config files with secrets
+*.env
+config*.yaml
+config*.yml
