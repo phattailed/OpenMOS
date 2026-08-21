@@ -212,6 +212,117 @@ func (m NCSAck) GetMessageType() string {
 	return "ncsAck"
 }
 
+// --- Profile 2: Basic Running Order Workflow ---
+
+// ROReplace represents a running order replacement (Profile 2)
+// Per XSD: same structure as roCreate - replaces the entire running order
+type ROReplace struct {
+	XMLName             xml.Name              `xml:"roReplace"`
+	RequestID           string                `xml:"requestID,attr,omitempty"`
+	Timestamp           string                `xml:"timestamp,attr,omitempty"`
+	Source              string                `xml:"source,attr,omitempty"`
+	ID                  string                `xml:"roID"`
+	Slug                string                `xml:"roSlug"`
+	Channel             string                `xml:"roChannel,omitempty"`
+	EdStart             string                `xml:"roEdStart,omitempty"`
+	EdDur               string                `xml:"roEdDur,omitempty"`
+	Trigger             string                `xml:"roTrigger,omitempty"`
+	MacroIn             string                `xml:"macroIn,omitempty"`
+	MacroOut            string                `xml:"macroOut,omitempty"`
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+	Stories             []StoryInfo           `xml:"story"`
+}
+
+// GetMessageType returns the type of the message
+func (r ROReplace) GetMessageType() string {
+	return "roReplace"
+}
+
+// RODelete represents a running order deletion (Profile 2)
+// Per XSD: contains only roID
+type RODelete struct {
+	XMLName   xml.Name `xml:"roDelete"`
+	RequestID string   `xml:"requestID,attr,omitempty"`
+	Timestamp string   `xml:"timestamp,attr,omitempty"`
+	Source    string   `xml:"source,attr,omitempty"`
+	ID        string   `xml:"roID"`
+}
+
+// GetMessageType returns the type of the message
+func (r RODelete) GetMessageType() string {
+	return "roDelete"
+}
+
+// ROMetadataReplace represents a running order metadata replacement (Profile 2)
+// Per XSD: replaces RO metadata without affecting stories
+type ROMetadataReplace struct {
+	XMLName             xml.Name              `xml:"roMetadataReplace"`
+	RequestID           string                `xml:"requestID,attr,omitempty"`
+	Timestamp           string                `xml:"timestamp,attr,omitempty"`
+	Source              string                `xml:"source,attr,omitempty"`
+	ID                  string                `xml:"roID"`
+	Slug                string                `xml:"roSlug,omitempty"`
+	Channel             string                `xml:"roChannel,omitempty"`
+	EdStart             string                `xml:"roEdStart,omitempty"`
+	EdDur               string                `xml:"roEdDur,omitempty"`
+	Trigger             string                `xml:"roTrigger,omitempty"`
+	MacroIn             string                `xml:"macroIn,omitempty"`
+	MacroOut            string                `xml:"macroOut,omitempty"`
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+// GetMessageType returns the type of the message
+func (r ROMetadataReplace) GetMessageType() string {
+	return "roMetadataReplace"
+}
+
+// ROListAll represents a list of all running orders (Profile 2)
+// Per XSD: contains ro[] elements each with summary fields
+type ROListAll struct {
+	XMLName xml.Name        `xml:"roListAll"`
+	ROs     []ROListAllItem `xml:"ro"`
+}
+
+// GetMessageType returns the type of the message
+func (r ROListAll) GetMessageType() string {
+	return "roListAll"
+}
+
+// ROListAllItem represents a single RO in roListAll response
+type ROListAllItem struct {
+	XMLName             xml.Name              `xml:"ro"`
+	ID                  string                `xml:"roID"`
+	Slug                string                `xml:"roSlug"`
+	Channel             string                `xml:"roChannel,omitempty"`
+	EdStart             string                `xml:"roEdStart,omitempty"`
+	EdDur               string                `xml:"roEdDur,omitempty"`
+	Trigger             string                `xml:"roTrigger,omitempty"`
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+// ROAck represents a running order acknowledgment (Profile 2)
+// Per XSD: roID, roStatus, and optional repeating status entries per story
+type ROAck struct {
+	XMLName xml.Name     `xml:"roAck"`
+	ID      string       `xml:"roID"`
+	Status  string       `xml:"roStatus"`
+	Stories []ROAckStory `xml:"story,omitempty"`
+}
+
+// GetMessageType returns the type of the message
+func (r ROAck) GetMessageType() string {
+	return "roAck"
+}
+
+// ROAckStory represents a story status within an roAck
+type ROAckStory struct {
+	StoryID     string `xml:"storyID"`
+	ItemID      string `xml:"itemID,omitempty"`
+	ObjID       string `xml:"objID,omitempty"`
+	ItemChannel string `xml:"itemChannel,omitempty"`
+	Status      string `xml:"status"`
+}
+
 // Now returns the current timestamp in MOS format
 func Now() string {
 	return time.Now().Format(time.RFC3339)

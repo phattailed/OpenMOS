@@ -224,7 +224,29 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	case xml.MosListAll:
 		err = c.handleMosListAll(ctx, msg)
 
-	// Running Order messages
+	// Profile 2: Basic Running Order Workflow
+	case xml.ROReplace:
+		err = c.handleROReplace(ctx, msg)
+	case xml.RODelete:
+		err = c.handleRODelete(ctx, msg)
+	case xml.ROMetadataReplace:
+		err = c.handleROMetadataReplace(ctx, msg)
+	case xml.ROListAll:
+		err = c.handleROListAll(ctx, msg)
+	case xml.ROAck:
+		err = c.handleROAck(ctx, msg)
+
+	// Profile 3: Advanced Object Based Workflow
+	case xml.MosObjCreate:
+		err = c.handleMosObjCreate(ctx, msg)
+	case xml.MosItemReplace:
+		err = c.handleMosItemReplace(ctx, msg)
+	case xml.MosReqSearchableSchema:
+		err = c.handleMosReqSearchableSchema(ctx, msg)
+	case xml.MosListSearchableSchema:
+		err = c.handleMosListSearchableSchema(ctx, msg)
+
+	// Running Order messages (existing)
 	case xml.ReqRunningOrderList:
 		err = c.handleReqRunningOrderList(ctx, msg)
 	case xml.ReqRunningOrder:

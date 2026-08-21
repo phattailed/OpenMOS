@@ -219,6 +219,89 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		message = ncsReqStoryAction
 		p.buffer = remaining
 
+	// Profile 2: Basic Running Order Workflow
+	case "roReplace":
+		var roReplace ROReplace
+		remaining, err := p.parseMessage(&roReplace)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roReplace
+		p.buffer = remaining
+
+	case "roDelete":
+		var roDelete RODelete
+		remaining, err := p.parseMessage(&roDelete)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roDelete
+		p.buffer = remaining
+
+	case "roMetadataReplace":
+		var roMetadataReplace ROMetadataReplace
+		remaining, err := p.parseMessage(&roMetadataReplace)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roMetadataReplace
+		p.buffer = remaining
+
+	case "roListAll":
+		var roListAll ROListAll
+		remaining, err := p.parseMessage(&roListAll)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roListAll
+		p.buffer = remaining
+
+	case "roAck":
+		var roAck ROAck
+		remaining, err := p.parseMessage(&roAck)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roAck
+		p.buffer = remaining
+
+	// Profile 3: Advanced Object Based Workflow
+	case "mosObjCreate":
+		var mosObjCreate MosObjCreate
+		remaining, err := p.parseMessage(&mosObjCreate)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosObjCreate
+		p.buffer = remaining
+
+	case "mosItemReplace":
+		var mosItemReplace MosItemReplace
+		remaining, err := p.parseMessage(&mosItemReplace)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosItemReplace
+		p.buffer = remaining
+
+	case "mosReqSearchableSchema":
+		var mosReqSearchableSchema MosReqSearchableSchema
+		remaining, err := p.parseMessage(&mosReqSearchableSchema)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosReqSearchableSchema
+		p.buffer = remaining
+
+	case "mosListSearchableSchema":
+		var mosListSearchableSchema MosListSearchableSchema
+		remaining, err := p.parseMessage(&mosListSearchableSchema)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = mosListSearchableSchema
+		p.buffer = remaining
+
 	default:
 		return nil, p.buffer, fmt.Errorf("%w: %s", ErrUnknownMessage, messageType)
 	}

@@ -315,3 +315,330 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 
 	return nil
 }
+
+// --- Profile 2: Basic Running Order Workflow ---
+
+// ReplaceRunningOrder replaces an entire running order (Profile 2)
+// Deletes all existing stories for the RO and recreates from the replacement message
+func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.ROReplace) error {
+	// Get existing stories for this RO and delete them
+	existingStories, err := s.storyRepo.ListByRunningOrder(ctx, roReplace.ID)
+	if err == nil {
+		for _, story := range existingStories {
+			// Delete items for this story
+			items, itemErr := s.itemRepo.ListByStory(ctx, story.ID)
+			if itemErr == nil {
+				for _, item := range items {
+					_ = s.itemRepo.Delete(ctx, item.ID)
+				}
+			}
+			_ = s.storyRepo.Delete(ctx, story.ID)
+		}
+	}
+
+	// Parse duration if provided
+	var duration int
+	if roReplace.EdDur != "" {
+		duration, _ = strconv.Atoi(roReplace.EdDur)
+	}
+
+	// Get or create the running order
+	existingRO, err := s.runningOrderRepo.Get(ctx, roReplace.ID)
+	if err != nil {
+		// Create new running order
+		ro := &model.RunningOrder{
+			ID:        roReplace.ID,
+			Slug:      roReplace.Slug,
+			Status:    model.StatusPending,
+			Duration:  duration,
+			Channel:   roReplace.Channel,
+			Version:   1,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		_, err = s.runningOrderRepo.Create(ctx, ro)
+		if err != nil {
+			return fmt.Errorf("failed to create running order: %w", err)
+		}
+	} else {
+		// Update existing running order
+		existingRO.Slug = roReplace.Slug
+		existingRO.Channel = roReplace.Channel
+		existingRO.Duration = duration
+		existingRO.Version++
+		existingRO.UpdatedAt = time.Now()
+
+		err = s.runningOrderRepo.Update(ctx, existingRO)
+		if err != nil {
+			return fmt.Errorf("failed to update running order: %w", err)
+		}
+	}
+
+	// Create new stories from the replacement
+	for i, storyInfo := range roReplace.Stories {
+		story := &model.Story{
+			ID:             storyInfo.ID,
+			RunningOrderID: roReplace.ID,
+			Slug:           storyInfo.Slug,
+			Number:         storyInfo.Number,
+			Status:         model.StatusPending,
+			Order:          i + 1,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+
+		if storyInfo.Duration != "" {
+			if storyDuration, err := strconv.Atoi(storyInfo.Duration); err == nil {
+				story.Duration = storyDuration
+			}
+		}
+
+		_, err = s.storyRepo.Create(ctx, story)
+		if err != nil {
+			return fmt.Errorf("failed to create replacement story: %w", err)
+		}
+	}
+
+	// Publish event
+	if s.eventBus != nil {
+		s.eventBus.Publish(events.Event{
+			Type:    events.RunningOrderUpdated,
+			Payload: roReplace.ID,
+			Source:  "mos_service",
+		})
+	}
+
+	logger.Infof("Replaced running order %s with %d stories", roReplace.ID, len(roReplace.Stories))
+	return nil
+}
+
+// DeleteRunningOrder deletes a running order and all associated stories/items (Profile 2)
+func (s *MOSService) DeleteRunningOrder(ctx context.Context, roID string) error {
+	// Delete all stories and their items
+	stories, err := s.storyRepo.ListByRunningOrder(ctx, roID)
+	if err == nil {
+		for _, story := range stories {
+			// Delete items for this story
+			items, itemErr := s.itemRepo.ListByStory(ctx, story.ID)
+			if itemErr == nil {
+				for _, item := range items {
+					_ = s.itemRepo.Delete(ctx, item.ID)
+				}
+			}
+			_ = s.storyRepo.Delete(ctx, story.ID)
+		}
+	}
+
+	// Delete the running order itself
+	err = s.runningOrderRepo.Delete(ctx, roID)
+	if err != nil {
+		return fmt.Errorf("failed to delete running order: %w", err)
+	}
+
+	// Publish event
+	if s.eventBus != nil {
+		s.eventBus.Publish(events.Event{
+			Type:    events.RunningOrderUpdated,
+			Payload: roID,
+			Source:  "mos_service",
+		})
+	}
+
+	logger.Infof("Deleted running order %s", roID)
+	return nil
+}
+
+// ReplaceMetadata updates only the metadata of a running order without touching stories (Profile 2)
+func (s *MOSService) ReplaceMetadata(ctx context.Context, roMeta xml.ROMetadataReplace) error {
+	ro, err := s.runningOrderRepo.Get(ctx, roMeta.ID)
+	if err != nil {
+		return fmt.Errorf("running order not found: %w", err)
+	}
+
+	// Update metadata fields
+	if roMeta.Slug != "" {
+		ro.Slug = roMeta.Slug
+	}
+	if roMeta.Channel != "" {
+		ro.Channel = roMeta.Channel
+	}
+
+	// Store additional metadata
+	if ro.Metadata == nil {
+		ro.Metadata = make(map[string]string)
+	}
+	if roMeta.EdStart != "" {
+		ro.Metadata["edStart"] = roMeta.EdStart
+	}
+	if roMeta.EdDur != "" {
+		ro.Metadata["edDur"] = roMeta.EdDur
+		if dur, parseErr := strconv.Atoi(roMeta.EdDur); parseErr == nil {
+			ro.Duration = dur
+		}
+	}
+	if roMeta.Trigger != "" {
+		ro.Metadata["trigger"] = roMeta.Trigger
+	}
+	if roMeta.MacroIn != "" {
+		ro.Metadata["macroIn"] = roMeta.MacroIn
+	}
+	if roMeta.MacroOut != "" {
+		ro.Metadata["macroOut"] = roMeta.MacroOut
+	}
+
+	ro.UpdatedAt = time.Now()
+
+	err = s.runningOrderRepo.Update(ctx, ro)
+	if err != nil {
+		return fmt.Errorf("failed to update running order metadata: %w", err)
+	}
+
+	// Publish event
+	if s.eventBus != nil {
+		s.eventBus.Publish(events.Event{
+			Type:    events.RunningOrderUpdated,
+			Payload: roMeta.ID,
+			Source:  "mos_service",
+		})
+	}
+
+	logger.Infof("Replaced metadata for running order %s", roMeta.ID)
+	return nil
+}
+
+// ListAllRunningOrdersCompact returns all running orders in compact format for roListAll (Profile 2)
+func (s *MOSService) ListAllRunningOrdersCompact(ctx context.Context) ([]xml.ROListAllItem, error) {
+	runningOrders, err := s.runningOrderRepo.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list running orders: %w", err)
+	}
+
+	items := make([]xml.ROListAllItem, 0, len(runningOrders))
+	for _, ro := range runningOrders {
+		item := xml.ROListAllItem{
+			ID:      ro.ID,
+			Slug:    ro.Slug,
+			Channel: ro.Channel,
+		}
+
+		// Include metadata fields if available
+		if ro.Metadata != nil {
+			item.EdStart = ro.Metadata["edStart"]
+			item.EdDur = ro.Metadata["edDur"]
+			item.Trigger = ro.Metadata["trigger"]
+		}
+
+		items = append(items, item)
+	}
+
+	return items, nil
+}
+
+// --- Profile 3: Advanced Object Based Workflow ---
+
+// CreateObjectFromNCS creates a new MOS object from an NCS request (Profile 3)
+// Returns the new object ID
+func (s *MOSService) CreateObjectFromNCS(ctx context.Context, mosObjCreate xml.MosObjCreate) (string, error) {
+	// Generate a unique object ID
+	objID := fmt.Sprintf("OBJ_%d", time.Now().UnixNano())
+
+	metadata := map[string]string{
+		"createdBy":   mosObjCreate.CreatedBy,
+		"description": mosObjCreate.Description,
+		"objGroup":    mosObjCreate.ObjGroup,
+	}
+
+	obj := &model.MOSObject{
+		ID:         objID,
+		Slug:       mosObjCreate.ObjSlug,
+		ObjectType: mosObjCreate.ObjType,
+		TimeBase:   mosObjCreate.ObjTB,
+		Duration:   mosObjCreate.ObjDur,
+		Status:     model.StatusPending,
+		Metadata:   metadata,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+
+	_, err := s.objectRepo.Create(ctx, obj)
+	if err != nil {
+		return "", fmt.Errorf("failed to create object: %w", err)
+	}
+
+	// Publish event
+	if s.eventBus != nil {
+		s.eventBus.Publish(events.Event{
+			Type:    events.ObjectCreated,
+			Payload: objID,
+			Source:  "mos_service",
+		})
+	}
+
+	logger.Infof("Created MOS object %s from NCS request (slug=%s)", objID, mosObjCreate.ObjSlug)
+	return objID, nil
+}
+
+// ReplaceItemInStory replaces a specific item within a story (Profile 3)
+func (s *MOSService) ReplaceItemInStory(ctx context.Context, mosItemReplace xml.MosItemReplace) error {
+	// Verify the story exists
+	_, err := s.storyRepo.Get(ctx, mosItemReplace.StoryID)
+	if err != nil {
+		return fmt.Errorf("story not found: %w", err)
+	}
+
+	// Get the existing item
+	existingItem, err := s.itemRepo.Get(ctx, mosItemReplace.Item.ItemID)
+	if err != nil {
+		// Item does not exist, create it
+		newItem := &model.Item{
+			ID:        mosItemReplace.Item.ItemID,
+			StoryID:   mosItemReplace.StoryID,
+			Slug:      mosItemReplace.Item.ItemSlug,
+			ObjectID:  mosItemReplace.Item.ObjID,
+			Duration:  mosItemReplace.Item.ItemEdDur,
+			Status:    model.StatusPending,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		_, err = s.itemRepo.Create(ctx, newItem)
+		if err != nil {
+			return fmt.Errorf("failed to create replacement item: %w", err)
+		}
+	} else {
+		// Update existing item
+		existingItem.Slug = mosItemReplace.Item.ItemSlug
+		existingItem.ObjectID = mosItemReplace.Item.ObjID
+		existingItem.Duration = mosItemReplace.Item.ItemEdDur
+		existingItem.UpdatedAt = time.Now()
+
+		if existingItem.Metadata == nil {
+			existingItem.Metadata = make(map[string]string)
+		}
+		if mosItemReplace.Item.MosID != "" {
+			existingItem.Metadata["mosID"] = mosItemReplace.Item.MosID
+		}
+		if mosItemReplace.Item.ItemChannel != "" {
+			existingItem.Metadata["itemChannel"] = mosItemReplace.Item.ItemChannel
+		}
+
+		err = s.itemRepo.Update(ctx, existingItem)
+		if err != nil {
+			return fmt.Errorf("failed to update item: %w", err)
+		}
+	}
+
+	// Publish event
+	if s.eventBus != nil {
+		s.eventBus.Publish(events.Event{
+			Type:    events.ItemChanged,
+			Payload: mosItemReplace.Item.ItemID,
+			Source:  "mos_service",
+		})
+	}
+
+	logger.Infof("Replaced item %s in story %s (RO %s)",
+		mosItemReplace.Item.ItemID, mosItemReplace.StoryID, mosItemReplace.ROID)
+	return nil
+}

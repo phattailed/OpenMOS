@@ -84,7 +84,7 @@ func (m MosListAll) GetMessageType() string {
 // MosObjAck represents an acknowledgment for object operations (Profile 1, XSD-compliant)
 // Per XSD: objID, objRev, status, statusDescription
 type MosObjAck struct {
-	XMLName           xml.Name `xml:"mosObjAck"`
+	XMLName           xml.Name `xml:"mosAck"`
 	ObjID             string   `xml:"objID,omitempty"`
 	ObjRev            int      `xml:"objRev,omitempty"`
 	Status            string   `xml:"status"`
@@ -94,4 +94,87 @@ type MosObjAck struct {
 // GetMessageType returns the type of the message
 func (m MosObjAck) GetMessageType() string {
 	return "mosObjAck"
+}
+
+// --- Profile 3: Advanced Object Based Workflow ---
+
+// MosObjCreate represents a request from NCS to MOS to create a new object (Profile 3)
+// Per XSD: objSlug, objGroup, objType, objTB, objDur, time, createdBy, description, mosExternalMetadata[]
+type MosObjCreate struct {
+	XMLName             xml.Name              `xml:"mosObjCreate"`
+	ObjSlug             string                `xml:"objSlug"`
+	ObjGroup            string                `xml:"objGroup,omitempty"`
+	ObjType             string                `xml:"objType"`
+	ObjTB               int                   `xml:"objTB"`
+	ObjDur              int                   `xml:"objDur,omitempty"`
+	Time                string                `xml:"time,omitempty"`
+	CreatedBy           string                `xml:"createdBy,omitempty"`
+	Description         string                `xml:"description,omitempty"`
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+// GetMessageType returns the type of the message
+func (m MosObjCreate) GetMessageType() string {
+	return "mosObjCreate"
+}
+
+// MosItemReplace represents a request to replace an item in a story (Profile 3)
+// Per XSD: roID, storyID, item
+type MosItemReplace struct {
+	XMLName xml.Name        `xml:"mosItemReplace"`
+	ROID    string          `xml:"roID"`
+	StoryID string          `xml:"storyID"`
+	Item    MosItemReplItem `xml:"item"`
+}
+
+// GetMessageType returns the type of the message
+func (m MosItemReplace) GetMessageType() string {
+	return "mosItemReplace"
+}
+
+// MosItemReplItem represents the item element within mosItemReplace (Profile 3)
+// Per XSD: itemID, itemSlug, objID, mosID, mosPlugInID, mosAbstract, objPaths,
+// itemChannel, itemEdStart, itemEdDur, itemUserTimingDur, itemTrigger, macroIn, macroOut, mosExternalMetadata[]
+type MosItemReplItem struct {
+	XMLName             xml.Name              `xml:"item"`
+	ItemID              string                `xml:"itemID"`
+	ItemSlug            string                `xml:"itemSlug,omitempty"`
+	ObjID               string                `xml:"objID,omitempty"`
+	MosID               string                `xml:"mosID,omitempty"`
+	MosPlugInID         string                `xml:"mosPlugInID,omitempty"`
+	MosAbstract         string                `xml:"mosAbstract,omitempty"`
+	ObjPaths            *ObjPaths             `xml:"objPaths,omitempty"`
+	ItemChannel         string                `xml:"itemChannel,omitempty"`
+	ItemEdStart         int                   `xml:"itemEdStart,omitempty"`
+	ItemEdDur           int                   `xml:"itemEdDur,omitempty"`
+	ItemUserTimingDur   int                   `xml:"itemUserTimingDur,omitempty"`
+	ItemTrigger         string                `xml:"itemTrigger,omitempty"`
+	MacroIn             string                `xml:"macroIn,omitempty"`
+	MacroOut            string                `xml:"macroOut,omitempty"`
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+// MosReqSearchableSchema represents a request for the searchable schema (Profile 3)
+// Per XSD: optional username attribute, empty body
+type MosReqSearchableSchema struct {
+	XMLName  xml.Name `xml:"mosReqSearchableSchema"`
+	Username string   `xml:"username,attr,omitempty"`
+}
+
+// GetMessageType returns the type of the message
+func (m MosReqSearchableSchema) GetMessageType() string {
+	return "mosReqSearchableSchema"
+}
+
+// MosListSearchableSchema represents the searchable schema response (Profile 3)
+// Per XSD: mosSchema content, optional username attribute
+type MosListSearchableSchema struct {
+	XMLName   xml.Name `xml:"mosListSearchableSchema"`
+	Username  string   `xml:"username,attr,omitempty"`
+	MosSchema string   `xml:"mosSchema"`
+}
+
+// GetMessageType returns the type of the message
+func (m MosListSearchableSchema) GetMessageType() string {
+	return "mosListSearchableSchema"
 }

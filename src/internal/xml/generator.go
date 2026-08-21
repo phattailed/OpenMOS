@@ -161,3 +161,31 @@ func CreateMosObjAck(objID string, objRev int, status, statusDescription string)
 		StatusDescription: statusDescription,
 	}
 }
+
+// --- Profile 2 generators ---
+
+// CreateROAck creates a running order acknowledgment message (Profile 2)
+func CreateROAck(roID, roStatus string, stories []ROAckStory) ROAck {
+	return ROAck{
+		ID:      roID,
+		Status:  roStatus,
+		Stories: stories,
+	}
+}
+
+// CreateROListAll creates a roListAll response message (Profile 2)
+func CreateROListAll(items []ROListAllItem) ROListAll {
+	return ROListAll{
+		ROs: items,
+	}
+}
+
+// --- Profile 3 generators ---
+
+// CreateMosListSearchableSchema creates a mosListSearchableSchema response (Profile 3)
+func CreateMosListSearchableSchema(username, mosSchema string) MosListSearchableSchema {
+	return MosListSearchableSchema{
+		Username:  username,
+		MosSchema: mosSchema,
+	}
+}
