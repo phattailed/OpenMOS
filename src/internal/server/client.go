@@ -256,6 +256,14 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	case xml.MOSAck:
 		err = c.handleMOSAck(ctx, msg)
 
+	// Profile 4: Advanced RO/Content List Workflow
+	case xml.ROElementAction:
+		err = c.handleROElementAction(ctx, msg)
+	case xml.ROReadyToAir:
+		err = c.handleROReadyToAir(ctx, msg)
+	case xml.ROElementStat:
+		err = c.handleROElementStat(ctx, msg)
+
 	// Story messages
 	case xml.NCSReqStoryAction:
 		err = c.handleNCSReqStoryAction(ctx, msg)

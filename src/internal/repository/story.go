@@ -114,3 +114,18 @@ func (r *MongoStoryRepository) ListByRunningOrder(ctx context.Context, roID stri
 
 	return stories, nil
 }
+
+// DeleteMultiple deletes multiple stories by their IDs
+func (r *MongoStoryRepository) DeleteMultiple(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	filter := bson.M{"_id": bson.M{"$in": ids}}
+	_, err := r.collection.DeleteMany(ctx, filter)
+	if err != nil {
+		return fmt.Errorf("failed to delete multiple stories: %w", err)
+	}
+
+	return nil
+}

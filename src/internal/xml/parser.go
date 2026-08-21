@@ -302,6 +302,34 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		message = mosListSearchableSchema
 		p.buffer = remaining
 
+	// Profile 4: Advanced RO/Content List Workflow
+	case "roElementAction":
+		var roElementAction ROElementAction
+		remaining, err := p.parseMessage(&roElementAction)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roElementAction
+		p.buffer = remaining
+
+	case "roReadyToAir":
+		var roReadyToAir ROReadyToAir
+		remaining, err := p.parseMessage(&roReadyToAir)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roReadyToAir
+		p.buffer = remaining
+
+	case "roElementStat":
+		var roElementStat ROElementStat
+		remaining, err := p.parseMessage(&roElementStat)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roElementStat
+		p.buffer = remaining
+
 	default:
 		return nil, p.buffer, fmt.Errorf("%w: %s", ErrUnknownMessage, messageType)
 	}
