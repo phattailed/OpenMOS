@@ -3,3 +3,4 @@
 .vscode/launch.json
 src/config.yaml
 res/desktop.ini
+.agents
