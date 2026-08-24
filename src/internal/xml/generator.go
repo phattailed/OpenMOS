@@ -101,7 +101,7 @@ func CreateListMachInfo(cfg *config.Config) ListMachInfo {
 	for i := 0; i < 8; i++ {
 		profiles[i] = MosProfile{
 			Number: i,
-			Value:  true,
+			Value:  i == 0, // Only Profile 0 is actually implemented and tested
 		}
 	}
 

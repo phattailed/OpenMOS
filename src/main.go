@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"airshift/openmos/internal/config"
-	"airshift/openmos/internal/db"
 	"airshift/openmos/internal/events"
 	"airshift/openmos/internal/repository"
 	"airshift/openmos/internal/server"
@@ -100,29 +99,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Connect to MongoDB
-	log.Info("Connecting to MongoDB...")
-	database, err := db.NewMongoDB(cfg)
-	if err != nil {
-		// Capture the error in Sentry and then log and exit
-		log.CaptureException(err, map[string]string{
-			"component": "database",
-			"action":    "connect",
-		}, nil)
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
-	}
-
-	defer func() {
-		if err := database.Close(context.Background()); err != nil {
-			log.Errorf("Error disconnecting from MongoDB: %v", err)
-		}
-	}()
-
-	// Create repositories
-	runningOrderRepo := repository.NewMongoRunningOrderRepository(database)
-	storyRepo := repository.NewMongoStoryRepository(database)
-	itemRepo := repository.NewMongoItemRepository(database)
-	objectRepo := repository.NewMongoObjectRepository(database)
+	// Create in-memory repositories (replace with MongoDB repos when a database is available)
+	runningOrderRepo := repository.NewMemoryRunningOrderRepository()
+	storyRepo := repository.NewMemoryStoryRepository()
+	itemRepo := repository.NewMemoryItemRepository()
+	objectRepo := repository.NewMemoryObjectRepository()
 
 	// Create event bus for pub-sub messaging
 	eventBus := events.NewEventBus()
@@ -130,44 +111,26 @@ func main() {
 	// Create service
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
 
-	// Create and start TCP server
-	log.Info("Starting TCP server...")
-	tcpServer, err := server.NewTCPServer(cfg, mosService, eventBus)
-	if err != nil {
-		log.CaptureException(err, map[string]string{
-			"component": "server",
-			"action":    "start",
-		}, nil)
-		log.Fatalf("Failed to create TCP server: %v", err)
-	}
+	// Create dedup store
+	dedupStore := server.NewMemoryDedupStore()
+
+	// Create and start WebSocket server
+	log.Info("Starting WebSocket server...")
+	wsServer := server.NewWSServer(cfg, mosService, eventBus, dedupStore)
 
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start server monitoring
-	serverSpan := log.StartTransaction("server_lifecycle", "server")
-	serverSpan.SetTag("server_address", cfg.GetServerAddress())
-
 	// Start server in a goroutine
 	go func() {
-		defer serverSpan.Finish()
-
-		if err := tcpServer.Start(ctx); err != nil {
-			// Set error status on span
-			serverSpan.Status = sentry.SpanStatusInternalError
-
-			// Log and capture the error
-			log.CaptureException(err, map[string]string{
-				"component": "server",
-				"action":    "run",
-			}, nil)
-			log.Errorf("Server error: %v", err)
+		if err := wsServer.Start(ctx); err != nil {
+			log.Errorf("WebSocket server error: %v", err)
 			cancel()
 		}
 	}()
 
-	log.Infof("OpenMOS server is running on %s", cfg.GetServerAddress())
+	log.Infof("OpenMOS WebSocket server is running on %s", cfg.GetWebSocketAddress())
 
 	// Wait for shutdown signal
 	sig := <-sigCh
@@ -175,6 +138,7 @@ func main() {
 
 	// Cancel the server context to start the graceful shutdown
 	cancel()
+	wsServer.Shutdown()
 
 	// Flush Sentry events before exiting
 	defer sentry.Flush(2 * time.Second)

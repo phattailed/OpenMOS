@@ -28,6 +28,13 @@ type Config struct {
 		ShutdownTimeout time.Duration
 	}
 
+	// WebSocket server configuration
+	WebSocket struct {
+		Port        int
+		TLSCertFile string
+		TLSKeyFile  string
+	}
+
 	// MongoDB configuration
 	Mongo struct {
 		URI      string
@@ -39,6 +46,8 @@ type Config struct {
 	MOS struct {
 		// MOS ID of this server, used in MOS messages
 		ID string
+		// Expected NCS ID for validation
+		NcsID string
 		// Heartbeat interval
 		HeartbeatInterval time.Duration
 		// Timeout for client connections without heartbeats
@@ -132,6 +141,17 @@ func LoadConfig() (*Config, error) {
 		config.Server.ShutdownTimeout = getEnvAsDuration("SERVER_SHUTDOWN_TIMEOUT", getDefaultDuration(config.Server.ShutdownTimeout, 30*time.Second))
 	}
 
+	// WebSocket config
+	if envVal := getEnv("WS_PORT", ""); envVal != "" || !yamlLoaded {
+		config.WebSocket.Port = getEnvAsInt("WS_PORT", getDefaultInt(config.WebSocket.Port, 10541))
+	}
+	if envVal := getEnv("WS_TLS_CERT_FILE", ""); envVal != "" {
+		config.WebSocket.TLSCertFile = getEnv("WS_TLS_CERT_FILE", "")
+	}
+	if envVal := getEnv("WS_TLS_KEY_FILE", ""); envVal != "" {
+		config.WebSocket.TLSKeyFile = getEnv("WS_TLS_KEY_FILE", "")
+	}
+
 	// MongoDB config
 	if envVal := getEnv("MONGODB_URI", ""); envVal != "" || !yamlLoaded {
 		config.Mongo.URI = getEnv("MONGODB_URI", getDefaultString(config.Mongo.URI, "mongodb://localhost:27017"))
@@ -146,6 +166,9 @@ func LoadConfig() (*Config, error) {
 	// MOS config
 	if envVal := getEnv("MOS_ID", ""); envVal != "" || !yamlLoaded {
 		config.MOS.ID = getEnv("MOS_ID", getDefaultString(config.MOS.ID, "OpenMOS_Server"))
+	}
+	if envVal := getEnv("MOS_NCS_ID", ""); envVal != "" || !yamlLoaded {
+		config.MOS.NcsID = getEnv("MOS_NCS_ID", getDefaultString(config.MOS.NcsID, ""))
 	}
 	if envVal := getEnv("MOS_HEARTBEAT_INTERVAL", ""); envVal != "" || !yamlLoaded {
 		config.MOS.HeartbeatInterval = getEnvAsDuration("MOS_HEARTBEAT_INTERVAL", getDefaultDuration(config.MOS.HeartbeatInterval, 30*time.Second))
@@ -266,6 +289,9 @@ func GenerateDefaultConfig(filePath string) error {
 	config.Server.ReadTimeout = 5 * time.Second
 	config.Server.WriteTimeout = 5 * time.Second
 	config.Server.ShutdownTimeout = 30 * time.Second
+
+	// WebSocket config
+	config.WebSocket.Port = 10541
 
 	// MongoDB config
 	config.Mongo.URI = "mongodb://localhost:27017"
@@ -400,4 +426,9 @@ func getDefaultDuration(current, defaultValue time.Duration) time.Duration {
 // GetServerAddress returns the full server address string
 func (c *Config) GetServerAddress() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
+}
+
+// GetWebSocketAddress returns the WebSocket listen address.
+func (c *Config) GetWebSocketAddress() string {
+	return fmt.Sprintf("%s:%d", c.Server.Host, c.WebSocket.Port)
 }
