@@ -25,6 +25,12 @@ func GenerateEnvelope(mosID, ncsID, messageID string, message MOSMessage) ([]byt
 	switch value := message.(type) {
 	case ROAck:
 		envelope.ROAck = &value
+	case Heartbeat:
+		envelope.Heartbeat = &value
+	case ListMachInfo:
+		envelope.ListMachInfo = &value
+	case KeepAlive:
+		envelope.KeepAlive = &value
 	default:
 		return nil, fmt.Errorf("unsupported enveloped message type %T", message)
 	}
@@ -42,6 +48,10 @@ func CreateHeartbeat(source string, requestID string) Heartbeat {
 		RequestID: requestID,
 		Timestamp: Now(),
 		Source:    source,
+		// The spec defines <!ELEMENT heartbeat (time)>, so time is required:
+		// "Each heartbeat message contains a time stamp. This gives each
+		// application the opportunity to synchronize time of day."
+		Time: Now(),
 	}
 }
 
@@ -51,6 +61,10 @@ func CreateHeartbeatResponse(source string, requestID string) Heartbeat {
 		RequestID: requestID,
 		Timestamp: Now(),
 		Source:    source,
+		// The spec defines <!ELEMENT heartbeat (time)>, so time is required:
+		// "Each heartbeat message contains a time stamp. This gives each
+		// application the opportunity to synchronize time of day."
+		Time: Now(),
 	}
 }
 

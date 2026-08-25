@@ -97,10 +97,14 @@ func TestWSDuplicateRoCreate(t *testing.T) {
 		t.Fatalf("write 1 failed: %v", err)
 	}
 
-	// Read roAck
+	// Read roAck (emitted as a UCS-2BE binary frame)
 	_, data, err := conn.Read(connCtx)
 	if err != nil {
 		t.Fatalf("read 1 failed: %v", err)
+	}
+	data, err = mosxml.DecodeUCS2BE(data)
+	if err != nil {
+		t.Fatalf("decode 1 failed: %v", err)
 	}
 	if !strings.Contains(string(data), "roAck") {
 		t.Fatalf("expected roAck, got: %s", string(data))
@@ -172,10 +176,14 @@ func TestWSMessageIDConflict(t *testing.T) {
 		t.Fatalf("write 2 failed: %v", err)
 	}
 
-	// Should get a NACK
+	// Should get a NACK (emitted as a UCS-2BE binary frame)
 	_, data, err := conn.Read(connCtx)
 	if err != nil {
 		t.Fatalf("read 2 failed: %v", err)
+	}
+	data, err = mosxml.DecodeUCS2BE(data)
+	if err != nil {
+		t.Fatalf("decode 2 failed: %v", err)
 	}
 	if !strings.Contains(string(data), "NACK") {
 		t.Errorf("expected NACK, got: %s", string(data))
