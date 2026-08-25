@@ -198,6 +198,24 @@ func main() {
 		log.Info("MOS 4 WebSocket transport disabled by configuration")
 	}
 
+	// MOS 4.0 outbound WebSocket client (passive mode). OpenMOS is otherwise
+	// listener-only; this dials a configured peer so an inside-firewall device
+	// can reach an NCS without exposing inbound ports. It reconnects with backoff
+	// on any drop, per the spec's "as quickly as possible".
+	if cfg.WSClient.Enabled {
+		log.Info("Starting MOS 4 WebSocket client...")
+		wsClient := server.NewWSClient(cfg)
+		go func() {
+			if startErr := wsClient.Start(ctx); startErr != nil && startErr != context.Canceled {
+				log.Errorf("WebSocket client error: %v", startErr)
+			}
+		}()
+		log.Infof("MOS 4 WebSocket client dialing peer %s (channel=%s passive=%t)",
+			cfg.WSClient.PeerURL, cfg.WSClient.Channel, cfg.WSClient.Passive)
+	} else {
+		log.Info("MOS 4 WebSocket client disabled by configuration")
+	}
+
 	// Wait for shutdown signal
 	sig := <-sigCh
 	log.Infof("Received signal: %v", sig)

@@ -37,6 +37,25 @@ type Config struct {
 		TLSKeyFile  string
 	}
 
+	// WSClient configuration (MOS 4.0 outbound client).
+	//
+	// OpenMOS is otherwise listener-only. This block drives the outbound MOS 4
+	// WebSocket client, which dials a configured peer. It is the primary reason
+	// MOS 4.0 passive mode exists: an inside-firewall device connects out so no
+	// inbound ports need to be opened or exposed. Credentials are read here from
+	// config/env only and are never logged.
+	WSClient struct {
+		Enabled            bool
+		PeerURL            string
+		Channel            string
+		Passive            bool
+		Username           string
+		Password           string
+		InsecureSkipVerify bool
+		ReconnectInitial   time.Duration
+		ReconnectMax       time.Duration
+	}
+
 	// Storage backend selection: "memory" or "mongo"
 	Storage struct {
 		Backend string
@@ -179,6 +198,36 @@ func LoadConfig() (*Config, error) {
 	}
 	if envVal := getEnv("WS_TLS_KEY_FILE", ""); envVal != "" {
 		config.WebSocket.TLSKeyFile = getEnv("WS_TLS_KEY_FILE", "")
+	}
+
+	// WSClient config (MOS 4.0 outbound client). Disabled by default: OpenMOS is
+	// listener-only unless a peer URL is configured and the client turned on.
+	if envVal := getEnv("WS_CLIENT_ENABLED", ""); envVal != "" || !yamlLoaded {
+		config.WSClient.Enabled = getEnvAsBool("WS_CLIENT_ENABLED", getDefaultBool(config.WSClient.Enabled, false))
+	}
+	if envVal := getEnv("WS_CLIENT_PEER_URL", ""); envVal != "" {
+		config.WSClient.PeerURL = getEnv("WS_CLIENT_PEER_URL", config.WSClient.PeerURL)
+	}
+	if envVal := getEnv("WS_CLIENT_CHANNEL", ""); envVal != "" || !yamlLoaded {
+		config.WSClient.Channel = getEnv("WS_CLIENT_CHANNEL", getDefaultString(config.WSClient.Channel, "ro"))
+	}
+	if envVal := getEnv("WS_CLIENT_PASSIVE", ""); envVal != "" || !yamlLoaded {
+		config.WSClient.Passive = getEnvAsBool("WS_CLIENT_PASSIVE", getDefaultBool(config.WSClient.Passive, false))
+	}
+	if envVal := getEnv("WS_CLIENT_USERNAME", ""); envVal != "" {
+		config.WSClient.Username = getEnv("WS_CLIENT_USERNAME", config.WSClient.Username)
+	}
+	if envVal := getEnv("WS_CLIENT_PASSWORD", ""); envVal != "" {
+		config.WSClient.Password = getEnv("WS_CLIENT_PASSWORD", config.WSClient.Password)
+	}
+	if envVal := getEnv("WS_CLIENT_INSECURE_SKIP_VERIFY", ""); envVal != "" || !yamlLoaded {
+		config.WSClient.InsecureSkipVerify = getEnvAsBool("WS_CLIENT_INSECURE_SKIP_VERIFY", getDefaultBool(config.WSClient.InsecureSkipVerify, false))
+	}
+	if envVal := getEnv("WS_CLIENT_RECONNECT_INITIAL", ""); envVal != "" || !yamlLoaded {
+		config.WSClient.ReconnectInitial = getEnvAsDuration("WS_CLIENT_RECONNECT_INITIAL", getDefaultDuration(config.WSClient.ReconnectInitial, 500*time.Millisecond))
+	}
+	if envVal := getEnv("WS_CLIENT_RECONNECT_MAX", ""); envVal != "" || !yamlLoaded {
+		config.WSClient.ReconnectMax = getEnvAsDuration("WS_CLIENT_RECONNECT_MAX", getDefaultDuration(config.WSClient.ReconnectMax, 30*time.Second))
 	}
 
 	// Storage backend
