@@ -363,7 +363,7 @@ func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mos
 	}
 
 	// Persist via service layer
-	err := s.service.ProcessRunningOrderInfo(ctx, roInfo)
+	err := s.service.ProcessRunningOrderInfo(ctx, roInfo, env.MosID)
 	if err != nil {
 		logger.Errorf("Failed to persist roCreate: %v", err)
 		s.sendNack(ctx, sess, env.MessageID, "NACK", "persistence failure")
