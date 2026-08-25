@@ -23,6 +23,11 @@ type TCPServer struct {
 	eventBus   *events.EventBus
 	wg         sync.WaitGroup
 	shutdownCh chan struct{}
+	// dedup makes retried messageIDs idempotent. Shared across all connections
+	// so a retry that arrives on a reconnected socket is still recognised --
+	// which is the usual case, since the spec has the NCS reset the connection
+	// before retrying.
+	dedup DedupStore
 }
 
 // NewTCPServer creates a new TCP server instance
@@ -35,6 +40,7 @@ func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *
 
 	server := &TCPServer{
 		listener:   listener,
+		dedup:      NewMemoryDedupStore(),
 		clients:    make(map[string]*ClientConnection),
 		service:    mosService,
 		config:     cfg,

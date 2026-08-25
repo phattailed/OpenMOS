@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	xmlstd "encoding/xml"
 	"fmt"
 	"io"
 	"net"
@@ -306,17 +307,23 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 
 type envelopeContextKey struct{}
 
-func (c *ClientConnection) writeMessage(ctx context.Context, message xml.MOSMessage) error {
+// buildMessage wraps a message in the MOS envelope for the current request,
+// returning the bytes that would be sent.
+func (c *ClientConnection) buildMessage(ctx context.Context, message xml.MOSMessage) ([]byte, error) {
 	envelope, ok := ctx.Value(envelopeContextKey{}).(xml.Envelope)
 	if !ok {
-		return fmt.Errorf("MOS envelope context required")
+		return nil, fmt.Errorf("MOS envelope context required")
 	}
 
 	ncsID := envelope.NcsID
 	if c.config.MOS.NCSID != "" {
 		ncsID = c.config.MOS.NCSID
 	}
-	data, err := xml.GenerateEnvelope(c.config.MOS.ID, ncsID, envelope.MessageID, message)
+	return xml.GenerateEnvelope(c.config.MOS.ID, ncsID, envelope.MessageID, message)
+}
+
+func (c *ClientConnection) writeMessage(ctx context.Context, message xml.MOSMessage) error {
+	data, err := c.buildMessage(ctx, message)
 	if err != nil {
 		return err
 	}
@@ -460,9 +467,47 @@ func (c *ClientConnection) handleReqRunningOrder(ctx context.Context, req xml.Re
 	return c.Write(data)
 }
 
-// handleRunningOrderInfo processes a running order create/update message
+// handleRunningOrderInfo processes a running order create/update message.
+//
+// Retried messageIDs are made idempotent: a re-delivery replays the original ack
+// without applying the operation again, and a messageID reused with different
+// content is rejected. See MOS 4.0 §4.1.6 for why this matters -- an NCS that
+// times out resends the same request, and applying it twice "will lead to an
+// unwanted result in many cases".
 func (c *ClientConnection) handleRunningOrderInfo(ctx context.Context, roInfo xml.RunningOrderInfo) error {
 	logger.Infof("Received running order info from client %s for RO %s", c.id, roInfo.ID)
+
+	envelope, hasEnvelope := ctx.Value(envelopeContextKey{}).(xml.Envelope)
+
+	// MOS 2.6 and 2.8.x envelopes have no messageID, so there is nothing to
+	// deduplicate against. Process normally rather than failing.
+	dedupable := hasEnvelope && envelope.MessageID != "" && c.server != nil && c.server.dedup != nil
+
+	if dedupable {
+		// Hash the operation only, not the envelope, so a re-delivery that differs
+		// in envelope whitespace is a duplicate rather than a conflict. Marshalling
+		// the parsed payload normalises formatting for free.
+		content, err := xmlstd.Marshal(roInfo)
+		if err != nil {
+			return fmt.Errorf("failed to hash running order for deduplication: %w", err)
+		}
+
+		switch result := c.server.dedup.Check(c.dedupScope(), envelope.NcsID, envelope.MessageID, content); result {
+		case DedupDuplicate:
+			logger.Infof("Re-delivery of messageID=%s from ncsID=%s; replaying the original ack",
+				envelope.MessageID, envelope.NcsID)
+			if original, ok := c.server.dedup.Response(c.dedupScope(), envelope.NcsID, envelope.MessageID); ok {
+				return c.Write(original)
+			}
+			// Seen, but no response was recorded -- the first attempt must have
+			// failed before replying. Fall through and process it.
+			logger.Warningf("No stored ack for messageID=%s; processing as new", envelope.MessageID)
+		case DedupConflict:
+			logger.Errorf("Message-ID conflict on messageID=%s from ncsID=%s: same ID, different content",
+				envelope.MessageID, envelope.NcsID)
+			return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "NACK: messageID conflict, same ID with different content", nil))
+		}
+	}
 
 	// Process the running order creation/update
 	err := c.server.service.ProcessRunningOrderInfo(ctx, roInfo, c.config.MOS.ID)
@@ -471,8 +516,22 @@ func (c *ClientConnection) handleRunningOrderInfo(ctx context.Context, roInfo xm
 		return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "ERROR", nil))
 	}
 
-	// Send acknowledgment
-	return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "OK", nil))
+	// Acknowledge only after the running order is persisted.
+	ack, err := c.buildMessage(ctx, xml.CreateROAck(roInfo.ID, "OK", nil))
+	if err != nil {
+		return err
+	}
+	if dedupable {
+		c.server.dedup.Remember(c.dedupScope(), envelope.NcsID, envelope.MessageID, ack)
+	}
+	return c.Write(ack)
+}
+
+// dedupScope namespaces dedup keys for this transport. The WebSocket transport
+// runs concurrently and each sender increments its own messageID sequence per
+// channel, so the same value can legitimately mean different things.
+func (c *ClientConnection) dedupScope() string {
+	return "tcp:ro"
 }
 
 // handleMOSAck processes an acknowledgment message

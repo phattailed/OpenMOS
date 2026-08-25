@@ -84,16 +84,29 @@ func TestReconnectNoDuplicate(t *testing.T) {
 		t.Fatalf("write 2 failed: %v", err)
 	}
 
-	// Should be silently discarded (duplicate detection).
-	// Use a short sleep instead of a read timeout, because nhooyr.io/websocket
-	// closes the connection when the read context expires.
-	time.Sleep(300 * time.Millisecond)
+	// A retry must be answered with the original ack, not with silence. The spec
+	// has the sender retrying "at intervals until a response is received", so
+	// discarding a re-delivery quietly would simply invite another retry.
+	_, replay, err := conn2.Read(connCtx2)
+	if err != nil {
+		t.Fatalf("read of replayed ack failed: %v", err)
+	}
+	replay, err = mosxml.DecodeUCS2BE(replay)
+	if err != nil {
+		t.Fatalf("decode of replayed ack failed: %v", err)
+	}
+	if !strings.Contains(string(replay), "roAck") || !strings.Contains(string(replay), "RO_RECONNECT") {
+		t.Fatalf("expected the original ack replayed for RO_RECONNECT, got: %s", string(replay))
+	}
 
 	// Send a NEW message to verify the connection is still functional
 	newMsg := mosxml.WrapEnvelope("OPENMOS_TEST", "NCS_001", "reconnect-msg-2",
 		[]byte(`<roCreate><roID>RO_RECONNECT_2</roID><roSlug>After Reconnect</roSlug></roCreate>`))
-	err = conn2.Write(connCtx2, websocket.MessageText, newMsg)
+	newMsgBinary, err := mosxml.EncodeUCS2BE(newMsg)
 	if err != nil {
+		t.Fatalf("encode 3 failed: %v", err)
+	}
+	if err := conn2.Write(connCtx2, websocket.MessageBinary, newMsgBinary); err != nil {
 		t.Fatalf("write 3 failed: %v", err)
 	}
 	_, data2, err := conn2.Read(connCtx2)
