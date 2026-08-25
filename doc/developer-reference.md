@@ -4,7 +4,14 @@ This document provides a comprehensive guide to the OpenMOS codebase, including 
 
 ## Overview
 
-OpenMOS is an implementation of the Media Object Server (MOS) Protocol 4.0 using TCP socket communication. It is designed to manage running orders, stories, items, and media objects for broadcast and media environments, with the goal of achieving compliance with MOS Profile 7.
+OpenMOS currently provides a receive-only MOS 2.8.4 tracer for `roCreate`, `roReplace`, `roStorySend`, and `roDelete` over TCP.
+
+### Beltware interoperability check
+
+On August 23, 2026, a disposable non-air Storytelling exchange delivered one `roCreate`, ten
+`roStorySend` messages, and one `roDelete`. After the envelope fix, every message was acknowledged,
+no unknown messages remained, and the delete left zero tracer records. The temporary Storytelling
+configuration and AWS tracer infrastructure were removed after the check.
 
 ## Technology Stack
 
@@ -13,7 +20,7 @@ OpenMOS is an implementation of the Media Object Server (MOS) Protocol 4.0 using
 | Language | Go | 1.24.1+ |
 | Database | MongoDB | 4.4+ |
 | Observability | Sentry | v0.31.1 |
-| Communication | TCP Sockets | Port 10540 |
+| Communication | TCP Sockets | Receive port 10541 |
 | Configuration | YAML | gopkg.in/yaml.v3 |
 
 ## Architecture
@@ -158,7 +165,7 @@ RunningOrder (1) ──► (N) Story ──► (N) Item ──► MOSObject
 
 ## Message Flow
 
-1. **Client Connection**: TCP client connects to server on port 10540
+1. **Client Connection**: NCS connects to the server on TCP port 10541
 2. **Heartbeat Monitoring**: Client heartbeat is tracked; timeout triggers disconnection
 3. **Message Reception**: XML messages are parsed and validated
 4. **Service Processing**: Business logic handles operations (create/update/replace)
@@ -277,7 +284,7 @@ app:
 
 server:
     host: 0.0.0.0              # Listen address
-    port: 10540                # TCP port (MOS default)
+    port: 10541                # NCS-to-MOS receive port
     readtimeout: 5s            # Read timeout duration
     writetimeout: 5s           # Write timeout duration
     shutdowntimeout: 30s       # Graceful shutdown timeout
@@ -289,6 +296,7 @@ mongo:
 
 mos:
     id: mos01.station.com      # MOS server identifier
+    ncsid: ncs.station.com     # Accepted NCS identifier
     heartbeatinterval: 30s     # Heartbeat interval
     clienttimeout: 2m0s        # Client timeout before disconnect
 

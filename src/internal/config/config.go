@@ -39,6 +39,8 @@ type Config struct {
 	MOS struct {
 		// MOS ID of this server, used in MOS messages
 		ID string
+		// NCS ID accepted by the receive-only connection
+		NCSID string
 		// Heartbeat interval
 		HeartbeatInterval time.Duration
 		// Timeout for client connections without heartbeats
@@ -120,7 +122,7 @@ func LoadConfig() (*Config, error) {
 		config.Server.Host = getEnv("SERVER_HOST", getDefaultString(config.Server.Host, "0.0.0.0"))
 	}
 	if envVal := getEnv("SERVER_PORT", ""); envVal != "" || !yamlLoaded {
-		config.Server.Port = getEnvAsInt("SERVER_PORT", getDefaultInt(config.Server.Port, 10540)) // Default MOS port
+		config.Server.Port = getEnvAsInt("SERVER_PORT", getDefaultInt(config.Server.Port, 10541)) // NCS-to-MOS receive port
 	}
 	if envVal := getEnv("SERVER_READ_TIMEOUT", ""); envVal != "" || !yamlLoaded {
 		config.Server.ReadTimeout = getEnvAsDuration("SERVER_READ_TIMEOUT", getDefaultDuration(config.Server.ReadTimeout, 5*time.Second))
@@ -146,6 +148,9 @@ func LoadConfig() (*Config, error) {
 	// MOS config
 	if envVal := getEnv("MOS_ID", ""); envVal != "" || !yamlLoaded {
 		config.MOS.ID = getEnv("MOS_ID", getDefaultString(config.MOS.ID, "OpenMOS_Server"))
+	}
+	if envVal := getEnv("NCS_ID", ""); envVal != "" || !yamlLoaded {
+		config.MOS.NCSID = getEnv("NCS_ID", config.MOS.NCSID)
 	}
 	if envVal := getEnv("MOS_HEARTBEAT_INTERVAL", ""); envVal != "" || !yamlLoaded {
 		config.MOS.HeartbeatInterval = getEnvAsDuration("MOS_HEARTBEAT_INTERVAL", getDefaultDuration(config.MOS.HeartbeatInterval, 30*time.Second))
@@ -262,7 +267,7 @@ func GenerateDefaultConfig(filePath string) error {
 
 	// Server config
 	config.Server.Host = "0.0.0.0"
-	config.Server.Port = 10540 // Default MOS port
+	config.Server.Port = 10541 // NCS-to-MOS receive port
 	config.Server.ReadTimeout = 5 * time.Second
 	config.Server.WriteTimeout = 5 * time.Second
 	config.Server.ShutdownTimeout = 30 * time.Second
@@ -274,6 +279,7 @@ func GenerateDefaultConfig(filePath string) error {
 
 	// MOS config
 	config.MOS.ID = "OpenMOS_Server"
+	config.MOS.NCSID = "ncs.station.com"
 	config.MOS.HeartbeatInterval = 30 * time.Second
 	config.MOS.ClientTimeout = 2 * time.Minute
 	config.MOS.Manufacturer = "OpenMOS Project"

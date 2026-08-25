@@ -23,22 +23,11 @@ func (c *ClientConnection) handleROReplace(ctx context.Context, roReplace xml.RO
 	err := c.server.service.ReplaceRunningOrder(ctx, roReplace)
 	if err != nil {
 		logger.Errorf("Failed to replace running order %s: %v", roReplace.ID, err)
-		ack := xml.CreateROAck(roReplace.ID, "NACK", nil)
-		data, marshalErr := xml.GenerateMessage(ack)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		return c.Write(data)
+		return c.writeMessage(ctx, xml.CreateROAck(roReplace.ID, "ERROR", nil))
 	}
 
 	// Send success ack
-	ack := xml.CreateROAck(roReplace.ID, "ACK", nil)
-	data, err := xml.GenerateMessage(ack)
-	if err != nil {
-		return err
-	}
-
-	return c.Write(data)
+	return c.writeMessage(ctx, xml.CreateROAck(roReplace.ID, "OK", nil))
 }
 
 // handleRODelete processes a roDelete message (Profile 2)
@@ -54,22 +43,10 @@ func (c *ClientConnection) handleRODelete(ctx context.Context, roDelete xml.RODe
 	err := c.server.service.DeleteRunningOrder(ctx, roDelete.ID)
 	if err != nil {
 		logger.Errorf("Failed to delete running order %s: %v", roDelete.ID, err)
-		ack := xml.CreateROAck(roDelete.ID, "NACK", nil)
-		data, marshalErr := xml.GenerateMessage(ack)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		return c.Write(data)
+		return c.writeMessage(ctx, xml.CreateROAck(roDelete.ID, "ERROR", nil))
 	}
 
-	// Send success ack
-	ack := xml.CreateROAck(roDelete.ID, "ACK", nil)
-	data, err := xml.GenerateMessage(ack)
-	if err != nil {
-		return err
-	}
-
-	return c.Write(data)
+	return c.writeMessage(ctx, xml.CreateROAck(roDelete.ID, "OK", nil))
 }
 
 // handleROMetadataReplace processes a roMetadataReplace message (Profile 2)

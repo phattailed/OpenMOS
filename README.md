@@ -2,30 +2,26 @@
 
 ![MOS Project Official Logo](/res/mosproject-logo.jpg)
 
-An implementation of Media Object Server using MOS Protocol 4.0 with TCP socket communication.
-The project will aim at compliance with Profile 7.
+An implementation of a Media Object Server. The current tested tracer accepts MOS 2.8.4
+`roCreate`, `roReplace`, `roStorySend`, and `roDelete` messages from an NCS over TCP.
 
 > [!NOTE]
-> The MOS protocol specification requires TCP socket connections (default port 10540). At initial stages, message attributes differ from the protocol specification due to practical reasons.
+> The current scope is the receive-only NCS-to-MOS connection on port 10541. MOS 4 WebSocket
+> transport and MOS-to-NCS connections are not implemented.
 
 Implementation status:
 * [x]  Core
 * [x]  MongoDB Data Repository
 * [x]  Sentry Observability
-* [x]  TCP Socket Server
-* [x]  Profile 0 - Basic Communication
-* [x]  Profile 1 - Basic Object Based Workflow
-* [x]  Profile 2 - Basic Running Order / Content List Workflow
-* [x]  Profile 3 - Advanced Object Based Workflow
-* [x]  Profile 4 - Advanced RO/Content List Workflow
-* [x]  Profile 5 - Item Control
-* [x]  Profile 6 - MOS Redirection
-* [x]  Profile 7 - MOS RO/Content List Modification
+* [x]  TCP receive server
+* [x]  MOS 2.8.4 receive tracer - `roCreate`, `roReplace`, `roStorySend`, and `roDelete`
+* [ ]  Other MOS profiles and message directions
+* [ ]  MOS 4 WebSocket transport
 
 ## Architecture
 
 OpenMOS implements the MOS protocol using:
-- **TCP Socket Server**: Maintains persistent connections with MOS clients (NCS systems)
+- **TCP Socket Server**: Receives NCS connections on port 10541
 - **MongoDB**: Stores running orders, stories, items, and MOS objects
 - **Sentry**: Provides error tracking and performance monitoring
 
@@ -57,7 +53,7 @@ app:
     environment: development
 server:
     host: 0.0.0.0
-    port: 10540
+    port: 10541
     readtimeout: 5s
     writetimeout: 5s
     shutdowntimeout: 30s
@@ -67,6 +63,7 @@ mongo:
     timeout: 10s
 mos:
     id: mos01.station.com
+    ncsid: ncs.station.com
     heartbeatinterval: 30s
     clienttimeout: 2m0s
 logging:
@@ -109,7 +106,7 @@ go build -o openmos
 
 - Go 1.24.1 or later
 - MongoDB 4.4 or later
-- Network access on port 10540 (default MOS port)
+- Network access from the NCS to port 10541
 
 ## License
 

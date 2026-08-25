@@ -9,8 +9,7 @@ import (
 	"github.com/getsentry/sentry-go"
 )
 
-// handleROStorySend processes a standalone roStorySend message (Profile 6)
-// MOS sends a story body to the NCS
+// handleROStorySend processes a received roStorySend message.
 func (c *ClientConnection) handleROStorySend(ctx context.Context, msg xml.ROStorySend) error {
 	span := sentry.StartSpan(ctx, "handle_ro_story_send")
 	span.SetTag("ro_id", msg.ROID)
@@ -25,22 +24,10 @@ func (c *ClientConnection) handleROStorySend(ctx context.Context, msg xml.ROStor
 	if err != nil {
 		logger.Errorf("Failed to process roStorySend for story %s in RO %s: %v",
 			msg.StoryID, msg.ROID, err)
-		ack := xml.CreateROAck(msg.ROID, "NACK", nil)
-		data, marshalErr := xml.GenerateMessage(ack)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		return c.Write(data)
+		return c.writeMessage(ctx, xml.CreateROAck(msg.ROID, "ERROR", nil))
 	}
 
-	// Send success ack
-	ack := xml.CreateROAck(msg.ROID, "ACK", nil)
-	data, err := xml.GenerateMessage(ack)
-	if err != nil {
-		return err
-	}
-
-	return c.Write(data)
+	return c.writeMessage(ctx, xml.CreateROAck(msg.ROID, "OK", nil))
 }
 
 // handleROReqStoryAction processes a roReqStoryAction message (Profile 6)

@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"airshift/openmos/internal/config"
-	"airshift/openmos/internal/events"
 	"airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
 
@@ -23,6 +24,7 @@ type ClientConnection struct {
 	server     *TCPServer // Forward declaration - TCPServer is defined in server.go
 	heartbeat  *xml.HeartbeatMonitor
 	parser     *xml.MessageParser
+	framer     *xml.UCS2BEFramer
 	closeChan  chan struct{}
 	closeOnce  sync.Once
 	writeMutex sync.Mutex
@@ -38,6 +40,7 @@ func NewClientConnection(conn net.Conn, server *TCPServer, cfg *config.Config) *
 		id:        clientID,
 		server:    server,
 		parser:    xml.NewMessageParser(),
+		framer:    xml.NewUCS2BEFramer(),
 		closeChan: make(chan struct{}),
 		config:    cfg,
 	}
@@ -62,28 +65,6 @@ func (c *ClientConnection) Start(ctx context.Context) {
 	monitorCtx, cancelMonitor := context.WithCancel(ctx)
 	defer cancelMonitor()
 	go c.heartbeat.Start(monitorCtx)
-
-	// Subscribe to relevant events if event bus is available
-	if c.server.eventBus != nil {
-		roEvents := c.server.eventBus.Subscribe(events.RunningOrderUpdated, 10)
-
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-c.closeChan:
-					return
-				case event, ok := <-roEvents:
-					if !ok {
-						return
-					}
-					// Send notification to this client
-					c.handleRunningOrderUpdate(ctx, event)
-				}
-			}
-		}()
-	}
 
 	// Create a Sentry span for this client connection
 	span := sentry.StartSpan(ctx, "client_connection")
@@ -125,25 +106,26 @@ func (c *ClientConnection) Start(ctx context.Context) {
 
 			// Process the data
 			if n > 0 {
-				c.parser.AppendData(buffer[:n])
+				if err := c.framer.Append(buffer[:n]); err != nil {
+					c.trackError(err, "parse", nil)
+					return
+				}
 
-				// Try to parse and handle complete messages
-				for c.parser.HasCompleteMessage() {
-					message, remaining, err := c.parser.Parse()
+				for {
+					frame, complete, err := c.framer.Next()
 					if err != nil {
-						if err == xml.ErrIncompleteXML {
-							// Wait for more data
-							break
-						}
-						// Get the current buffer content for the error details
-						bufferContent := string(buffer[:n])
-						c.trackError(err, "parse", map[string]interface{}{
-							"data": bufferContent,
-						})
-						// Continue parsing, discard this message
-						c.parser.Clear()
-						c.parser.AppendData(remaining)
-						continue
+						c.trackError(err, "parse", nil)
+						return
+					}
+					if !complete {
+						break
+					}
+					c.parser.Clear()
+					c.parser.AppendData(frame)
+					message, _, err := c.parser.Parse()
+					if err != nil {
+						c.trackError(err, "parse", nil)
+						return
 					}
 
 					// Handle the message
@@ -152,6 +134,7 @@ func (c *ClientConnection) Start(ctx context.Context) {
 						c.trackError(err, "handle_message", map[string]interface{}{
 							"message_type": message.GetMessageType(),
 						})
+						return
 					}
 				}
 			}
@@ -195,6 +178,40 @@ func (c *ClientConnection) trackError(err error, operationType string, details m
 
 // handleMessage processes a parsed MOS message
 func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMessage) error {
+	envelope, ok := message.(xml.Envelope)
+	if !ok {
+		return fmt.Errorf("MOS envelope required")
+	}
+	if envelope.MosID == "" || envelope.NcsID == "" || envelope.MessageID == "" {
+		return fmt.Errorf("invalid MOS envelope identity")
+	}
+	messageIDText := envelope.MessageID
+	base := 10
+	if strings.HasPrefix(messageIDText, "0x") || strings.HasPrefix(messageIDText, "0X") {
+		messageIDText = messageIDText[2:]
+		base = 16
+	} else if strings.HasPrefix(messageIDText, "x") || strings.HasPrefix(messageIDText, "X") {
+		messageIDText = messageIDText[1:]
+		base = 16
+	}
+	messageID, err := strconv.ParseInt(messageIDText, base, 32)
+	if err != nil || messageID < 1 {
+		return fmt.Errorf("invalid MOS messageID %q", envelope.MessageID)
+	}
+	if envelope.MosID != c.config.MOS.ID {
+		return fmt.Errorf("MOS envelope addressed to %q, expected %q", envelope.MosID, c.config.MOS.ID)
+	}
+	if c.config.MOS.NCSID != "" && envelope.NcsID != c.config.MOS.NCSID {
+		return fmt.Errorf("MOS envelope from NCS %q, expected %q", envelope.NcsID, c.config.MOS.NCSID)
+	}
+	inner, err := envelope.Message()
+	if err != nil {
+		return err
+	}
+	return c.handlePayload(context.WithValue(ctx, envelopeContextKey{}, envelope), inner)
+}
+
+func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMessage) error {
 	// Create a span for this message handling
 	span := sentry.StartSpan(ctx, "handle_message")
 	span.SetTag("message_type", message.GetMessageType())
@@ -292,6 +309,25 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	return err
 }
 
+type envelopeContextKey struct{}
+
+func (c *ClientConnection) writeMessage(ctx context.Context, message xml.MOSMessage) error {
+	envelope, ok := ctx.Value(envelopeContextKey{}).(xml.Envelope)
+	if !ok {
+		return fmt.Errorf("MOS envelope context required")
+	}
+
+	ncsID := envelope.NcsID
+	if c.config.MOS.NCSID != "" {
+		ncsID = c.config.MOS.NCSID
+	}
+	data, err := xml.GenerateEnvelope(c.config.MOS.ID, ncsID, envelope.MessageID, message)
+	if err != nil {
+		return err
+	}
+	return c.Write(data)
+}
+
 // handleHeartbeat processes a heartbeat message
 func (c *ClientConnection) handleHeartbeat(ctx context.Context, heartbeat xml.Heartbeat) error {
 	logger.Infof("Received heartbeat from client %s, source: %s", c.id, heartbeat.Source)
@@ -363,8 +399,12 @@ func (c *ClientConnection) handleReqRunningOrder(ctx context.Context, req xml.Re
 		// Convert items
 		itemInfos := make([]xml.ItemInfo, 0, len(items))
 		for _, item := range items {
+			itemID := item.RawID
+			if itemID == "" {
+				itemID = item.ID
+			}
 			itemInfos = append(itemInfos, xml.ItemInfo{
-				ID:       item.ID,
+				ID:       itemID,
 				Slug:     item.Slug,
 				Duration: fmt.Sprintf("%d", item.Duration),
 				ObjectID: item.ObjectID,
@@ -372,8 +412,12 @@ func (c *ClientConnection) handleReqRunningOrder(ctx context.Context, req xml.Re
 		}
 
 		// Add story info
+		storyID := story.RawID
+		if storyID == "" {
+			storyID = story.ID
+		}
 		storyInfos = append(storyInfos, xml.StoryInfo{
-			ID:       story.ID,
+			ID:       storyID,
 			Slug:     story.Slug,
 			Number:   story.Number,
 			Duration: fmt.Sprintf("%d", story.Duration),
@@ -409,11 +453,12 @@ func (c *ClientConnection) handleRunningOrderInfo(ctx context.Context, roInfo xm
 	// Process the running order creation/update
 	err := c.server.service.ProcessRunningOrderInfo(ctx, roInfo)
 	if err != nil {
-		return c.sendErrorAck(roInfo.RequestID, "ERROR", fmt.Sprintf("Failed to process running order: %v", err))
+		logger.Errorf("Failed to process running order %s: %v", roInfo.ID, err)
+		return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "ERROR", nil))
 	}
 
 	// Send acknowledgment
-	return c.sendSuccessAck(roInfo.RequestID, "Running order processed successfully")
+	return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "OK", nil))
 }
 
 // handleMOSAck processes an acknowledgment message
@@ -441,19 +486,23 @@ func (c *ClientConnection) sendSuccessAck(requestID, description string) error {
 
 // Write sends data to the client
 func (c *ClientConnection) Write(data []byte) error {
+	wireData, err := xml.EncodeUCS2BE(data)
+	if err != nil {
+		return c.trackError(err, "encode", nil)
+	}
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
 
 	// Set write deadline
-	err := c.conn.SetWriteDeadline(time.Now().Add(c.config.Server.WriteTimeout))
+	err = c.conn.SetWriteDeadline(time.Now().Add(c.config.Server.WriteTimeout))
 	if err != nil {
 		return c.trackError(err, "set_write_deadline", nil)
 	}
 
-	_, err = c.conn.Write(data)
+	_, err = c.conn.Write(wireData)
 	if err != nil {
 		return c.trackError(err, "write", map[string]interface{}{
-			"data_length": len(data),
+			"data_length": len(wireData),
 		})
 	}
 
@@ -484,75 +533,4 @@ func (c *ClientConnection) Close() {
 // ID returns the client ID
 func (c *ClientConnection) ID() string {
 	return c.id
-}
-
-// handleRunningOrderUpdate sends a running order update notification to the client
-func (c *ClientConnection) handleRunningOrderUpdate(ctx context.Context, event events.Event) {
-	roID, ok := event.Payload.(string)
-	if !ok {
-		logger.Warningf("Invalid running order ID in event payload for client %s", c.id)
-		return
-	}
-
-	logger.Infof("Sending running order update notification to client %s for RO %s", c.id, roID)
-
-	// Get the updated running order from the service
-	ro, stories, err := c.server.service.GetRunningOrderWithStories(ctx, roID)
-	if err != nil {
-		logger.Errorf("Failed to get running order %s for notification: %v", roID, err)
-		return
-	}
-
-	// Convert stories to StoryInfo
-	storyInfos := make([]xml.StoryInfo, 0, len(stories))
-	for _, story := range stories {
-		// Get items for this story
-		items, err := c.server.service.GetItemsForStory(ctx, story.ID)
-		if err != nil {
-			logger.Warningf("Failed to get items for story %s: %v", story.ID, err)
-			continue
-		}
-
-		// Convert items
-		itemInfos := make([]xml.ItemInfo, 0, len(items))
-		for _, item := range items {
-			itemInfos = append(itemInfos, xml.ItemInfo{
-				ID:       item.ID,
-				Slug:     item.Slug,
-				Duration: fmt.Sprintf("%d", item.Duration),
-				ObjectID: item.ObjectID,
-			})
-		}
-
-		storyInfos = append(storyInfos, xml.StoryInfo{
-			ID:       story.ID,
-			Slug:     story.Slug,
-			Number:   story.Number,
-			Duration: fmt.Sprintf("%d", story.Duration),
-			Items:    itemInfos,
-		})
-	}
-
-	// Create and send the running order update message
-	response := xml.CreateRunningOrderInfo(
-		c.config.MOS.ID,
-		"", // No request ID for push notifications
-		ro.ID,
-		ro.Slug,
-		ro.Channel,
-		"",
-		"",
-		fmt.Sprintf("%d", ro.Duration),
-		storyInfos,
-	)
-
-	data, err := xml.GenerateMessage(response)
-	if err != nil {
-		logger.Errorf("Failed to generate running order notification for client %s: %v", c.id, err)
-		return
-	}
-
-	if err := c.Write(data); err != nil {
-		logger.Errorf("Failed to send running order notification to client %s: %v", c.id, err)
-	}
 }

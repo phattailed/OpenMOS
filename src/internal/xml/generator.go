@@ -19,6 +19,23 @@ func GenerateMessage(message MOSMessage) ([]byte, error) {
 	return result, nil
 }
 
+// GenerateEnvelope serializes a receive-side MOS acknowledgment frame.
+func GenerateEnvelope(mosID, ncsID, messageID string, message MOSMessage) ([]byte, error) {
+	envelope := Envelope{MosID: mosID, NcsID: ncsID, MessageID: messageID}
+	switch value := message.(type) {
+	case ROAck:
+		envelope.ROAck = &value
+	default:
+		return nil, fmt.Errorf("unsupported enveloped message type %T", message)
+	}
+
+	data, err := xml.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal MOS envelope: %w", err)
+	}
+	return append([]byte(xml.Header), data...), nil
+}
+
 // CreateHeartbeat creates a heartbeat message
 func CreateHeartbeat(source string, requestID string) Heartbeat {
 	return Heartbeat{
@@ -101,7 +118,7 @@ func CreateListMachInfo(cfg *config.Config) ListMachInfo {
 	for i := 0; i < 8; i++ {
 		profiles[i] = MosProfile{
 			Number: i,
-			Value:  true,
+			Value:  false,
 		}
 	}
 
@@ -114,7 +131,7 @@ func CreateListMachInfo(cfg *config.Config) ListMachInfo {
 		SN:           cfg.MOS.SN,
 		ID:           cfg.MOS.ID,
 		Time:         Now(),
-		MosRev:       "4.0.0",
+		MosRev:       "2.8.4",
 		SupportedProfiles: SupportedProfiles{
 			DeviceType: "MOS",
 			Profiles:   profiles,

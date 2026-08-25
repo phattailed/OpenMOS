@@ -25,6 +25,6 @@ RUN apk --no-cache add ca-certificates
 # Copy binary from build stage
 COPY --from=builder /build/openmos .
 
-EXPOSE 10540
+EXPOSE 10541
 
 ENTRYPOINT ["./openmos"]
