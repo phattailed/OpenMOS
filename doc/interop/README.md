@@ -296,10 +296,16 @@ findings.
 | T03 `keepAlive` | closed, 0 bytes | **no reply**, connection stays open | Profile 0 (#9) |
 | T08 `roCreate` without `messageID` | closed, 0 bytes | `roAck` `roStatus OK`, reply omits `messageID` | envelope generation (#8) |
 
+| T12 duplicate `messageID`, identical content | ACKed twice, RO reached `version=2` | original ack replayed, RO stays at `version=1` | dedup (#13) |
+| T13 duplicate `messageID`, different content | both ACKed and persisted | second NACKed, never persisted | dedup (#13) |
+
 T04–T07 and T10 continue to return `roAck`. T09 (`messageID` 0) and T11 (wrong
-`mosID`) continue to be refused, which is correct. T12 and T13 still show
-duplicate `messageID`s being re-applied; deduplication on the TCP path is #13 and
-remains open.
+`mosID`) continue to be refused, which is correct.
+
+T12 is worth stating precisely: the retry is answered with the *same* ack, and the
+running order is not touched a second time. Answering a retry with silence is the
+one option that cannot work, since the spec has the sender retrying "at intervals
+until a response is received".
 
 T03 deserves a note: "no reply" here means the socket stayed open and the read
 timed out, which is the correct outcome. MOS 4.0 §4.1.1: "the keepAlive messages
@@ -326,9 +332,13 @@ The `listMachInfo` returned on W1 confirms two related fixes: `<mosRev>4.0.0</mo
 on the WebSocket transport where the TCP transport reports `2.8.4`, and
 `mosProfile number="0">true` with profiles 1–7 false.
 
+Separately, `mosID` was being persisted as an empty string on running orders, and
+item-level `mosID` was dropped entirely. Both are now stored, and stored
+distinctly: a `roCreate` whose envelope names one MOS and whose item names another
+keeps both, which is what makes Profile 6 redirection possible (#14).
+
 ### Still outstanding
 
-- **Deduplication on the TCP path** (#13). T12 and T13 remain as recorded in §4.
 - **A MOS 4 exchange initiated by OpenMOS** (#11). Verification so far has the NCS
   host acting as the WebSocket client against our server. Connecting *out* to the
   NCS's own MOS 4 endpoint additionally needs our MOS ID registered on the NOM, or
