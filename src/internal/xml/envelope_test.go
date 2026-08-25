@@ -129,13 +129,39 @@ func TestParseEnvelope_MissingNcsID(t *testing.T) {
 }
 
 func TestParseEnvelope_MissingMessageID(t *testing.T) {
-	input := `<mos><mosID>MOS</mosID><ncsID>NCS</ncsID><keepAlive/></mos>`
+	// A message that expects a reply must carry a messageID.
+	input := `<mos><mosID>MOS</mosID><ncsID>NCS</ncsID><reqMachInfo/></mos>`
 	_, _, _, err := ParseEnvelope([]byte(input))
 	if err == nil {
 		t.Fatal("expected error for missing messageID")
 	}
 	if !strings.Contains(err.Error(), "messageID") {
 		t.Errorf("error should mention messageID: %v", err)
+	}
+}
+
+// keepAlive is exempt from messageID in every generation. MOS 4.0 §4.1.1:
+// "Since a reply is not required and therefore not sequenced, the messageID
+// field is not required for this message." The spec's own keepAlive example
+// carries no messageID.
+func TestParseEnvelope_KeepAliveWithoutMessageID(t *testing.T) {
+	input := `<mos><mosID>MOS</mosID><ncsID>NCS</ncsID><keepAlive/></mos>`
+	env, msg, _, err := ParseEnvelope([]byte(input))
+	if err != nil {
+		t.Fatalf("keepAlive without messageID must be accepted: %v", err)
+	}
+	if env.MessageID != "" {
+		t.Errorf("messageID = %q, want empty", env.MessageID)
+	}
+	if _, ok := msg.(KeepAlive); !ok {
+		t.Errorf("payload = %T, want KeepAlive", msg)
+	}
+}
+
+func TestParseEnvelope_KeepAliveWithMessageIDStillAccepted(t *testing.T) {
+	input := `<mos><mosID>MOS</mosID><ncsID>NCS</ncsID><messageID>7</messageID><keepAlive/></mos>`
+	if _, _, _, err := ParseEnvelope([]byte(input)); err != nil {
+		t.Fatalf("keepAlive with messageID must also be accepted: %v", err)
 	}
 }
 

@@ -12,10 +12,12 @@ type MOSMessage interface {
 
 // Envelope is the standard MOS wire frame for receive-side messages.
 type Envelope struct {
-	XMLName     xml.Name          `xml:"mos"`
-	MosID       string            `xml:"mosID"`
-	NcsID       string            `xml:"ncsID"`
-	MessageID   string            `xml:"messageID"`
+	XMLName xml.Name `xml:"mos"`
+	MosID   string   `xml:"mosID"`
+	NcsID   string   `xml:"ncsID"`
+	// omitempty so a reply to a MOS 2.6/2.8.x request that carried no messageID
+	// omits the element entirely rather than emitting an empty <messageID/>.
+	MessageID   string            `xml:"messageID,omitempty"`
 	ROAck       *ROAck            `xml:"roAck,omitempty"`
 	ROCreate    *RunningOrderInfo `xml:"roCreate,omitempty"`
 	ROReplace   *ROReplace        `xml:"roReplace,omitempty"`

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -176,38 +174,22 @@ func (c *ClientConnection) trackError(err error, operationType string, details m
 	return err
 }
 
-// handleMessage processes a parsed MOS message
+// handleMessage processes a parsed MOS message.
+//
+// This is the MOS 2.x raw TCP transport, so envelopes are validated against the
+// 2.x rules: the MOS 2.6 / 2.8.x DTD has no messageID element, so one must not be
+// required here. See xml.ValidateEnvelope.
 func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMessage) error {
 	envelope, ok := message.(xml.Envelope)
 	if !ok {
 		return fmt.Errorf("MOS envelope required")
 	}
-	if envelope.MosID == "" || envelope.NcsID == "" || envelope.MessageID == "" {
-		return fmt.Errorf("invalid MOS envelope identity")
-	}
-	messageIDText := envelope.MessageID
-	base := 10
-	if strings.HasPrefix(messageIDText, "0x") || strings.HasPrefix(messageIDText, "0X") {
-		messageIDText = messageIDText[2:]
-		base = 16
-	} else if strings.HasPrefix(messageIDText, "x") || strings.HasPrefix(messageIDText, "X") {
-		messageIDText = messageIDText[1:]
-		base = 16
-	}
-	messageID, err := strconv.ParseInt(messageIDText, base, 32)
-	if err != nil || messageID < 1 {
-		return fmt.Errorf("invalid MOS messageID %q", envelope.MessageID)
-	}
-	if envelope.MosID != c.config.MOS.ID {
-		return fmt.Errorf("MOS envelope addressed to %q, expected %q", envelope.MosID, c.config.MOS.ID)
-	}
-	if c.config.MOS.NCSID != "" && envelope.NcsID != c.config.MOS.NCSID {
-		return fmt.Errorf("MOS envelope from NCS %q, expected %q", envelope.NcsID, c.config.MOS.NCSID)
-	}
-	inner, err := envelope.Message()
+
+	inner, err := xml.ValidateEnvelope(envelope, xml.Gen2x, c.config.MOS.ID, c.config.MOS.NCSID)
 	if err != nil {
 		return err
 	}
+
 	return c.handlePayload(context.WithValue(ctx, envelopeContextKey{}, envelope), inner)
 }
 
