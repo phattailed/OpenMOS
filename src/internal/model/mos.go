@@ -23,6 +23,7 @@ type MOSObject struct {
 // Item represents a single item within a story
 type Item struct {
 	ID                string            `bson:"_id" json:"id"`                                // Unique Item ID
+	RawID             string            `bson:"rawID" json:"rawID"`                           // Original itemID from MOS
 	ObjectID          string            `bson:"objectID,omitempty" json:"objectID,omitempty"` // Reference to MOS Object
 	Slug              string            `bson:"slug" json:"slug"`
 	Duration          int               `bson:"duration" json:"duration"` // Duration in seconds
@@ -39,6 +40,7 @@ type Item struct {
 // Story represents a story in the running order (collection of items)
 type Story struct {
 	ID             string            `bson:"_id" json:"id"`                        // Unique Story ID
+	RawID          string            `bson:"rawID" json:"rawID"`                   // Original storyID from MOS
 	RunningOrderID string            `bson:"runningOrderID" json:"runningOrderID"` // Parent running order
 	Slug           string            `bson:"slug" json:"slug"`
 	Number         string            `bson:"number,omitempty" json:"number,omitempty"`

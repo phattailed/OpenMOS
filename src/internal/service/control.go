@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"airshift/openmos/internal/events"
@@ -119,15 +120,23 @@ func (s *MOSService) ProcessROItemCue(ctx context.Context, cue xml.ROItemCue) er
 	return nil
 }
 
-// ProcessROStorySend processes a standalone roStorySend message (Profile 6)
-// Stores the story body received from MOS
+// ProcessROStorySend stores the identity and metadata from a received story.
 func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROStorySend) error {
+	if strings.TrimSpace(storySend.ROID) == "" {
+		return fmt.Errorf("roID is required")
+	}
+	if strings.TrimSpace(storySend.StoryID) == "" {
+		return fmt.Errorf("storyID is required")
+	}
+	storyID := storyPersistenceID(storySend.ROID, storySend.StoryID)
+
 	// Get or create the story
-	story, err := s.storyRepo.Get(ctx, storySend.StoryID)
+	story, err := s.storyRepo.Get(ctx, storyID)
 	if err != nil {
 		// Story doesn't exist yet; create it
 		story = &model.Story{
-			ID:             storySend.StoryID,
+			ID:             storyID,
+			RawID:          storySend.StoryID,
 			RunningOrderID: storySend.ROID,
 			Slug:           storySend.StorySlug,
 			Number:         storySend.StoryNum,
@@ -142,6 +151,8 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 		}
 	} else {
 		// Update existing story
+		story.RawID = storySend.StoryID
+		story.RunningOrderID = storySend.ROID
 		if storySend.StorySlug != "" {
 			story.Slug = storySend.StorySlug
 		}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"airshift/openmos/internal/config"
+	"airshift/openmos/internal/db"
 	"airshift/openmos/internal/events"
 	"airshift/openmos/internal/repository"
 	"airshift/openmos/internal/server"
@@ -99,46 +100,118 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Create in-memory repositories (replace with MongoDB repos when a database is available)
-	runningOrderRepo := repository.NewMemoryRunningOrderRepository()
-	storyRepo := repository.NewMemoryStoryRepository()
-	itemRepo := repository.NewMemoryItemRepository()
-	objectRepo := repository.NewMemoryObjectRepository()
+	// Build repositories for the configured storage backend.
+	//
+	// "memory" keeps OpenMOS dependency-free for lab and CI use. "mongo" gives
+	// durable storage and is required for production, since neither the running
+	// order state nor the dedup store survives a restart in memory mode.
+	var (
+		runningOrderRepo repository.RunningOrderRepository
+		storyRepo        repository.StoryRepository
+		itemRepo         repository.ItemRepository
+		objectRepo       repository.ObjectRepository
+	)
+
+	switch strings.ToLower(cfg.Storage.Backend) {
+	case "mongo", "mongodb":
+		log.Info("Connecting to MongoDB...")
+		database, dbErr := db.NewMongoDB(cfg)
+		if dbErr != nil {
+			log.CaptureException(dbErr, map[string]string{
+				"component": "database",
+				"action":    "connect",
+			}, nil)
+			log.Fatalf("Failed to connect to MongoDB: %v", dbErr)
+		}
+		defer func() {
+			if closeErr := database.Close(context.Background()); closeErr != nil {
+				log.Errorf("Error disconnecting from MongoDB: %v", closeErr)
+			}
+		}()
+		runningOrderRepo = repository.NewMongoRunningOrderRepository(database)
+		storyRepo = repository.NewMongoStoryRepository(database)
+		itemRepo = repository.NewMongoItemRepository(database)
+		objectRepo = repository.NewMongoObjectRepository(database)
+	case "memory", "":
+		log.Warning("Using in-memory storage; nothing is durable across a restart")
+		runningOrderRepo = repository.NewMemoryRunningOrderRepository()
+		storyRepo = repository.NewMemoryStoryRepository()
+		itemRepo = repository.NewMemoryItemRepository()
+		objectRepo = repository.NewMemoryObjectRepository()
+	default:
+		log.Fatalf("Unknown storage backend %q; expected \"memory\" or \"mongo\"", cfg.Storage.Backend)
+	}
 
 	// Create event bus for pub-sub messaging
 	eventBus := events.NewEventBus()
 
-	// Create service
+	// One shared service and message core behind every transport. Transports own
+	// framing only; they must not own message semantics.
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
 
-	// Create dedup store
-	dedupStore := server.NewMemoryDedupStore()
-
-	// Create and start WebSocket server
-	log.Info("Starting WebSocket server...")
-	wsServer := server.NewWSServer(cfg, mosService, eventBus, dedupStore)
+	if !cfg.Server.Enabled && !cfg.WebSocket.Enabled {
+		log.Fatal("No transport enabled: set server.enabled and/or websocket.enabled")
+	}
 
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start server in a goroutine
-	go func() {
-		if err := wsServer.Start(ctx); err != nil {
-			log.Errorf("WebSocket server error: %v", err)
-			cancel()
+	// MOS 2.x raw TCP transport. Per the MOS spec the MOS device listens on the
+	// Upper Port (10541) and the NCS connects to it.
+	var tcpServer *server.TCPServer
+	if cfg.Server.Enabled {
+		log.Info("Starting MOS 2.x TCP server...")
+		tcpServer, err = server.NewTCPServer(cfg, mosService, eventBus)
+		if err != nil {
+			log.CaptureException(err, map[string]string{
+				"component": "tcp-server",
+				"action":    "start",
+			}, nil)
+			log.Fatalf("Failed to create TCP server: %v", err)
 		}
-	}()
+		go func() {
+			if startErr := tcpServer.Start(ctx); startErr != nil {
+				log.Errorf("TCP server error: %v", startErr)
+				cancel()
+			}
+		}()
+		log.Infof("MOS 2.x TCP transport listening on %s", cfg.GetServerAddress())
+	} else {
+		log.Info("MOS 2.x TCP transport disabled by configuration")
+	}
 
-	log.Infof("OpenMOS WebSocket server is running on %s", cfg.GetWebSocketAddress())
+	// MOS 4.0 WebSocket transport.
+	var wsServer *server.WSServer
+	if cfg.WebSocket.Enabled {
+		log.Info("Starting MOS 4 WebSocket server...")
+		dedupStore := server.NewMemoryDedupStore()
+		wsServer = server.NewWSServer(cfg, mosService, eventBus, dedupStore)
+		go func() {
+			if startErr := wsServer.Start(ctx); startErr != nil {
+				log.Errorf("WebSocket server error: %v", startErr)
+				cancel()
+			}
+		}()
+		log.Infof("MOS 4 WebSocket transport listening on %s", cfg.GetWebSocketAddress())
+	} else {
+		log.Info("MOS 4 WebSocket transport disabled by configuration")
+	}
 
 	// Wait for shutdown signal
 	sig := <-sigCh
 	log.Infof("Received signal: %v", sig)
 
-	// Cancel the server context to start the graceful shutdown
+	// Cancel the shared context to begin graceful shutdown of both transports.
 	cancel()
-	wsServer.Shutdown()
+	if wsServer != nil {
+		wsServer.Shutdown()
+	}
+	if tcpServer != nil {
+		if shutdownErr := tcpServer.Shutdown(context.Background()); shutdownErr != nil {
+			log.Errorf("TCP server shutdown error: %v", shutdownErr)
+		}
+	}
 
 	// Flush Sentry events before exiting
 	defer sentry.Flush(2 * time.Second)

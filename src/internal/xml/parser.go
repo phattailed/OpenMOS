@@ -100,6 +100,18 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 
 	// Parse based on message type
 	switch messageType {
+	case "mos":
+		var envelope Envelope
+		remaining, err := p.parseMessage(&envelope)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		if _, err := envelope.Message(); err != nil {
+			return nil, remaining, err
+		}
+		message = envelope
+		p.buffer = remaining
+
 	case "heartbeat":
 		var heartbeat Heartbeat
 		remaining, err := p.parseMessage(&heartbeat)

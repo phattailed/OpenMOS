@@ -46,7 +46,7 @@ func testConfig() *config.Config {
 	cfg.Server.ShutdownTimeout = 5 * time.Second
 	cfg.WebSocket.Port = 0 // Use port 0 for random available port
 	cfg.MOS.ID = "OPENMOS_TEST"
-	cfg.MOS.NcsID = "" // Accept any ncsID by default
+	cfg.MOS.NCSID = "" // Accept any ncsID by default
 	cfg.MOS.HeartbeatInterval = 30 * time.Second
 	cfg.MOS.ClientTimeout = 10 * time.Second
 	cfg.MOS.Manufacturer = "Test"
