@@ -3,7 +3,8 @@
 **Date:** 2026-08-24
 **Target NCS:** AP ENPS with the `NOM` MOS gateway, referred to below as `NCS-HOST`
 **OpenMOS under test:** MOS 2.8.4 TCP receive tracer (pre-merge working tree)
-**Status:** First live NCS contact for this project. All prior testing was lab-only.
+**Status:** NCS-initiated interop achieved — a live ENPS delivered real running
+orders to OpenMOS with zero errors. See §10.
 
 This is a historical record of the first exercise of OpenMOS against a real
 Newsroom Computer System. It documents the test rig, what was verified, and the
@@ -281,7 +282,127 @@ transport removed code the MOS 4 transport requires.
 
 ---
 
-## 10. Verification of fixes
+## 10. NCS-initiated interop: real running orders delivered
+
+**This is the result the project was working toward.** Everything in §4 and §5 had
+OpenMOS or a probe script as the initiator. Here the NCS itself opened the socket
+and pushed real running-order state from a live rundown, unprompted.
+
+### Outcome
+
+A rundown was created in ENPS referencing our MOS ID. NOM connected and delivered
+its full queue with **zero errors**:
+
+| Message | Count |
+|---|---|
+| `roCreate` | 1 |
+| `roStorySend` | 10 |
+| errors | **0** |
+
+NOM then held the socket open, which is what the spec asks for: "It is a good
+idea to establish and maintain the socket connection continuously as this gives
+the other application the opportunity to monitor continuity."
+
+Persisted state, from real ENPS content:
+
+```
+runningOrders  1     slug "tangible-test", duration 5400 (a 90-minute rundown)
+stories       10     slugs: gat, test, mop, map, chu, shoe, chew, hat, oosh, hay
+items          0     see "why zero items" below
+mosID                openmos.beltware.mos  -- populated, not empty
+```
+
+### What this exercised that synthetic frames never did
+
+**Composite identifiers containing `;` and `\`.** Real ENPS IDs are not simple
+tokens:
+
+```
+roID    APSTSNOM21;P_STORYTELLING\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538
+storyID APSTSNOM21;P_STORYTELLING\W\R_C45B2CF1-...;B7C56B36-890D-4A04-9A3A-...
+```
+
+Every hand-written fixture in this repo used IDs like `RO-41` and `STORY-1`. The
+`roID` round-trips intact as the MongoDB `_id`, and the composite story key is
+percent-escaped before use, so `;` becomes `%3B` and `\` becomes `%5C`. This
+worked, but it worked untested — a regression test using realistic IDs is worth
+adding.
+
+**A 90-minute `roEdDur`** parsed correctly to 5400 seconds.
+
+**Ten `roStorySend` messages in sequence** on one held-open socket.
+
+### Why zero items
+
+Expected, not a defect. With `StorySend` enabled ENPS performs forced playlist
+construction and sends *every* story in the rundown, not only those containing
+items belonging to this device — the workflow the spec describes for prompters
+and publishing devices. Items are only included for objects owned by the
+receiving MOS, and OpenMOS serves no media objects (Profile 1 is not
+implemented). So ten stories with no items is exactly right for this
+configuration.
+
+### messageID: the evidence #20 was waiting for
+
+Real ENPS `messageID` values are **plain incrementing integers**. The counter NOM
+keeps for this device at `H:\NOM\MOS\MESSAGEID\<mosID>` read `25` when the queue
+was first observed and `35` after delivery.
+
+That resolves the open question in #20 empirically: tightening `messageID` format
+validation toward the spec's "32-bit signed integer >= 1" is safe against this
+NCS rather than speculative. Note this is one vendor's behaviour, so leniency on
+receipt is still the right posture.
+
+### Getting NOM to connect at all
+
+Three findings, each of which cost real time and none of which is documented
+anywhere obvious.
+
+**The device IP field does not accept `host:port`.** The web UI labels the column
+`IP/Endpoint`, and the value `127.0.0.1:20541` is stored happily. NOM then passes
+the entire string to a DNS resolve and fails every 30 seconds:
+
+```
+RemoteHost 127.0.0.1:20541 Authoritative answer: Host not found [11001]
+  [openmos.beltware.mos WinsockIn_Error]
+```
+
+It is a hostname or IP only. The port is fixed at the MOS Upper Port, 10541.
+
+**`H:\NOM\LOGS\EXCEP.LOG` is where connection failures surface.** Nothing in the
+MOS monitor UI explained the blank IP column; that log said it in one line.
+
+**NOM's own listener does not block the port.** NOM binds `0.0.0.0:10541`, but it
+binds IPv4 `INADDR_ANY` without exclusive use, so on Windows a *more specific*
+bind to `127.0.0.1:10541` both succeeds and wins for loopback traffic. That makes
+an SSH reverse tunnel on the standard port viable with no change to NOM, no
+`netsh portproxy` (its `iphlpsvc` was disabled anyway), and no sshd
+reconfiguration:
+
+```
+ssh -R 10541:127.0.0.1:10541 <ncs-host>
+```
+
+Only loopback traffic diverts; connections to the host's routable address still
+reach NOM. Reverting is closing the tunnel.
+
+A caution learned the hard way: the reverse forward can die while the SSH master
+still reports healthy, and NOM's 30-second retries then all fail. Verify the
+remote listener, not just the control socket.
+
+### Still outstanding
+
+- **Raw frame capture.** NOM creates `H:\NOM\MOS\OUT\<mosID>\` but wrote no files
+  even with `LogOut=1`, so no authentic `roCreate` fixture could be archived from
+  the NCS side. OpenMOS deliberately keeps raw XML out of its logs. An opt-in
+  capture flag would let real fixtures replace the hand-written ones.
+- **A MOS 4 exchange initiated by OpenMOS** (#11).
+- **MOS 3.8.4** (#15), still blocked on the WSDL.
+- **`messageID` format alignment** (#20), now unblocked by the evidence above.
+
+---
+
+## 11. Verification of fixes
 
 The exercise was re-run against the same NCS after each fix landed. This section
 supersedes the "before" state recorded above; §4 and §5 are kept as the original
