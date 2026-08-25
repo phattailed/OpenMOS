@@ -19,6 +19,23 @@ func GenerateMessage(message MOSMessage) ([]byte, error) {
 	return result, nil
 }
 
+// GenerateEnvelope serializes a receive-side MOS acknowledgment frame.
+func GenerateEnvelope(mosID, ncsID, messageID string, message MOSMessage) ([]byte, error) {
+	envelope := Envelope{MosID: mosID, NcsID: ncsID, MessageID: messageID}
+	switch value := message.(type) {
+	case ROAck:
+		envelope.ROAck = &value
+	default:
+		return nil, fmt.Errorf("unsupported enveloped message type %T", message)
+	}
+
+	data, err := xml.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal MOS envelope: %w", err)
+	}
+	return append([]byte(xml.Header), data...), nil
+}
+
 // CreateHeartbeat creates a heartbeat message
 func CreateHeartbeat(source string, requestID string) Heartbeat {
 	return Heartbeat{
@@ -95,13 +112,23 @@ func CreateKeepAlive() KeepAlive {
 	return KeepAlive{}
 }
 
-// CreateListMachInfo creates a listMachInfo response message from config (Profile 0)
-func CreateListMachInfo(cfg *config.Config) ListMachInfo {
+// MOS protocol revisions advertised in listMachInfo. The value is a property of
+// the transport answering the request, not of the process: the raw TCP transport
+// speaks the 2.x family, the WebSocket transport speaks 4.0.
+const (
+	MosRev28 = "2.8.4"
+	MosRev40 = "4.0.0"
+)
+
+// CreateListMachInfo creates a listMachInfo response message from config (Profile 0).
+//
+// mosRev must be supplied by the calling transport -- see MosRev28 / MosRev40.
+func CreateListMachInfo(cfg *config.Config, mosRev string) ListMachInfo {
 	profiles := make([]MosProfile, 8)
 	for i := 0; i < 8; i++ {
 		profiles[i] = MosProfile{
 			Number: i,
-			Value:  i == 0, // Only Profile 0 is actually implemented and tested
+			Value:  i == 0, // Only Profile 0 is implemented; see issue #9
 		}
 	}
 
@@ -114,7 +141,7 @@ func CreateListMachInfo(cfg *config.Config) ListMachInfo {
 		SN:           cfg.MOS.SN,
 		ID:           cfg.MOS.ID,
 		Time:         Now(),
-		MosRev:       "4.0.0",
+		MosRev:       mosRev,
 		SupportedProfiles: SupportedProfiles{
 			DeviceType: "MOS",
 			Profiles:   profiles,

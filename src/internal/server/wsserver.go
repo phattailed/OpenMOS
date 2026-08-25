@@ -154,7 +154,7 @@ func (s *WSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing ncsID", http.StatusBadRequest)
 		return
 	}
-	if s.config.MOS.NcsID != "" && ncsID != s.config.MOS.NcsID {
+	if s.config.MOS.NCSID != "" && ncsID != s.config.MOS.NCSID {
 		http.Error(w, "ncsID not authorized", http.StatusForbidden)
 		return
 	}
@@ -318,7 +318,7 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 
 // handleReqMachInfo responds with listMachInfo.
 func (s *WSServer) handleReqMachInfo(ctx context.Context, sess *WSSession, env *mosxml.MosEnvelope) {
-	info := mosxml.CreateListMachInfo(s.config)
+	info := mosxml.CreateListMachInfo(s.config, mosxml.MosRev40)
 	innerXML, err := xml.Marshal(info)
 	if err != nil {
 		logger.Errorf("Failed to marshal listMachInfo: %v", err)

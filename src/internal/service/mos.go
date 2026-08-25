@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"airshift/openmos/internal/events"
@@ -213,16 +215,16 @@ func (s *MOSService) StoreObject(ctx context.Context, mosObj xml.MosObj) error {
 
 // ProcessRunningOrderInfo processes a running order creation/update message
 func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.RunningOrderInfo) error {
+	if err := validateRunningOrder(roInfo.ID, roInfo.Slug, roInfo.Stories); err != nil {
+		return err
+	}
 	// Check if running order exists
 	existingRO, err := s.runningOrderRepo.Get(ctx, roInfo.ID)
 
 	// Parse duration if provided
 	var duration int
 	if roInfo.Duration != "" {
-		duration, err = strconv.Atoi(roInfo.Duration)
-		if err != nil {
-			duration = 0
-		}
+		duration = durationSeconds(roInfo.Duration)
 	}
 
 	// Create or update running order
@@ -258,9 +260,11 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 
 	// Process stories (simplified - full implementation would handle deletions, etc.)
 	for i, storyInfo := range roInfo.Stories {
+		storyID := storyPersistenceID(roInfo.ID, storyInfo.ID)
 		// Create or update each story
 		story := &model.Story{
-			ID:             storyInfo.ID,
+			ID:             storyID,
+			RawID:          storyInfo.ID,
 			RunningOrderID: roInfo.ID,
 			Slug:           storyInfo.Slug,
 			Number:         storyInfo.Number,
@@ -278,7 +282,7 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 		}
 
 		// Create or update the story
-		existingStory, err := s.storyRepo.Get(ctx, storyInfo.ID)
+		existingStory, err := s.storyRepo.Get(ctx, storyID)
 		if err != nil {
 			// Story doesn't exist, create it
 			_, err = s.storyRepo.Create(ctx, story)
@@ -287,6 +291,8 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 			}
 		} else {
 			// Story exists, update it
+			existingStory.RawID = story.RawID
+			existingStory.RunningOrderID = story.RunningOrderID
 			existingStory.Slug = storyInfo.Slug
 			existingStory.Number = storyInfo.Number
 			existingStory.Order = i + 1
@@ -302,6 +308,10 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 			if err != nil {
 				return fmt.Errorf("failed to update story: %w", err)
 			}
+		}
+
+		if err := s.storeItems(ctx, storyID, storyInfo.Items); err != nil {
+			return err
 		}
 	}
 
@@ -322,25 +332,33 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 // ReplaceRunningOrder replaces an entire running order (Profile 2)
 // Deletes all existing stories for the RO and recreates from the replacement message
 func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.ROReplace) error {
+	if err := validateRunningOrder(roReplace.ID, roReplace.Slug, roReplace.Stories); err != nil {
+		return err
+	}
 	// Get existing stories for this RO and delete them
 	existingStories, err := s.storyRepo.ListByRunningOrder(ctx, roReplace.ID)
-	if err == nil {
-		for _, story := range existingStories {
-			// Delete items for this story
-			items, itemErr := s.itemRepo.ListByStory(ctx, story.ID)
-			if itemErr == nil {
-				for _, item := range items {
-					_ = s.itemRepo.Delete(ctx, item.ID)
-				}
+	if err != nil {
+		return fmt.Errorf("failed to list existing stories: %w", err)
+	}
+	for _, story := range existingStories {
+		items, err := s.itemRepo.ListByStory(ctx, story.ID)
+		if err != nil {
+			return fmt.Errorf("failed to list items for story %s: %w", story.ID, err)
+		}
+		for _, item := range items {
+			if err := s.itemRepo.Delete(ctx, item.ID); err != nil {
+				return fmt.Errorf("failed to delete item %s: %w", item.ID, err)
 			}
-			_ = s.storyRepo.Delete(ctx, story.ID)
+		}
+		if err := s.storyRepo.Delete(ctx, story.ID); err != nil {
+			return fmt.Errorf("failed to delete story %s: %w", story.ID, err)
 		}
 	}
 
 	// Parse duration if provided
 	var duration int
 	if roReplace.EdDur != "" {
-		duration, _ = strconv.Atoi(roReplace.EdDur)
+		duration = durationSeconds(roReplace.EdDur)
 	}
 
 	// Get or create the running order
@@ -378,8 +396,10 @@ func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.RORe
 
 	// Create new stories from the replacement
 	for i, storyInfo := range roReplace.Stories {
+		storyID := storyPersistenceID(roReplace.ID, storyInfo.ID)
 		story := &model.Story{
-			ID:             storyInfo.ID,
+			ID:             storyID,
+			RawID:          storyInfo.ID,
 			RunningOrderID: roReplace.ID,
 			Slug:           storyInfo.Slug,
 			Number:         storyInfo.Number,
@@ -399,6 +419,9 @@ func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.RORe
 		if err != nil {
 			return fmt.Errorf("failed to create replacement story: %w", err)
 		}
+		if err := s.storeItems(ctx, storyID, storyInfo.Items); err != nil {
+			return err
+		}
 	}
 
 	// Publish event
@@ -414,26 +437,122 @@ func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.RORe
 	return nil
 }
 
+func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml.ItemInfo) error {
+	for order, info := range infos {
+		item := &model.Item{
+			ID:        itemPersistenceID(storyID, info.ID),
+			RawID:     info.ID,
+			StoryID:   storyID,
+			Slug:      info.Slug,
+			ObjectID:  info.ObjectID,
+			Status:    model.StatusPending,
+			Order:     order + 1,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		if info.Duration != "" {
+			item.Duration, _ = strconv.Atoi(info.Duration)
+		}
+
+		existing, err := s.itemRepo.Get(ctx, item.ID)
+		if err != nil {
+			if _, err := s.itemRepo.Create(ctx, item); err != nil {
+				return fmt.Errorf("failed to create item %s: %w", info.ID, err)
+			}
+			continue
+		}
+		existing.StoryID = item.StoryID
+		existing.RawID = item.RawID
+		existing.Slug = item.Slug
+		existing.ObjectID = item.ObjectID
+		existing.Duration = item.Duration
+		existing.Order = item.Order
+		if err := s.itemRepo.Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed to update item %s: %w", info.ID, err)
+		}
+	}
+	return nil
+}
+
+func storyPersistenceID(roID, storyID string) string {
+	return url.PathEscape(roID) + "/" + url.PathEscape(storyID)
+}
+
+func itemPersistenceID(storyID, itemID string) string {
+	return storyID + "/" + url.PathEscape(itemID)
+}
+
+func durationSeconds(value string) int {
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return seconds
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	hours, hourErr := strconv.Atoi(parts[0])
+	minutes, minuteErr := strconv.Atoi(parts[1])
+	seconds, secondErr := strconv.Atoi(parts[2])
+	if hourErr != nil || minuteErr != nil || secondErr != nil || hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59 {
+		return 0
+	}
+	return hours*3600 + minutes*60 + seconds
+}
+
+func validateRunningOrder(roID, roSlug string, stories []xml.StoryInfo) error {
+	if strings.TrimSpace(roID) == "" {
+		return fmt.Errorf("roID is required")
+	}
+	if strings.TrimSpace(roSlug) == "" {
+		return fmt.Errorf("roSlug is required")
+	}
+	for storyIndex, story := range stories {
+		if strings.TrimSpace(story.ID) == "" {
+			return fmt.Errorf("story %d: storyID is required", storyIndex+1)
+		}
+		for itemIndex, item := range story.Items {
+			if strings.TrimSpace(item.ID) == "" {
+				return fmt.Errorf("story %d item %d: itemID is required", storyIndex+1, itemIndex+1)
+			}
+			if strings.TrimSpace(item.ObjectID) == "" {
+				return fmt.Errorf("story %d item %d: objID is required", storyIndex+1, itemIndex+1)
+			}
+			if strings.TrimSpace(item.MosID) == "" {
+				return fmt.Errorf("story %d item %d: mosID is required", storyIndex+1, itemIndex+1)
+			}
+		}
+	}
+	return nil
+}
+
 // DeleteRunningOrder deletes a running order and all associated stories/items (Profile 2)
 func (s *MOSService) DeleteRunningOrder(ctx context.Context, roID string) error {
+	if strings.TrimSpace(roID) == "" {
+		return fmt.Errorf("roID is required")
+	}
+
 	// Delete all stories and their items
 	stories, err := s.storyRepo.ListByRunningOrder(ctx, roID)
-	if err == nil {
-		for _, story := range stories {
-			// Delete items for this story
-			items, itemErr := s.itemRepo.ListByStory(ctx, story.ID)
-			if itemErr == nil {
-				for _, item := range items {
-					_ = s.itemRepo.Delete(ctx, item.ID)
-				}
+	if err != nil {
+		return fmt.Errorf("failed to list stories for running order: %w", err)
+	}
+	for _, story := range stories {
+		items, err := s.itemRepo.ListByStory(ctx, story.ID)
+		if err != nil {
+			return fmt.Errorf("failed to list items for story %s: %w", story.ID, err)
+		}
+		for _, item := range items {
+			if err := s.itemRepo.Delete(ctx, item.ID); err != nil {
+				return fmt.Errorf("failed to delete item %s: %w", item.ID, err)
 			}
-			_ = s.storyRepo.Delete(ctx, story.ID)
+		}
+		if err := s.storyRepo.Delete(ctx, story.ID); err != nil {
+			return fmt.Errorf("failed to delete story %s: %w", story.ID, err)
 		}
 	}
 
 	// Delete the running order itself
-	err = s.runningOrderRepo.Delete(ctx, roID)
-	if err != nil {
+	if err := s.runningOrderRepo.Delete(ctx, roID); err != nil {
 		return fmt.Errorf("failed to delete running order: %w", err)
 	}
 
