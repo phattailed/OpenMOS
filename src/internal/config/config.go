@@ -89,11 +89,14 @@ func LoadConfig() (*Config, error) {
 	config := &Config{}
 
 	// Defaults that must survive a config file which predates these keys.
-	// A bool absent from YAML unmarshals to false, so relying on the usual
-	// "only if unset or no yaml" pattern would silently disable both transports
-	// for every existing config.yaml. Set them here and let YAML/env override.
+	// A value absent from YAML unmarshals to its zero value, so relying on the
+	// usual "only if unset or no yaml" pattern would silently disable both
+	// transports and bind the WebSocket listener to port 0 for every existing
+	// config.yaml. Set them here and let YAML/env override.
 	config.Server.Enabled = true
 	config.WebSocket.Enabled = true
+	config.WebSocket.Port = 8080
+	config.Storage.Backend = "memory"
 
 	// First, try to load from YAML file
 	yamlLoaded := false
