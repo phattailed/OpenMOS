@@ -20,8 +20,15 @@ import (
 	"nhooyr.io/websocket"
 )
 
-// WSServer is a MOS 4 WebSocket server operating in passive mode.
-// NCS peers connect to this server at ws://host:port/mos?mosID=X&ncsID=Y&channel=ro
+// WSServer is a MOS 4 WebSocket server operating in standard mode: the peer
+// initiates the connection to us, at
+// ws://host:port/<path>?mosID=X&ncsID=Y&channel=mom|ro|aux
+//
+// This is deliberately not passive mode, despite an earlier comment here saying
+// so. In MOS 4.0 passive mode is the inverse: a device behind a firewall opens an
+// outbound client connection carrying passive=true, so the peer can reply through
+// the hole punched in the initiator's firewall. That is implemented separately in
+// WSClient, which is the side that dials out.
 type WSServer struct {
 	config     *config.Config
 	service    *service.MOSService
