@@ -278,3 +278,68 @@ transport removed code the MOS 4 transport requires.
 - No changes to VPN, exit nodes, routes, firewalls, or SSH configuration.
 - The rig was torn down after the exercise and the tunnel port confirmed closed
   from the NCS side.
+
+---
+
+## 10. Verification of fixes
+
+The exercise was re-run against the same NCS after each fix landed. This section
+supersedes the "before" state recorded above; §4 and §5 are kept as the original
+findings.
+
+### MOS 2.x transport
+
+| Case | Original | After fix | Fixed by |
+|---|---|---|---|
+| T01 `heartbeat` | closed, 0 bytes | `heartbeat` reply, enveloped, carries `<time>` | Profile 0 (#9) |
+| T02 `reqMachInfo` | closed, 0 bytes | `listMachInfo` reply, enveloped | Profile 0 (#9) |
+| T03 `keepAlive` | closed, 0 bytes | **no reply**, connection stays open | Profile 0 (#9) |
+| T08 `roCreate` without `messageID` | closed, 0 bytes | `roAck` `roStatus OK`, reply omits `messageID` | envelope generation (#8) |
+
+T04–T07 and T10 continue to return `roAck`. T09 (`messageID` 0) and T11 (wrong
+`mosID`) continue to be refused, which is correct. T12 and T13 still show
+duplicate `messageID`s being re-applied; deduplication on the TCP path is #13 and
+remains open.
+
+T03 deserves a note: "no reply" here means the socket stayed open and the read
+timed out, which is the correct outcome. MOS 4.0 §4.1.1: "the keepAlive messages
+are simply discarded. No reply (ACK, NACK, etc.) is necessary."
+
+### MOS 4.0 transport
+
+§5 concluded that OpenMOS and this ENPS could not exchange a single MOS 4 message
+because of the frame-type mismatch. **That is resolved.** The OpenMOS WebSocket
+server was exercised from the NCS host using the same .NET `ClientWebSocket`
+stack ENPS itself uses:
+
+| Case | Result |
+|---|---|
+| W1 `reqMachInfo` as **binary** UCS-2BE | **binary** `listMachInfo`, 1612 bytes, decodes cleanly |
+| W2 `roCreate` as **binary** UCS-2BE | **binary** `roAck` `roStatus OK` |
+| W3 `keepAlive` as binary, no `messageID` | accepted, **no reply** |
+| W4 `reqMachInfo` as **text** | tolerated on receipt, reply still **binary** |
+
+W4 is the important one: lenient inbound, strict outbound. That is the right
+posture for a protocol with this much vendor variation.
+
+The `listMachInfo` returned on W1 confirms two related fixes: `<mosRev>4.0.0</mosRev>`
+on the WebSocket transport where the TCP transport reports `2.8.4`, and
+`mosProfile number="0">true` with profiles 1–7 false.
+
+### Still outstanding
+
+- **Deduplication on the TCP path** (#13). T12 and T13 remain as recorded in §4.
+- **A MOS 4 exchange initiated by OpenMOS** (#11). Verification so far has the NCS
+  host acting as the WebSocket client against our server. Connecting *out* to the
+  NCS's own MOS 4 endpoint additionally needs our MOS ID registered on the NOM, or
+  it answers `NACK — MOS ID is not recognized by this NOM` as recorded in §5.
+- **MOS 3.8.4** (#15). Unchanged; still blocked on the WSDL.
+- **`messageID` format consistency** across transports (#20).
+
+### Minor observation
+
+Heartbeat replies carry non-standard `timestamp` and `source` attributes
+alongside the spec's `<time>` element. Compatible equipment "will ignore, without
+error, any unknown tags", so this is harmless, but the spec's guidance is that
+vendor additions belong in `mosExternalMetadata` rather than on predefined
+elements. Pre-existing, not introduced by any of the fixes above.
