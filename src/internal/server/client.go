@@ -465,7 +465,7 @@ func (c *ClientConnection) handleRunningOrderInfo(ctx context.Context, roInfo xm
 	logger.Infof("Received running order info from client %s for RO %s", c.id, roInfo.ID)
 
 	// Process the running order creation/update
-	err := c.server.service.ProcessRunningOrderInfo(ctx, roInfo)
+	err := c.server.service.ProcessRunningOrderInfo(ctx, roInfo, c.config.MOS.ID)
 	if err != nil {
 		logger.Errorf("Failed to process running order %s: %v", roInfo.ID, err)
 		return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "ERROR", nil))

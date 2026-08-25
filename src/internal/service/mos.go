@@ -213,8 +213,16 @@ func (s *MOSService) StoreObject(ctx context.Context, mosObj xml.MosObj) error {
 	return nil
 }
 
-// ProcessRunningOrderInfo processes a running order creation/update message
-func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.RunningOrderInfo) error {
+// ProcessRunningOrderInfo processes a running order creation/update message.
+//
+// mosID is the MOS ID from the enclosing envelope. roCreate carries no MOS ID of
+// its own at running-order level, so it has to be supplied by the transport.
+// Storing it matters beyond bookkeeping: "The combination of mosID and objID will
+// serve as a unique reference to an object on a specific server within an
+// enterprise or multi-Media Object Server environment" (MOS 4.0 §2.2), and
+// Profile 6 redirection keys off the fully qualified MOS ID. A stored running
+// order that does not know which MOS it belongs to cannot take part in either.
+func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.RunningOrderInfo, mosID string) error {
 	if err := validateRunningOrder(roInfo.ID, roInfo.Slug, roInfo.Stories); err != nil {
 		return err
 	}
@@ -232,6 +240,7 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 		// Create new running order
 		ro := &model.RunningOrder{
 			ID:        roInfo.ID,
+			MosID:     mosID,
 			Slug:      roInfo.Slug,
 			Status:    model.StatusPending,
 			Duration:  duration,
@@ -251,6 +260,11 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 		existingRO.Channel = roInfo.Channel
 		existingRO.Duration = duration
 		existingRO.UpdatedAt = time.Now()
+		// Only overwrite when the transport supplied one, so an update carrying no
+		// MOS ID cannot erase a value recorded earlier.
+		if mosID != "" {
+			existingRO.MosID = mosID
+		}
 
 		err = s.runningOrderRepo.Update(ctx, existingRO)
 		if err != nil {
@@ -453,6 +467,17 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 		if info.Duration != "" {
 			item.Duration, _ = strconv.Atoi(info.Duration)
 		}
+		// An item's mosID identifies the MOS that owns the referenced object, which
+		// may differ from the MOS receiving the running order. That distinction is
+		// what makes Profile 6 redirection possible, so it must not be dropped.
+		// Metadata["mosID"] is the existing convention here -- mosItemReplace
+		// already stores it that way.
+		if info.MosID != "" {
+			if item.Metadata == nil {
+				item.Metadata = make(map[string]string, 1)
+			}
+			item.Metadata["mosID"] = info.MosID
+		}
 
 		existing, err := s.itemRepo.Get(ctx, item.ID)
 		if err != nil {
@@ -467,6 +492,12 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 		existing.ObjectID = item.ObjectID
 		existing.Duration = item.Duration
 		existing.Order = item.Order
+		if info.MosID != "" {
+			if existing.Metadata == nil {
+				existing.Metadata = make(map[string]string, 1)
+			}
+			existing.Metadata["mosID"] = info.MosID
+		}
 		if err := s.itemRepo.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed to update item %s: %w", info.ID, err)
 		}
