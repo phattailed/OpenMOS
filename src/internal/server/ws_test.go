@@ -25,7 +25,7 @@ func testServer(t *testing.T) (*WSServer, string, context.CancelFunc) {
 	svc := testService()
 	dedup := NewMemoryDedupStore()
 
-	srv := NewWSServer(cfg, svc, eventBus, dedup)
+	srv := NewWSServer(cfg, svc, eventBus, dedup, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {

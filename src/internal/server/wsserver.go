@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/config"
 	"airshift/openmos/internal/events"
 	"airshift/openmos/internal/service"
@@ -34,6 +35,8 @@ type WSServer struct {
 	sessionsMu sync.RWMutex
 
 	shutdownCh chan struct{}
+	// capture records raw frames when enabled; nil means off.
+	capture *capture.Recorder
 }
 
 // WSSession represents an active WebSocket connection from an NCS.
@@ -47,7 +50,7 @@ type WSSession struct {
 }
 
 // NewWSServer creates a new WebSocket server.
-func NewWSServer(cfg *config.Config, mosService *service.MOSService, eventBus *events.EventBus, dedup DedupStore) *WSServer {
+func NewWSServer(cfg *config.Config, mosService *service.MOSService, eventBus *events.EventBus, dedup DedupStore, frames *capture.Recorder) *WSServer {
 	return &WSServer{
 		config:     cfg,
 		service:    mosService,
@@ -56,6 +59,7 @@ func NewWSServer(cfg *config.Config, mosService *service.MOSService, eventBus *e
 		sessions:   make(map[string]*WSSession),
 		shutdownCh: make(chan struct{}),
 		ready:      make(chan struct{}),
+		capture:    frames,
 	}
 }
 
@@ -306,6 +310,11 @@ func (s *WSServer) handleSession(sess *WSSession) {
 			heartbeatTimer.Reset(s.config.MOS.ClientTimeout)
 
 			// Process the message
+			// Recorded before dispatch so frames we reject are captured too --
+			// those are the ones most worth having. wireBytes is the frame as it
+			// arrived, which preserves evidence of the encoding actually used.
+			s.recordFrame(capture.Inbound, sess, data, len(msg.data), wireEncoding(msg.msgType))
+
 			s.processMessage(ctx, sess, data)
 		}
 	}
@@ -458,6 +467,29 @@ func (s *WSServer) writeMessage(ctx context.Context, sess *WSSession, utf8XML []
 	if err := sess.conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
 		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
 		sess.close()
+		return
+	}
+
+	s.recordFrame(capture.Outbound, sess, utf8XML, len(encoded), "UCS-2BE")
+}
+
+// wireEncoding names the encoding a received frame type implies.
+func wireEncoding(msgType websocket.MessageType) string {
+	if msgType == websocket.MessageBinary {
+		return "UCS-2BE"
+	}
+	return "UTF-8"
+}
+
+// recordFrame captures a frame. Failures are logged and dropped: losing a capture
+// must not disturb the exchange.
+func (s *WSServer) recordFrame(direction capture.Direction, sess *WSSession, utf8XML []byte, wireBytes int, encoding string) {
+	if s.capture == nil {
+		return
+	}
+	transport := "mos4-ws-" + sess.channel
+	if err := s.capture.Record(transport, direction, sess.ncsID, utf8XML, wireBytes, encoding); err != nil {
+		logger.Warningf("frame capture: %v", err)
 	}
 }
 

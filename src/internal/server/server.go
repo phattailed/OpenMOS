@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/config"
 	"airshift/openmos/internal/events"
 	"airshift/openmos/internal/service"
@@ -28,10 +29,13 @@ type TCPServer struct {
 	// which is the usual case, since the spec has the NCS reset the connection
 	// before retrying.
 	dedup DedupStore
+	// capture records raw frames when enabled. Nil means capture is off, which a
+	// nil *capture.Recorder handles safely.
+	capture *capture.Recorder
 }
 
 // NewTCPServer creates a new TCP server instance
-func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *events.EventBus) (*TCPServer, error) {
+func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *events.EventBus, frames *capture.Recorder) (*TCPServer, error) {
 	address := cfg.GetServerAddress()
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -41,6 +45,7 @@ func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *
 	server := &TCPServer{
 		listener:   listener,
 		dedup:      NewMemoryDedupStore(),
+		capture:    frames,
 		clients:    make(map[string]*ClientConnection),
 		service:    mosService,
 		config:     cfg,

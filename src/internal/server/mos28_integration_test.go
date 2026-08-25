@@ -542,7 +542,7 @@ func startMOS28Server(t *testing.T) (*TCPServer, *memoryRunningOrders, *memorySt
 	cfg.MOS.HeartbeatInterval = time.Minute
 	cfg.MOS.ClientTimeout = time.Minute
 
-	tcpServer, err := NewTCPServer(cfg, mosService, eventBus)
+	tcpServer, err := NewTCPServer(cfg, mosService, eventBus, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
