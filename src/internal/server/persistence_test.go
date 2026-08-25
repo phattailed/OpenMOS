@@ -53,10 +53,14 @@ func TestPersistenceRestart(t *testing.T) {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	// Read roAck
+	// Read roAck (emitted as a UCS-2BE binary frame)
 	_, data, err := conn.Read(connCtx)
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
+	}
+	data, err = mosxml.DecodeUCS2BE(data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
 	}
 	if !strings.Contains(string(data), "roAck") {
 		t.Fatalf("expected roAck, got: %s", string(data))

@@ -188,12 +188,19 @@ func TestWSKeepAliveNoResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connection died after keepAlive (write failed): %v", err)
 	}
-	_, respData, err := conn.Read(ctx)
+	respType, respData, err := conn.Read(ctx)
 	if err != nil {
 		t.Fatalf("connection died after keepAlive (read failed): %v", err)
 	}
-	if !strings.Contains(string(respData), "listMachInfo") {
-		t.Errorf("expected listMachInfo response, got: %s", string(respData))
+	if respType != websocket.MessageBinary {
+		t.Errorf("expected binary response frame, got %v", respType)
+	}
+	respXML, err := mosxml.DecodeUCS2BE(respData)
+	if err != nil {
+		t.Fatalf("failed to decode UCS-2BE response: %v", err)
+	}
+	if !strings.Contains(string(respXML), "listMachInfo") {
+		t.Errorf("expected listMachInfo response, got: %s", string(respXML))
 	}
 }
 
@@ -219,10 +226,17 @@ func TestWSReqMachInfo(t *testing.T) {
 		t.Fatalf("failed to write: %v", err)
 	}
 
-	// Read response
-	_, data, err := conn.Read(ctx)
+	// Read response (emitted as a UCS-2BE binary frame)
+	respType, data, err := conn.Read(ctx)
 	if err != nil {
 		t.Fatalf("failed to read response: %v", err)
+	}
+	if respType != websocket.MessageBinary {
+		t.Errorf("expected binary response frame, got %v", respType)
+	}
+	data, err = mosxml.DecodeUCS2BE(data)
+	if err != nil {
+		t.Fatalf("failed to decode UCS-2BE response: %v", err)
 	}
 
 	// Parse the response envelope
@@ -253,5 +267,58 @@ func TestWSReqMachInfo(t *testing.T) {
 		if p.Number > 0 && p.Value {
 			t.Errorf("Profile %d should be false, but is true", p.Number)
 		}
+	}
+}
+
+// TestWSBinaryFrameExchange proves the server accepts a binary UCS-2BE frame
+// (MOS 4.0 §2.1) and replies with a binary UCS-2BE frame, never text. This is
+// the exact frame discipline a live ENPS MOS 4 endpoint requires.
+func TestWSBinaryFrameExchange(t *testing.T) {
+	_, baseURL, cancel := testServer(t)
+	defer cancel()
+
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer ctxCancel()
+
+	url := baseURL + "/mos?mosID=OPENMOS_TEST&ncsID=NCS_001&channel=ro"
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Send reqMachInfo as a UCS-2BE binary frame.
+	reqUTF8 := mosxml.WrapEnvelope("OPENMOS_TEST", "NCS_001", "bin-001", []byte("<reqMachInfo/>"))
+	reqBinary, err := mosxml.EncodeUCS2BE(reqUTF8)
+	if err != nil {
+		t.Fatalf("failed to encode request: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, reqBinary); err != nil {
+		t.Fatalf("failed to write binary frame: %v", err)
+	}
+
+	// Response must be a binary frame carrying UCS-2BE.
+	respType, respData, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if respType != websocket.MessageBinary {
+		t.Fatalf("expected binary response frame, got %v", respType)
+	}
+
+	respXML, err := mosxml.DecodeUCS2BE(respData)
+	if err != nil {
+		t.Fatalf("failed to decode UCS-2BE response: %v", err)
+	}
+
+	env, msg, _, err := mosxml.ParseEnvelope(respXML)
+	if err != nil {
+		t.Fatalf("failed to parse response envelope: %v", err)
+	}
+	if env.MessageID != "bin-001" {
+		t.Errorf("response messageID = %q, want %q", env.MessageID, "bin-001")
+	}
+	if _, ok := msg.(mosxml.ListMachInfo); !ok {
+		t.Fatalf("expected ListMachInfo, got %T", msg)
 	}
 }
