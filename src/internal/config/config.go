@@ -31,8 +31,11 @@ type Config struct {
 
 	// WebSocket server configuration (MOS 4.0 transport)
 	WebSocket struct {
-		Enabled     bool
-		Port        int
+		Enabled bool
+		Port    int
+		// Path is the endpoint a peer connects to. Site-specific: MOS 4.0 §1 shows
+		// /mos/Communication and our reference ENPS uses /MOS4NCS/.
+		Path        string
 		TLSCertFile string
 		TLSKeyFile  string
 	}
@@ -96,6 +99,7 @@ func LoadConfig() (*Config, error) {
 	config.Server.Enabled = true
 	config.WebSocket.Enabled = true
 	config.WebSocket.Port = 8080
+	config.WebSocket.Path = "/mos"
 	config.Storage.Backend = "memory"
 
 	// First, try to load from YAML file
@@ -173,6 +177,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if envVal := getEnv("WS_PORT", ""); envVal != "" || !yamlLoaded {
 		config.WebSocket.Port = getEnvAsInt("WS_PORT", getDefaultInt(config.WebSocket.Port, 8080))
+	}
+	if envVal := getEnv("WS_PATH", ""); envVal != "" || !yamlLoaded {
+		config.WebSocket.Path = getEnv("WS_PATH", getDefaultString(config.WebSocket.Path, "/mos"))
 	}
 	if envVal := getEnv("WS_TLS_CERT_FILE", ""); envVal != "" {
 		config.WebSocket.TLSCertFile = getEnv("WS_TLS_CERT_FILE", "")
@@ -329,6 +336,7 @@ func GenerateDefaultConfig(filePath string) error {
 	// TCP transport above. Use 80 or 443 in production.
 	config.WebSocket.Enabled = true
 	config.WebSocket.Port = 8080
+	config.WebSocket.Path = "/mos"
 
 	// Storage backend: "memory" or "mongo"
 	config.Storage.Backend = "memory"

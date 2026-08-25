@@ -44,7 +44,7 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
 | `mosID` persisted on running orders and items | Yes | Integration test | **Yes** | — |
 | MongoDB backing | Yes | Not covered in CI | **Yes** | No MongoDB in CI; in-memory used for tests |
-| MOS 4 channels `mom` and `aux` | **No** | — | — | Only `ro`; blocks Profiles 1 and 3 (#12) |
+| MOS 4 channels `mom`, `ro`, `aux` | Yes | Unit + loopback tests | No | Object and search messages route correctly but are not implemented |
 | MOS 4 outbound client / passive mode | **No** | — | — | Cannot initiate to an NCS (#11) |
 | MOS 4 authentication (HTTP Basic) | **No** | — | — | Spec strongly recommends it (#11) |
 | MOS 3.x WebService transport | **No** | — | — | Blocked on WSDL (#15) |
@@ -102,10 +102,19 @@ MOS 4.0, WebSocket:
 ws://host:8080/mos?mosID=<configured_mos_id>&ncsID=<your_ncs_id>&channel=ro
 ```
 
+The path is configurable — MOS 4.0 §1 shows `/mos/Communication`, and our
+reference ENPS publishes its own endpoint at `/MOS4NCS/`.
+
+```
+```
+
 Query parameters:
 - `mosID` — must match the server's configured MOS ID (rejected with 403 otherwise)
 - `ncsID` — identifies the connecting NCS (required, rejected with 400 if empty)
-- `channel` — must be `ro`; `mom` and `aux` are not yet supported (#12)
+- `channel` — one of `mom`, `ro` or `aux`, each standing in for the MOS 2.x port it
+  replaces (`mom`=10540, `ro`=10541, `aux`=10542). Standard mode opens one
+  connection per channel, so a peer may hold all three at once. A message arriving
+  on the wrong channel is refused with a `NACK` naming the channel it belongs on.
 
 The WebSocket port defaults to 8080 rather than 10541, because 10541 belongs to
 the MOS 2.x transport. MOS 4.0 places its transport on standard web ports and
@@ -129,6 +138,7 @@ server:
 websocket:
     enabled: true          # MOS 4.0 transport
     port: 8080             # use 80 or 443 in production
+    path: /mos             # endpoint peers connect to; site-specific
     tlscertfile: ""
     tlskeyfile: ""
 storage:
@@ -214,16 +224,13 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **MOS 4 `mom` and `aux` channels** (#12). Only `ro` is accepted today, which
-   makes Profile 1 and Profile 3 search structurally impossible. The reference NCS
-   accepts all three.
-2. **An outbound MOS 4 client with passive mode and HTTP Basic auth** (#11).
+1. **An outbound MOS 4 client with passive mode and HTTP Basic auth** (#11).
    OpenMOS is listener-only, so it cannot initiate to an NCS. Passive mode is the
    main reason MOS 4.0 exists, and reaching a real NCS endpoint additionally needs
    our MOS ID registered on that NCS.
-3. **Agree `messageID` format handling across transports** (#20), against observed
+2. **Agree `messageID` format handling across transports** (#20), against observed
    NCS behaviour rather than assumption.
-4. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
+3. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License
 
