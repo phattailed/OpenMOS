@@ -27,7 +27,20 @@ type ClientConnection struct {
 	closeOnce  sync.Once
 	writeMutex sync.Mutex
 	config     *config.Config
+
+	// Guards against heartbeat reflection. The MOS spec warns: "care should be
+	// taken in implementation of this message to avoid an endless looping
+	// condition on response." If a peer answers our heartbeat response with
+	// another heartbeat, replying again would loop indefinitely, so responses
+	// are rate limited.
+	heartbeatMutex     sync.Mutex
+	lastHeartbeatReply time.Time
 }
+
+// minHeartbeatReplyInterval bounds how often this connection will answer an
+// inbound heartbeat, so a peer that echoes heartbeats cannot drive an unbounded
+// exchange.
+const minHeartbeatReplyInterval = time.Second
 
 // NewClientConnection creates a new client connection
 func NewClientConnection(conn net.Conn, server *TCPServer, cfg *config.Config) *ClientConnection {
@@ -310,20 +323,39 @@ func (c *ClientConnection) writeMessage(ctx context.Context, message xml.MOSMess
 	return c.Write(data)
 }
 
-// handleHeartbeat processes a heartbeat message
+// handleHeartbeat processes a heartbeat message (Profile 0).
+//
+// The spec's workflow is "Send a <heartbeat> message to another application and
+// receive a <heartbeat> message in response", so a heartbeat is answered with a
+// heartbeat. Responses are rate limited to avoid the endless looping condition
+// the spec warns about when the peer also echoes.
 func (c *ClientConnection) handleHeartbeat(ctx context.Context, heartbeat xml.Heartbeat) error {
-	logger.Infof("Received heartbeat from client %s, source: %s", c.id, heartbeat.Source)
+	logger.Infof("Received heartbeat from client %s", c.id)
 
-	// Record the heartbeat
+	// Record the heartbeat so the connection is not reaped as idle.
 	c.heartbeat.RecordHeartbeat()
 
-	// Send response
-	response, err := c.heartbeat.CreateHeartbeatResponse(heartbeat.RequestID)
-	if err != nil {
-		return fmt.Errorf("failed to create heartbeat response: %w", err)
+	if !c.allowHeartbeatReply() {
+		logger.Debugf("Suppressing heartbeat reply to client %s: within %s of the previous reply",
+			c.id, minHeartbeatReplyInterval)
+		return nil
 	}
 
-	return c.Write(response)
+	return c.writeMessage(ctx, xml.CreateHeartbeatResponse(c.config.MOS.ID, heartbeat.RequestID))
+}
+
+// allowHeartbeatReply reports whether enough time has passed since the last
+// heartbeat response on this connection to send another.
+func (c *ClientConnection) allowHeartbeatReply() bool {
+	c.heartbeatMutex.Lock()
+	defer c.heartbeatMutex.Unlock()
+
+	now := time.Now()
+	if !c.lastHeartbeatReply.IsZero() && now.Sub(c.lastHeartbeatReply) < minHeartbeatReplyInterval {
+		return false
+	}
+	c.lastHeartbeatReply = now
+	return true
 }
 
 // handleReqRunningOrderList processes a request for running order list

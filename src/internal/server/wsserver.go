@@ -263,8 +263,23 @@ func (s *WSServer) handleSession(sess *WSSession) {
 				// Connection closed or context canceled
 				return
 			}
-			if msg.msgType != websocket.MessageText {
-				continue // Ignore binary frames
+			// MOS 4.0 §2.1 mandates UCS-2 big-endian binary frames. ENPS
+			// rejects text frames with InvalidMessageType. Accept binary
+			// frames (decoding UCS-2BE to UTF-8) and, for tolerance, accept
+			// text frames leniently by treating their bytes as UTF-8 XML.
+			var data []byte
+			switch msg.msgType {
+			case websocket.MessageBinary:
+				decoded, err := mosxml.DecodeUCS2BE(msg.data)
+				if err != nil {
+					logger.Errorf("Failed to decode UCS-2BE frame from ncsID=%s: %v", sess.ncsID, err)
+					continue
+				}
+				data = decoded
+			case websocket.MessageText:
+				data = msg.data
+			default:
+				continue
 			}
 
 			// Reset heartbeat timer on any message
@@ -277,7 +292,7 @@ func (s *WSServer) handleSession(sess *WSSession) {
 			heartbeatTimer.Reset(s.config.MOS.ClientTimeout)
 
 			// Process the message
-			s.processMessage(ctx, sess, msg.data)
+			s.processMessage(ctx, sess, data)
 		}
 	}
 }
@@ -326,10 +341,7 @@ func (s *WSServer) handleReqMachInfo(ctx context.Context, sess *WSSession, env *
 	}
 
 	response := mosxml.WrapEnvelope(s.config.MOS.ID, sess.ncsID, env.MessageID, innerXML)
-	if err := sess.conn.Write(ctx, websocket.MessageText, response); err != nil {
-		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
-		sess.close()
-	}
+	s.writeMessage(ctx, sess, response)
 }
 
 // handleRoCreate processes a roCreate message with dedup and ack-after-persist.
@@ -367,10 +379,7 @@ func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mos
 	}
 
 	response := mosxml.WrapEnvelope(s.config.MOS.ID, sess.ncsID, env.MessageID, innerXML)
-	if err := sess.conn.Write(ctx, websocket.MessageText, response); err != nil {
-		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
-		sess.close()
-	}
+	s.writeMessage(ctx, sess, response)
 }
 
 // sendNack sends a NACK response envelope.
@@ -384,7 +393,21 @@ func (s *WSServer) sendNack(ctx context.Context, sess *WSSession, messageID, sta
 		return
 	}
 	response := mosxml.WrapEnvelope(s.config.MOS.ID, sess.ncsID, messageID, innerXML)
-	if err := sess.conn.Write(ctx, websocket.MessageText, response); err != nil {
+	s.writeMessage(ctx, sess, response)
+}
+
+// writeMessage encodes a UTF-8 XML MOS envelope to UCS-2 big-endian and writes
+// it as a binary WebSocket frame. MOS 4.0 §2.1 mandates UCS-2BE, and live ENPS
+// endpoints reject text frames with InvalidMessageType, so OpenMOS never emits
+// text frames — only binary.
+func (s *WSServer) writeMessage(ctx context.Context, sess *WSSession, utf8XML []byte) {
+	encoded, err := mosxml.EncodeUCS2BE(utf8XML)
+	if err != nil {
+		logger.Errorf("Failed to encode UCS-2BE frame for ncsID=%s: %v", sess.ncsID, err)
+		sess.close()
+		return
+	}
+	if err := sess.conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
 		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
 		sess.close()
 	}

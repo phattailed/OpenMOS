@@ -17,7 +17,17 @@ type Envelope struct {
 	NcsID   string   `xml:"ncsID"`
 	// omitempty so a reply to a MOS 2.6/2.8.x request that carried no messageID
 	// omits the element entirely rather than emitting an empty <messageID/>.
-	MessageID   string            `xml:"messageID,omitempty"`
+	MessageID string `xml:"messageID,omitempty"`
+
+	// Profile 0 -- Basic Communication. Mandatory for any MOS compliance claim:
+	// "Vendors wishing to claim MOS compatibility must fully support, at a
+	// minimum, Profile 0 and at least one other Profile." (MOS 4.0 §2)
+	KeepAlive    *KeepAlive    `xml:"keepAlive,omitempty"`
+	Heartbeat    *Heartbeat    `xml:"heartbeat,omitempty"`
+	ReqMachInfo  *ReqMachInfo  `xml:"reqMachInfo,omitempty"`
+	ListMachInfo *ListMachInfo `xml:"listMachInfo,omitempty"`
+
+	// Profile 2 -- Running Order / Content List.
 	ROAck       *ROAck            `xml:"roAck,omitempty"`
 	ROCreate    *RunningOrderInfo `xml:"roCreate,omitempty"`
 	ROReplace   *ROReplace        `xml:"roReplace,omitempty"`
@@ -37,6 +47,20 @@ func (e Envelope) GetMessageType() string {
 // Message returns the single message carried by the envelope.
 func (e Envelope) Message() (MOSMessage, error) {
 	messages := make([]MOSMessage, 0, 1)
+	// Profile 0
+	if e.KeepAlive != nil {
+		messages = append(messages, *e.KeepAlive)
+	}
+	if e.Heartbeat != nil {
+		messages = append(messages, *e.Heartbeat)
+	}
+	if e.ReqMachInfo != nil {
+		messages = append(messages, *e.ReqMachInfo)
+	}
+	if e.ListMachInfo != nil {
+		messages = append(messages, *e.ListMachInfo)
+	}
+	// Profile 2
 	if e.ROAck != nil {
 		messages = append(messages, *e.ROAck)
 	}

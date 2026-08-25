@@ -52,10 +52,14 @@ func TestReconnectNoDuplicate(t *testing.T) {
 		t.Fatalf("write 1 failed: %v", err)
 	}
 
-	// Read roAck
+	// Read roAck (emitted as a UCS-2BE binary frame)
 	_, data, err := conn1.Read(connCtx1)
 	if err != nil {
 		t.Fatalf("read 1 failed: %v", err)
+	}
+	data, err = mosxml.DecodeUCS2BE(data)
+	if err != nil {
+		t.Fatalf("decode 1 failed: %v", err)
 	}
 	if !strings.Contains(string(data), "roAck") {
 		t.Fatalf("expected roAck, got: %s", string(data))
@@ -95,6 +99,10 @@ func TestReconnectNoDuplicate(t *testing.T) {
 	_, data2, err := conn2.Read(connCtx2)
 	if err != nil {
 		t.Fatalf("read 3 failed: %v", err)
+	}
+	data2, err = mosxml.DecodeUCS2BE(data2)
+	if err != nil {
+		t.Fatalf("decode 3 failed: %v", err)
 	}
 	if !strings.Contains(string(data2), "roAck") {
 		t.Fatalf("expected roAck for new message, got: %s", string(data2))
