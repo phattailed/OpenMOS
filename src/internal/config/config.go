@@ -19,8 +19,9 @@ type Config struct {
 		Environment string
 	}
 
-	// Server configuration
+	// Server configuration (MOS 2.x raw TCP transport)
 	Server struct {
+		Enabled         bool
 		Host            string
 		Port            int
 		ReadTimeout     time.Duration
@@ -28,11 +29,17 @@ type Config struct {
 		ShutdownTimeout time.Duration
 	}
 
-	// WebSocket server configuration
+	// WebSocket server configuration (MOS 4.0 transport)
 	WebSocket struct {
+		Enabled     bool
 		Port        int
 		TLSCertFile string
 		TLSKeyFile  string
+	}
+
+	// Storage backend selection: "memory" or "mongo"
+	Storage struct {
+		Backend string
 	}
 
 	// MongoDB configuration
@@ -46,8 +53,8 @@ type Config struct {
 	MOS struct {
 		// MOS ID of this server, used in MOS messages
 		ID string
-		// Expected NCS ID for validation
-		NcsID string
+		// NCS ID accepted by the receive-only connection
+		NCSID string
 		// Heartbeat interval
 		HeartbeatInterval time.Duration
 		// Timeout for client connections without heartbeats
@@ -80,6 +87,16 @@ type Config struct {
 // LoadConfig loads configuration from environment variables and a YAML file if available
 func LoadConfig() (*Config, error) {
 	config := &Config{}
+
+	// Defaults that must survive a config file which predates these keys.
+	// A value absent from YAML unmarshals to its zero value, so relying on the
+	// usual "only if unset or no yaml" pattern would silently disable both
+	// transports and bind the WebSocket listener to port 0 for every existing
+	// config.yaml. Set them here and let YAML/env override.
+	config.Server.Enabled = true
+	config.WebSocket.Enabled = true
+	config.WebSocket.Port = 8080
+	config.Storage.Backend = "memory"
 
 	// First, try to load from YAML file
 	yamlLoaded := false
@@ -124,12 +141,15 @@ func LoadConfig() (*Config, error) {
 		config.App.Environment = getEnv("APP_ENV", getDefaultString(config.App.Environment, "development"))
 	}
 
-	// Server config
+	// Server config (MOS 2.x TCP transport)
+	if envVal := getEnv("SERVER_ENABLED", ""); envVal != "" || !yamlLoaded {
+		config.Server.Enabled = getEnvAsBool("SERVER_ENABLED", true)
+	}
 	if envVal := getEnv("SERVER_HOST", ""); envVal != "" || !yamlLoaded {
 		config.Server.Host = getEnv("SERVER_HOST", getDefaultString(config.Server.Host, "0.0.0.0"))
 	}
 	if envVal := getEnv("SERVER_PORT", ""); envVal != "" || !yamlLoaded {
-		config.Server.Port = getEnvAsInt("SERVER_PORT", getDefaultInt(config.Server.Port, 10540)) // Default MOS port
+		config.Server.Port = getEnvAsInt("SERVER_PORT", getDefaultInt(config.Server.Port, 10541)) // NCS-to-MOS receive port
 	}
 	if envVal := getEnv("SERVER_READ_TIMEOUT", ""); envVal != "" || !yamlLoaded {
 		config.Server.ReadTimeout = getEnvAsDuration("SERVER_READ_TIMEOUT", getDefaultDuration(config.Server.ReadTimeout, 5*time.Second))
@@ -141,15 +161,29 @@ func LoadConfig() (*Config, error) {
 		config.Server.ShutdownTimeout = getEnvAsDuration("SERVER_SHUTDOWN_TIMEOUT", getDefaultDuration(config.Server.ShutdownTimeout, 30*time.Second))
 	}
 
-	// WebSocket config
+	// WebSocket config (MOS 4.0 transport)
+	//
+	// The default port is deliberately NOT 10541. In MOS 2.x, 10541 is the MOS
+	// Upper Port used by the raw TCP transport above, and running both transports
+	// on one host would collide. MOS 4.0 places its transport on standard web
+	// ports and carries the old port distinction in the "channel" query
+	// parameter instead, so set this to 80 or 443 in production.
+	if envVal := getEnv("WS_ENABLED", ""); envVal != "" || !yamlLoaded {
+		config.WebSocket.Enabled = getEnvAsBool("WS_ENABLED", true)
+	}
 	if envVal := getEnv("WS_PORT", ""); envVal != "" || !yamlLoaded {
-		config.WebSocket.Port = getEnvAsInt("WS_PORT", getDefaultInt(config.WebSocket.Port, 10541))
+		config.WebSocket.Port = getEnvAsInt("WS_PORT", getDefaultInt(config.WebSocket.Port, 8080))
 	}
 	if envVal := getEnv("WS_TLS_CERT_FILE", ""); envVal != "" {
 		config.WebSocket.TLSCertFile = getEnv("WS_TLS_CERT_FILE", "")
 	}
 	if envVal := getEnv("WS_TLS_KEY_FILE", ""); envVal != "" {
 		config.WebSocket.TLSKeyFile = getEnv("WS_TLS_KEY_FILE", "")
+	}
+
+	// Storage backend
+	if envVal := getEnv("STORAGE_BACKEND", ""); envVal != "" || !yamlLoaded {
+		config.Storage.Backend = getEnv("STORAGE_BACKEND", getDefaultString(config.Storage.Backend, "memory"))
 	}
 
 	// MongoDB config
@@ -167,8 +201,9 @@ func LoadConfig() (*Config, error) {
 	if envVal := getEnv("MOS_ID", ""); envVal != "" || !yamlLoaded {
 		config.MOS.ID = getEnv("MOS_ID", getDefaultString(config.MOS.ID, "OpenMOS_Server"))
 	}
-	if envVal := getEnv("MOS_NCS_ID", ""); envVal != "" || !yamlLoaded {
-		config.MOS.NcsID = getEnv("MOS_NCS_ID", getDefaultString(config.MOS.NcsID, ""))
+	// Accept both MOS_NCS_ID and the older NCS_ID spelling.
+	if envVal := getEnv("MOS_NCS_ID", getEnv("NCS_ID", "")); envVal != "" || !yamlLoaded {
+		config.MOS.NCSID = getEnv("MOS_NCS_ID", getEnv("NCS_ID", config.MOS.NCSID))
 	}
 	if envVal := getEnv("MOS_HEARTBEAT_INTERVAL", ""); envVal != "" || !yamlLoaded {
 		config.MOS.HeartbeatInterval = getEnvAsDuration("MOS_HEARTBEAT_INTERVAL", getDefaultDuration(config.MOS.HeartbeatInterval, 30*time.Second))
@@ -285,13 +320,18 @@ func GenerateDefaultConfig(filePath string) error {
 
 	// Server config
 	config.Server.Host = "0.0.0.0"
-	config.Server.Port = 10540 // Default MOS port
+	config.Server.Port = 10541 // NCS-to-MOS receive port
 	config.Server.ReadTimeout = 5 * time.Second
 	config.Server.WriteTimeout = 5 * time.Second
 	config.Server.ShutdownTimeout = 30 * time.Second
 
-	// WebSocket config
-	config.WebSocket.Port = 10541
+	// WebSocket config (MOS 4.0). Not 10541 -- that port belongs to the MOS 2.x
+	// TCP transport above. Use 80 or 443 in production.
+	config.WebSocket.Enabled = true
+	config.WebSocket.Port = 8080
+
+	// Storage backend: "memory" or "mongo"
+	config.Storage.Backend = "memory"
 
 	// MongoDB config
 	config.Mongo.URI = "mongodb://localhost:27017"
@@ -300,6 +340,7 @@ func GenerateDefaultConfig(filePath string) error {
 
 	// MOS config
 	config.MOS.ID = "OpenMOS_Server"
+	config.MOS.NCSID = "ncs.station.com"
 	config.MOS.HeartbeatInterval = 30 * time.Second
 	config.MOS.ClientTimeout = 2 * time.Minute
 	config.MOS.Manufacturer = "OpenMOS Project"
@@ -423,12 +464,12 @@ func getDefaultDuration(current, defaultValue time.Duration) time.Duration {
 	return current
 }
 
-// GetServerAddress returns the full server address string
+// GetServerAddress returns the MOS 2.x TCP listen address.
 func (c *Config) GetServerAddress() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
 }
 
-// GetWebSocketAddress returns the WebSocket listen address.
+// GetWebSocketAddress returns the MOS 4.0 WebSocket listen address.
 func (c *Config) GetWebSocketAddress() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.WebSocket.Port)
 }

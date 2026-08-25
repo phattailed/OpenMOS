@@ -10,6 +10,81 @@ type MOSMessage interface {
 	GetMessageType() string
 }
 
+// Envelope is the standard MOS wire frame for receive-side messages.
+type Envelope struct {
+	XMLName xml.Name `xml:"mos"`
+	MosID   string   `xml:"mosID"`
+	NcsID   string   `xml:"ncsID"`
+	// omitempty so a reply to a MOS 2.6/2.8.x request that carried no messageID
+	// omits the element entirely rather than emitting an empty <messageID/>.
+	MessageID string `xml:"messageID,omitempty"`
+
+	// Profile 0 -- Basic Communication. Mandatory for any MOS compliance claim:
+	// "Vendors wishing to claim MOS compatibility must fully support, at a
+	// minimum, Profile 0 and at least one other Profile." (MOS 4.0 §2)
+	KeepAlive    *KeepAlive    `xml:"keepAlive,omitempty"`
+	Heartbeat    *Heartbeat    `xml:"heartbeat,omitempty"`
+	ReqMachInfo  *ReqMachInfo  `xml:"reqMachInfo,omitempty"`
+	ListMachInfo *ListMachInfo `xml:"listMachInfo,omitempty"`
+
+	// Profile 2 -- Running Order / Content List.
+	ROAck       *ROAck            `xml:"roAck,omitempty"`
+	ROCreate    *RunningOrderInfo `xml:"roCreate,omitempty"`
+	ROReplace   *ROReplace        `xml:"roReplace,omitempty"`
+	RODelete    *RODelete         `xml:"roDelete,omitempty"`
+	ROStorySend *ROStorySend      `xml:"roStorySend,omitempty"`
+}
+
+// GetMessageType returns the enclosed message type.
+func (e Envelope) GetMessageType() string {
+	message, err := e.Message()
+	if err != nil {
+		return "mos"
+	}
+	return message.GetMessageType()
+}
+
+// Message returns the single message carried by the envelope.
+func (e Envelope) Message() (MOSMessage, error) {
+	messages := make([]MOSMessage, 0, 1)
+	// Profile 0
+	if e.KeepAlive != nil {
+		messages = append(messages, *e.KeepAlive)
+	}
+	if e.Heartbeat != nil {
+		messages = append(messages, *e.Heartbeat)
+	}
+	if e.ReqMachInfo != nil {
+		messages = append(messages, *e.ReqMachInfo)
+	}
+	if e.ListMachInfo != nil {
+		messages = append(messages, *e.ListMachInfo)
+	}
+	// Profile 2
+	if e.ROAck != nil {
+		messages = append(messages, *e.ROAck)
+	}
+	if e.ROCreate != nil {
+		messages = append(messages, *e.ROCreate)
+	}
+	if e.ROReplace != nil {
+		messages = append(messages, *e.ROReplace)
+	}
+	if e.RODelete != nil {
+		messages = append(messages, *e.RODelete)
+	}
+	if e.ROStorySend != nil {
+		messages = append(messages, *e.ROStorySend)
+	}
+	if len(messages) == 0 {
+		return nil, ErrUnknownMessage
+	}
+	if len(messages) != 1 {
+		return nil, ErrInvalidXML
+	}
+	return messages[0], nil
+}
+
 // MosExternalMetadata represents external metadata in MOS messages
 type MosExternalMetadata struct {
 	XMLName    xml.Name `xml:"mosExternalMetadata"`
@@ -156,14 +231,14 @@ type RunningOrderInfo struct {
 	Channel   string      `xml:"roChannel,omitempty"`
 	EditTime  string      `xml:"roEdStart,omitempty"`
 	StartTime string      `xml:"roTrigger,omitempty"`
-	Duration  string      `xml:"roDur,omitempty"`
+	Duration  string      `xml:"roEdDur,omitempty"`
 	Stories   []StoryInfo `xml:"story"`
 }
 
 // StoryInfo represents a story within a running order
 type StoryInfo struct {
 	ID       string     `xml:"storyID"`
-	Slug     string     `xml:"storySlug"`
+	Slug     string     `xml:"storySlug,omitempty"`
 	Number   string     `xml:"storyNum,omitempty"`
 	Duration string     `xml:"storyDur,omitempty"`
 	Items    []ItemInfo `xml:"item,omitempty"`
@@ -172,10 +247,10 @@ type StoryInfo struct {
 // ItemInfo represents an item within a story
 type ItemInfo struct {
 	ID       string `xml:"itemID"`
-	Slug     string `xml:"itemSlug"`
-	Duration string `xml:"itemDur,omitempty"`
-	ObjectID string `xml:"objID,omitempty"`
-	MosID    string `xml:"mosID,omitempty"`
+	Slug     string `xml:"itemSlug,omitempty"`
+	Duration string `xml:"itemEdDur,omitempty"`
+	ObjectID string `xml:"objID"`
+	MosID    string `xml:"mosID"`
 	ObjPath  string `xml:"objPath,omitempty"`
 	Channel  string `xml:"itemChannel,omitempty"`
 }

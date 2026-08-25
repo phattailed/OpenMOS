@@ -26,7 +26,7 @@ type MosEnvelope struct {
 // InnerXML captures raw XML content for later parsing.
 type InnerXML struct {
 	XMLName xml.Name
-	XML     []byte `xml:",innerxml"`
+	XML     []byte     `xml:",innerxml"`
 	Attrs   []xml.Attr `xml:",any,attr"`
 }
 
@@ -63,9 +63,9 @@ func ParseEnvelope(data []byte) (*MosEnvelope, MOSMessage, []byte, error) {
 	if raw.NcsID == "" {
 		return nil, nil, nil, fmt.Errorf("mos envelope missing ncsID")
 	}
-	if raw.MessageID == "" {
-		return nil, nil, nil, fmt.Errorf("mos envelope missing messageID")
-	}
+	// messageID is validated further down, once the payload is known: MOS 4.0
+	// §4.1.1 exempts keepAlive, so the check cannot be made before parsing the
+	// operation.
 
 	env := &MosEnvelope{
 		MosID:     raw.MosID,
@@ -88,13 +88,29 @@ func ParseEnvelope(data []byte) (*MosEnvelope, MOSMessage, []byte, error) {
 	}
 
 	if operationXML == nil {
-		return env, nil, nil, nil // Envelope with no operation body (valid for some messages)
+		// Envelope with no operation body. Valid for some messages, but there is
+		// no payload to exempt, so a messageID is still expected.
+		if raw.MessageID == "" {
+			return env, nil, nil, fmt.Errorf("mos envelope missing messageID")
+		}
+		return env, nil, nil, nil
 	}
 
 	// Parse the inner operation using the existing parser
 	msg, err := ParseMessage(string(operationXML))
 	if err != nil {
 		return env, nil, nil, fmt.Errorf("failed to parse inner operation: %w", err)
+	}
+
+	// This is the MOS 4.0 transport, so messageID is mandatory except for
+	// keepAlive (MOS 4.0 §4.1.1).
+	//
+	// Only presence is checked here. MOS 4.0 §4.1.6 also requires the value to be
+	// a 32-bit signed integer >= 1, which the MOS 2.x transport does enforce, but
+	// aligning the two transports on format is tracked separately so that the
+	// change can be made against observed NCS behaviour rather than assumption.
+	if RequiresMessageID(Gen4x, msg) && raw.MessageID == "" {
+		return env, nil, nil, fmt.Errorf("mos envelope missing messageID")
 	}
 
 	return env, msg, operationXML, nil

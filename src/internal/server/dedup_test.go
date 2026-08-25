@@ -17,7 +17,7 @@ import (
 
 func TestDedupStore_New(t *testing.T) {
 	store := NewMemoryDedupStore()
-	result := store.Check("NCS_001", "msg-1", []byte("content-A"))
+	result := store.Check("test", "NCS_001", "msg-1", []byte("content-A"))
 	if result != DedupNew {
 		t.Errorf("expected DedupNew, got %v", result)
 	}
@@ -25,8 +25,8 @@ func TestDedupStore_New(t *testing.T) {
 
 func TestDedupStore_Duplicate(t *testing.T) {
 	store := NewMemoryDedupStore()
-	store.Check("NCS_001", "msg-1", []byte("content-A"))
-	result := store.Check("NCS_001", "msg-1", []byte("content-A"))
+	store.Check("test", "NCS_001", "msg-1", []byte("content-A"))
+	result := store.Check("test", "NCS_001", "msg-1", []byte("content-A"))
 	if result != DedupDuplicate {
 		t.Errorf("expected DedupDuplicate, got %v", result)
 	}
@@ -34,8 +34,8 @@ func TestDedupStore_Duplicate(t *testing.T) {
 
 func TestDedupStore_Conflict(t *testing.T) {
 	store := NewMemoryDedupStore()
-	store.Check("NCS_001", "msg-1", []byte("content-A"))
-	result := store.Check("NCS_001", "msg-1", []byte("content-B"))
+	store.Check("test", "NCS_001", "msg-1", []byte("content-A"))
+	result := store.Check("test", "NCS_001", "msg-1", []byte("content-B"))
 	if result != DedupConflict {
 		t.Errorf("expected DedupConflict, got %v", result)
 	}
@@ -43,8 +43,8 @@ func TestDedupStore_Conflict(t *testing.T) {
 
 func TestDedupStore_DifferentMessageIDs(t *testing.T) {
 	store := NewMemoryDedupStore()
-	store.Check("NCS_001", "msg-1", []byte("content-A"))
-	result := store.Check("NCS_001", "msg-2", []byte("content-A"))
+	store.Check("test", "NCS_001", "msg-1", []byte("content-A"))
+	result := store.Check("test", "NCS_001", "msg-2", []byte("content-A"))
 	if result != DedupNew {
 		t.Errorf("expected DedupNew for different messageID, got %v", result)
 	}
@@ -52,8 +52,8 @@ func TestDedupStore_DifferentMessageIDs(t *testing.T) {
 
 func TestDedupStore_DifferentNcsIDs(t *testing.T) {
 	store := NewMemoryDedupStore()
-	store.Check("NCS_001", "msg-1", []byte("content-A"))
-	result := store.Check("NCS_002", "msg-1", []byte("content-B"))
+	store.Check("test", "NCS_001", "msg-1", []byte("content-A"))
+	result := store.Check("test", "NCS_002", "msg-1", []byte("content-B"))
 	if result != DedupNew {
 		t.Errorf("expected DedupNew for different ncsID, got %v", result)
 	}

@@ -154,7 +154,7 @@ func (s *WSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing ncsID", http.StatusBadRequest)
 		return
 	}
-	if s.config.MOS.NcsID != "" && ncsID != s.config.MOS.NcsID {
+	if s.config.MOS.NCSID != "" && ncsID != s.config.MOS.NCSID {
 		http.Error(w, "ncsID not authorized", http.StatusForbidden)
 		return
 	}
@@ -333,7 +333,7 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 
 // handleReqMachInfo responds with listMachInfo.
 func (s *WSServer) handleReqMachInfo(ctx context.Context, sess *WSSession, env *mosxml.MosEnvelope) {
-	info := mosxml.CreateListMachInfo(s.config)
+	info := mosxml.CreateListMachInfo(s.config, mosxml.MosRev40)
 	innerXML, err := xml.Marshal(info)
 	if err != nil {
 		logger.Errorf("Failed to marshal listMachInfo: %v", err)
@@ -349,21 +349,37 @@ func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mos
 	// Check dedup using only the inner operation XML (not the full envelope),
 	// so that re-deliveries with different envelope whitespace or ordering are
 	// correctly identified as duplicates rather than conflicts.
-	result := s.dedup.Check(env.NcsID, env.MessageID, innerOpXML)
-	switch result {
+	//
+	// Scope is the channel: MOS 4 runs one connection per channel and each sender
+	// increments its own messageID sequence per channel, so the same value can
+	// mean different things on mom, ro and aux.
+	scope := "ws:" + sess.channel
+	switch result := s.dedup.Check(scope, env.NcsID, env.MessageID, innerOpXML); result {
 	case DedupDuplicate:
-		// Silently discard re-delivery
-		logger.Infof("Duplicate message discarded: ncsID=%s messageID=%s", env.NcsID, env.MessageID)
+		// A retry, not a new request. Replay the original response rather than
+		// re-applying, and do not answer with silence: the spec has the peer
+		// retrying "at intervals until a response is received", so discarding
+		// would simply invite another retry.
+		logger.Infof("Re-delivery of messageID=%s from ncsID=%s; replaying the original response",
+			env.MessageID, env.NcsID)
+		if original, ok := s.dedup.Response(scope, env.NcsID, env.MessageID); ok {
+			s.writeMessage(ctx, sess, original)
+		} else {
+			// Seen but the response was never recorded, e.g. the first attempt
+			// failed before replying. Safe to fall through and process it.
+			logger.Warningf("No stored response for messageID=%s; processing as new", env.MessageID)
+			break
+		}
 		return
 	case DedupConflict:
-		// Reject: same messageID but different content
+		// Same messageID, different content. A protocol error on the sender's side.
 		logger.Errorf("Message-ID conflict: ncsID=%s messageID=%s", env.NcsID, env.MessageID)
 		s.sendNack(ctx, sess, env.MessageID, "NACK", "messageID conflict: same ID with different content")
 		return
 	}
 
 	// Persist via service layer
-	err := s.service.ProcessRunningOrderInfo(ctx, roInfo)
+	err := s.service.ProcessRunningOrderInfo(ctx, roInfo, env.MosID)
 	if err != nil {
 		logger.Errorf("Failed to persist roCreate: %v", err)
 		s.sendNack(ctx, sess, env.MessageID, "NACK", "persistence failure")
@@ -379,6 +395,9 @@ func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mos
 	}
 
 	response := mosxml.WrapEnvelope(s.config.MOS.ID, sess.ncsID, env.MessageID, innerXML)
+	// Remember the exact bytes so a retry of this messageID is answered
+	// identically without the operation being applied a second time.
+	s.dedup.Remember(scope, env.NcsID, env.MessageID, response)
 	s.writeMessage(ctx, sess, response)
 }
 
