@@ -137,11 +137,19 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 	// live ENPS resynchronised by sending ten roStorySend messages and no roCreate,
 	// because from its side the device still held the running order. All ten were
 	// accepted, producing ten orphaned stories and a running order that existed only
-	// as a dangling reference. Answering roAck roStatus=ERROR is what tells the NCS
-	// its assumption is stale, and is the only signal that can prompt a roCreate.
+	// as a dangling reference.
+	//
+	// Reporting it is only half the answer. Real multi-vendor traffic shows that the
+	// protocol expects the DEVICE to recover by pulling: a prompter in the sampled
+	// corpus sends roReq twelve times across three days, and an automation system's
+	// startup handshake is reqMachInfo then roReqAll within the same second. The NCS
+	// is not obliged to notice our amnesia, so a device that only complains stays
+	// broken. Issuing that pull is tracked separately; until then this error at least
+	// names the mechanism instead of implying roCreate is the only route.
 	if _, err := s.runningOrderRepo.Get(ctx, storySend.ROID); err != nil {
-		return fmt.Errorf("roStorySend for unknown running order %q: send roCreate first (%w)",
-			storySend.ROID, err)
+		return fmt.Errorf("roStorySend for unknown running order %q: "+
+			"the NCS believes this device holds it, so recover with roReq for this roID "+
+			"or roReqAll, or await a roCreate (%w)", storySend.ROID, err)
 	}
 
 	storyID := storyPersistenceID(storySend.ROID, storySend.StoryID)

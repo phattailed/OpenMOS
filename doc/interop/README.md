@@ -765,3 +765,135 @@ CAPTURE_DIR=./capture ./openmos --config=config.yaml
 # 3. ask for the running orders over MOS 4, which also queues MOS 2.x work
 #    payload: <roReqAll></roReqAll>, UCS-2BE in a binary frame
 ```
+
+## 14. Four other vendors: what one NCS could not teach us
+
+Everything above was learned against a single ENPS version on transports we chose.
+Agreeing with one peer is not interoperability. This section comes from roughly 55 MB
+of real MOS traffic between an AP ENPS estate and four independent vendors'
+devices — a prompter, a graphics system, two automation systems and a gateway —
+about 90,000 messages, none of it produced by us.
+
+### The corpus
+
+| Device class | Messages | Ports used | `messageID` |
+|---|---|---|---|
+| Prompter | 18,735 | 10541 | always |
+| Graphics | 12,717 | 10540 **and** 10541 | **never** |
+| Automation ×2 | ~16,200 | 10540 and 10541 | always |
+| Gateway | 551 | n/a (`Port="0"`, `LinkID` attribute) | always |
+
+### The same NCS speaks two different `listMachInfo` dialects
+
+This is the finding with the sharpest teeth. ENPS 8.2 answers `reqMachInfo` on the
+socket transport with **flat** profile elements:
+
+```xml
+<mosRev>2.8.3</mosRev>
+<mosProfile0>YES</mosProfile0>
+<mosProfile1>YES</mosProfile1>
+...
+```
+
+ENPS 9.6 on the MOS 4.0 WebSocket answers the same request with a **container**:
+
+```xml
+<supportedProfiles deviceType="NCS">
+<mosProfile number="0">YES</mosProfile>
+```
+
+Same vendor, same message, two encodings. OpenMOS understood only the container form,
+so it would have silently read *no supported profiles at all* from most of the
+installed estate — no error, just a peer that appears to support nothing.
+
+Both are now parsed, and `ListMachInfo.Profiles()` returns a single merged view. The
+flat fields are pointers so that "not mentioned" stays distinguishable from
+"explicitly NO"; collapsing those would turn silence into a false claim.
+
+### A device that has never sent a `messageID`
+
+The graphics system sent 12,717 messages across 27 log files without one, and NOM's
+replies carried none either. On the socket transport that is legal — the element is a
+MOS 3.x/4.0 requirement — but it settles #20 empirically rather than by argument. Had
+we enforced presence uniformly, this vendor would have been unreachable.
+
+It also shows why the rule belongs to the *transport*: the identical frame is
+legitimate on the socket and invalid on MOS 4.0, where §4.1.1 requires the element.
+There is now a test asserting exactly that asymmetry.
+
+### Every `roAck` in the corpus is a refusal
+
+All 2,820 of them:
+
+```xml
+<roAck>
+<roID></roID>
+<roStatus>Buddy server cannot respond because main server is available</roStatus>
+</roAck>
+```
+
+and the object equivalent:
+
+```xml
+<mosAck>
+<status>NACK</status>
+<statusDescription>Buddy server cannot respond because main server is available</statusDescription>
+</mosAck>
+```
+
+These logs are from an ENPS **buddy** (standby) server. Devices connect to both
+members of the pair and the standby refuses everything until it takes over. Two
+consequences for any device implementation:
+
+- **`roStatus` is free prose, not an enumeration.** We emit `OK` and `ERROR`; a real
+  NCS emits an English sentence. Anything switching on this value will misbehave.
+- **`roID` can be empty in an ack.** A device correlating acks by `roID` alone will
+  drop every one of these.
+
+### Devices pull; they do not wait to be told
+
+The automation system's startup, all within the same second:
+
+```
+reqMachInfo  ->  listMachInfo      (twice: once per port)
+roReqAll     ->  roListAll
+```
+
+and the prompter sends `roReq` twelve times over three days, at varied hours.
+
+This is the answer to the divergence recorded in §13. When OpenMOS restarted and lost
+its running orders, the NCS carried on sending `roStorySend` because from its side
+nothing had changed. Refusing those is correct, but it is only half the protocol's
+answer: **the device is expected to recover by asking.** The NCS is not obliged to
+notice our amnesia, so a device that only complains stays broken.
+
+That reframes `roReqAll` from the trick discovered in §13 into ordinary, expected
+device behaviour. Implementing the pull is the clear next step; the error text now at
+least names it.
+
+### Smaller things that would each have cost an afternoon
+
+- **`roElementStat` was the most common non-heartbeat message**, 2,802 occurrences,
+  and the socket transport could not parse it at all — it was reachable on MOS 4.0
+  but missing from the socket envelope, so our two transports understood different
+  vocabularies over one supposedly shared core. `roReq`, `roList`, `roReqAll` and
+  `roListAll` had the same gap. All now present on both.
+- **Timestamps use a comma decimal separator**: `2022-03-29T20:05:07,453Z`. ISO 8601
+  allows it, this vendor uses it, and Go's `time` package rejects it.
+- **Operations arrive self-closing**: `<roReqAll/>`, `<reqMachInfo/>`, `<itemChannel/>`.
+- **An empty `<roListAll></roListAll>` is a valid answer**, not a failure.
+- **`messageID` values run large**: 1,127,213 on one automation system. Still within
+  a signed 32-bit integer, which is what §4.1.6 requires, but nowhere near a small
+  counter.
+- **`objID` carries embedded semicolons**: `PACKAGE;SOT VO CLIP`, the same composite
+  habit as `roID` and `storyID`.
+- **The gateway logs `Port="0"` with a `LinkID` GUID attribute** rather than a socket
+  port, so not every MOS peer is reached over the two socket ports at all.
+
+### Why this section exists
+
+Three defects in §12 and §13 were found by pointing at one live NCS for an hour.
+Seven more came from reading somebody else's logs. Neither exercise required writing
+a fixture, and neither could have been replaced by re-reading the specification: every
+finding here is a place where real implementations and a reasonable reading of the
+document differ.
