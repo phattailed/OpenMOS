@@ -306,10 +306,10 @@ the other application the opportunity to monitor continuity."
 Persisted state, from real ENPS content:
 
 ```
-runningOrders  1     slug "tangible-test", duration 5400 (a 90-minute rundown)
+runningOrders  1     slug "morning-news", duration 5400 (a 90-minute rundown)
 stories       10     slugs: gat, test, mop, map, chu, shoe, chew, hat, oosh, hay
 items          0     see "why zero items" below
-mosID                openmos.beltware.mos  -- populated, not empty
+mosID                openmos.example.mos  -- populated, not empty
 ```
 
 ### What this exercised that synthetic frames never did
@@ -318,8 +318,8 @@ mosID                openmos.beltware.mos  -- populated, not empty
 tokens:
 
 ```
-roID    APSTSNOM21;P_STORYTELLING\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538
-storyID APSTSNOM21;P_STORYTELLING\W\R_C45B2CF1-...;B7C56B36-890D-4A04-9A3A-...
+roID    NCS-HOST;P_NEWS\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538
+storyID NCS-HOST;P_NEWS\W\R_C45B2CF1-...;B7C56B36-890D-4A04-9A3A-...
 ```
 
 Every hand-written fixture in this repo used IDs like `RO-41` and `STORY-1`. The
@@ -399,7 +399,7 @@ the entire string to a DNS resolve and fails every 30 seconds:
 
 ```
 RemoteHost 127.0.0.1:20541 Authoritative answer: Host not found [11001]
-  [openmos.beltware.mos WinsockIn_Error]
+  [openmos.example.mos WinsockIn_Error]
 ```
 
 It is a hostname or IP only. The port is fixed at the MOS Upper Port, 10541.
@@ -661,3 +661,107 @@ so a wrapper waiting on that pipe never returns even though the tunnel is up. Tw
 practical rules: add forwards to an existing master with `ssh -O forward` instead of
 spawning new backgrounded clients, and verify the *listener* rather than the exit
 status.
+
+## 13. Authentic Profile 2 frames, and how to get them on demand
+
+§12 recorded that the NCS only dials a device when it has queued work, which made
+capturing genuine running-order traffic look like it needed someone editing a
+rundown in the ENPS client.
+
+It does not. The NCS answers a **device-initiated** `roReqAll` immediately:
+
+```xml
+<roListAll>
+<ro>
+<roID>NCS-HOST;P_NEWS\W;C45B2CF1-...</roID>
+<roSlug>morning-news</roSlug>
+<roChannel></roChannel>
+<roEdStart>2026-08-25T19:00:00</roEdStart>
+<roEdDur>01:30:00</roEdDur>
+...
+<mosExternalMetadata>
+<mosScope>PLAYLIST</mosScope>
+<mosSchema>http://NCS-HOST:10505/schema/enpsro.dtd</mosSchema>
+<mosPayload><roMOSIDList>openmos.example.mos</roMOSIDList></mosPayload>
+</mosExternalMetadata>
+</ro>
+</roListAll>
+```
+
+Better still, asking for the running order queued work on the NCS side, and NOM then
+dialled the MOS 2.x socket and delivered **ten real `roStorySend` messages**, all
+acknowledged. So a device can provoke authentic Profile 2 traffic whenever it wants,
+with no NCS-side interaction at all. That is now the reproduction path for fixtures.
+
+### What real frames contain that hand-written ones did not
+
+```xml
+<roStorySend>
+<roID>NCS-HOST;P_NEWS\W;C45B2CF1-...</roID>
+<storyID>NCS-HOST;P_NEWS\W\R_C45B2CF1-...;7F9AA3AB-...</storyID>
+<storySlug>hat</storySlug>
+<storyNum></storyNum>
+<storyBody><p>overture</p>
+<p> </p></storyBody>
+<mosExternalMetadata>
+  <mosScope>PLAYLIST</mosScope>
+  <mosSchema>http://NCS-HOST:10505/schema/enps.dtd</mosSchema>
+  <mosPayload>
+    <MediaTime>0</MediaTime><RevisionNumber>5</RevisionNumber>
+    <Creator>OPERATOR</Creator><CreatedDateTime>20260717T163525Z</CreatedDateTime>
+    <TextTime>0</TextTime><pubApproved>0</pubApproved>
+    <SourceTextTime>0</SourceTextTime><Actual>0</Actual>
+    <SourceMediaTime>0</SourceMediaTime><ModTime>20260717T163525Z</ModTime>
+    <Owner>OPERATOR</Owner><ModBy>OPERATOR</ModBy>
+    <ENPSItemType>3</ENPSItemType>
+  </mosPayload>
+</mosExternalMetadata>
+</roStorySend>
+```
+
+- **`storyBody` contains markup**, not text. `<p>` elements, including an empty one.
+- **`mosPayload` is a vendor blob of arbitrary elements.** The spec says a payload is
+  opaque to the device; this is what opaque looks like in practice.
+- **`mosSchema` points at a DTD on an ENPS port** (10505), a service distinct from
+  both MOS transports.
+- **`roEdDur` is `HH:MM:SS`**, not seconds, on this path.
+- **`messageID` was 36**, continuing the counter that stood at 35 after the previous
+  session. Plain incrementing integers, NCS-originated, spanning sessions.
+
+Sanitized versions are now fixtures in `internal/xml/live_profile2_fixtures_test.go`.
+Raw captures are never committed: story bodies are editorial content.
+
+### The defect this exposed: roStorySend fabricated running orders
+
+The ten stories arrived with **no `roCreate` before them**. From the NCS's side the
+device already held the running order, from the earlier session; OpenMOS had
+restarted with in-memory storage and lost it.
+
+OpenMOS accepted all ten and answered `roStatus=OK`. It created each story with a
+`RunningOrderID` pointing at a running order that did not exist, and the Profile 6
+path separately fabricated one with the invented slug `"Auto-created RO"`.
+
+Both were wrong. `roStorySend` adds a story to a running order; it is not a way to
+bring one into being. The old behaviour invented state nobody asked for and, worse,
+concealed the single condition most worth reporting — that the two sides disagree
+about what the device holds. An `roAck` with `roStatus=ERROR` is the only signal that
+can prompt the NCS to resynchronise with a `roCreate`.
+
+Now fixed on both paths, with the unknown `roID` named in the error. Note that no
+test covered the old behaviour, which is how it survived; and one existing test was
+quietly depending on it, having created a story without ever creating its running
+order.
+
+### Reproduction
+
+```sh
+# 1. tunnel (add to an existing master; never spawn `ssh -f`)
+ssh -O forward -L 8090:127.0.0.1:80 -S <control-socket> $NCS_SSH_HOST
+ssh -O forward -R 10541:127.0.0.1:10541 -S <control-socket> $NCS_SSH_HOST
+
+# 2. run with capture on
+CAPTURE_DIR=./capture ./openmos --config=config.yaml
+
+# 3. ask for the running orders over MOS 4, which also queues MOS 2.x work
+#    payload: <roReqAll></roReqAll>, UCS-2BE in a binary frame
+```

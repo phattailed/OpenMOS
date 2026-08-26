@@ -28,32 +28,30 @@ func (s *MOSService) ProcessStoryAction(ctx context.Context, action xml.NCSReqSt
 	}
 }
 
-// createNewStory creates a new story from the provided ROStorySend
+// createNewStory creates a new story from the provided ROStorySend.
+//
+// The running order must already exist. roStorySend adds a story to a running
+// order; it is not a way to bring one into being. OpenMOS used to fabricate a
+// missing running order here, with the slug "Auto-created RO", which was wrong in
+// two ways: it invented a running order the NCS never asked for, carrying no slug,
+// start time or duration that anyone had supplied, and it silently concealed the
+// one condition worth surfacing.
+//
+// That condition is real and was observed live. After OpenMOS restarted with
+// in-memory storage, a live ENPS resynchronised by sending ten roStorySend messages
+// and no roCreate, because from its side the device already held the running order.
+// Every one was accepted and a shell running order was fabricated. Answering with
+// roAck roStatus=ERROR instead tells the NCS its assumption is stale, which is the
+// only way it can know to send a roCreate.
 func (s *MOSService) createNewStory(ctx context.Context, storySend xml.ROStorySend) error {
-	// Check if Running Order exists, create if not
-	var ro *model.RunningOrder
-	var err error
-
-	if storySend.ROID != "" {
-		ro, err = s.runningOrderRepo.Get(ctx, storySend.ROID)
-		if err != nil {
-			// Create a new running order if it doesn't exist
-			ro = &model.RunningOrder{
-				ID:        storySend.ROID,
-				Slug:      "Auto-created RO",
-				Status:    model.StatusPending,
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-				Version:   1,
-			}
-
-			ro, err = s.runningOrderRepo.Create(ctx, ro)
-			if err != nil {
-				return fmt.Errorf("failed to create running order: %w", err)
-			}
-		}
-	} else {
+	if storySend.ROID == "" {
 		return fmt.Errorf("no running order ID specified")
+	}
+
+	ro, err := s.runningOrderRepo.Get(ctx, storySend.ROID)
+	if err != nil {
+		return fmt.Errorf("roStorySend for unknown running order %q: send roCreate first (%w)",
+			storySend.ROID, err)
 	}
 
 	// Create a story ID if not provided

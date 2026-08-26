@@ -40,6 +40,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Profile 0: heartbeat timeout (bounded) | Yes | Server closes on timeout | No | — |
 | `roCreate`: validate, persist, ack after persist | Yes | Integration tests | **Yes** | — |
 | `roReplace`, `roStorySend`, `roDelete` | Yes | Integration tests | **Yes** | — |
+| `roStorySend` refuses an unknown `roID` | Yes | Integration test | **Yes** | Reports rather than fabricating a running order |
+| Authentic captured fixtures (Profile 0 and 2) | Yes | Live-frame tests | **Yes** | Sanitized; raw captures never committed |
 | Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | Not durable across restart |
 | `messageID` conflict detection | Yes | Unit tests | **Yes** | — |
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
@@ -232,7 +234,7 @@ its UTF-8 length — the encoding is evidenced rather than merely asserted.
 
 This exists because every fixture in this repository was written by hand, and
 hand-written frames are misleadingly tidy. A live NCS sends identifiers like
-`APSTSNOM21;P_STORYTELLING\W;C45B2CF1-...`, not `RO-41`, and that difference has
+`NCS-HOST;P_NEWS\W;C45B2CF1-...`, not `RO-41`, and that difference has
 already caught us out once.
 
 > **Capture is off unless a directory is set, and should stay that way.** Frames
@@ -271,14 +273,13 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Capture authentic Profile 2 fixtures.** Profile 0 frames are now real, captured
-   from a live NCS. The running-order messages are still hand-written, because the
-   NCS only dials a device when it has queued work — see `doc/interop/README.md`
-   §12. One rundown edit on the NCS side would produce genuine `roCreate` and
-   `roStorySend` frames.
-2. **Passive mode against a real NCS.** Standard mode is now proven live; passive
+1. **Passive mode against a real NCS.** Standard mode is now proven live; passive
    mode is implemented and loopback-tested but the reference NCS has no passive
    device configured.
+2. **Durable storage by default for interop work.** In-memory storage means a
+   restart silently desynchronises us from the NCS, which is what exposed the
+   `roStorySend` defect in `doc/interop/README.md` §13. MongoDB is supported but
+   not the default.
 3. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License

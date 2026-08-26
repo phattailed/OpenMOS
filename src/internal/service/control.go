@@ -128,6 +128,22 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 	if strings.TrimSpace(storySend.StoryID) == "" {
 		return fmt.Errorf("storyID is required")
 	}
+
+	// The running order must already exist. roStorySend adds a story to a running
+	// order; it is not a way to bring one into being, and creating the story anyway
+	// leaves it pointing at a running order that is not there.
+	//
+	// This is not hypothetical. After OpenMOS restarted with in-memory storage, a
+	// live ENPS resynchronised by sending ten roStorySend messages and no roCreate,
+	// because from its side the device still held the running order. All ten were
+	// accepted, producing ten orphaned stories and a running order that existed only
+	// as a dangling reference. Answering roAck roStatus=ERROR is what tells the NCS
+	// its assumption is stale, and is the only signal that can prompt a roCreate.
+	if _, err := s.runningOrderRepo.Get(ctx, storySend.ROID); err != nil {
+		return fmt.Errorf("roStorySend for unknown running order %q: send roCreate first (%w)",
+			storySend.ROID, err)
+	}
+
 	storyID := storyPersistenceID(storySend.ROID, storySend.StoryID)
 
 	// Get or create the story
