@@ -62,7 +62,19 @@ func NewWSServer(cfg *config.Config, mosService *service.MOSService, eventBus *e
 // Start begins listening for WebSocket connections.
 func (s *WSServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/mos", s.handleUpgrade)
+	// The endpoint path is site-specific and must not be hardcoded. MOS 4.0 §1
+	// shows wss://<SERVERNAME>/mos/Communication, and our reference ENPS serves
+	// its own endpoint at /MOS4NCS/ -- so a peer's path is whatever they publish,
+	// and ours has to be configurable for them to point at it.
+	//
+	// Defaulted here as well as in config loading, because a Config built directly
+	// (as tests do) would otherwise pass an empty pattern to HandleFunc, which
+	// panics.
+	path := s.config.WebSocket.Path
+	if path == "" {
+		path = "/mos"
+	}
+	mux.HandleFunc(path, s.handleUpgrade)
 
 	addr := s.config.GetWebSocketAddress()
 
@@ -159,9 +171,11 @@ func (s *WSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only channel=ro is supported
-	if channel != "ro" {
-		http.Error(w, "unsupported channel; only 'ro' is supported", http.StatusBadRequest)
+	// Accept every channel the MOS 4.0 spec defines. Standard mode opens one
+	// connection per channel, so a peer may hold mom, ro and aux at once; sessions
+	// are keyed on (ncsID, channel) below to keep them distinct.
+	if !IsKnownChannel(channel) {
+		http.Error(w, "unknown channel; expected mom, ro or aux", http.StatusBadRequest)
 		return
 	}
 
@@ -311,6 +325,16 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 		return
 	}
 
+	// Reject messages that arrived on the wrong channel. Channel selection is how
+	// a MOS 4 peer signals intent, and the spec keeps traffic on the two ports
+	// independent of each other, so honouring the separation matters.
+	family := classifyMessage(msg)
+	if ok, why := channelAccepts(sess.channel, family); !ok {
+		logger.Errorf("Wrong channel from ncsID=%s: %s (%s)", sess.ncsID, msg.GetMessageType(), why)
+		s.sendNack(ctx, sess, env.MessageID, "NACK", why)
+		return
+	}
+
 	switch m := msg.(type) {
 	case mosxml.KeepAlive:
 		// MOS 4 Profile 0: keepAlive produces NO response.
@@ -326,8 +350,13 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 		return
 
 	default:
-		// Log receipt of unhandled message type but do not echo raw XML
-		logger.Infof("Received unhandled message type %s from ncsID=%s", msg.GetMessageType(), sess.ncsID)
+		// Recognised as belonging on this channel, but not implemented. Say so
+		// rather than staying silent: the spec has senders retrying until they get
+		// a response, so silence would just invite a retry.
+		logger.Infof("Unimplemented message type %s on channel %s from ncsID=%s",
+			msg.GetMessageType(), sess.channel, sess.ncsID)
+		s.sendNack(ctx, sess, env.MessageID, "NACK",
+			"message type "+msg.GetMessageType()+" is not implemented")
 	}
 }
 
