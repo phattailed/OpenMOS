@@ -1073,3 +1073,70 @@ answer.
 
 The recovery behaviour itself — reacting to an unknown `roID` by pulling — is still
 outstanding. It now has a mechanism that works underneath it.
+
+## 18. Pull recovery implemented
+
+The normative behaviour from §15, now built on the mechanism §17 repaired.
+
+> "If a message references an unknown `roID` or `storyID`, the MOS device should treat
+> this as lost synchronization, send `roReq`, and replace its local state from the
+> returned full `roList`."
+
+The sequence, exercised end to end on the wire:
+
+1. The NCS sends `roStorySend` for a running order we do not hold.
+2. We answer `roAck` with a NACK that says why — the peer is waiting for an answer to
+   *that* message and must know it was not applied.
+3. We send `roReq` for the missing `roID`, on the same connection, because this peer is
+   the one holding the stale belief.
+4. The NCS answers `roList`.
+5. We rebuild local state from it, and the previously refused `roStorySend` then applies
+   cleanly.
+
+### The loop guard is the load-bearing part
+
+A live ENPS sent **ten** `roStorySend` messages in a row for a running order we had
+lost. If every refusal produced a `roReq`, and the NCS answered each with a NACK because
+the running order is gone on its side too, the pair would trade messages indefinitely.
+The specification warns about precisely this shape for `heartbeat`: "care should be taken
+in implementation of this message to avoid an endless looping condition on response."
+
+So a `roID` may be requested at most once per interval, the tracked set is bounded, and a
+successful `roList` clears the record so a genuinely new divergence is actionable at once.
+When the bound is reached the guard **refuses rather than evicting**: declining to ask is
+safe, whereas forgetting that we asked is what re-opens the loop.
+
+Every message is still answered. Silence would be worse than a NACK, because the spec has
+senders retrying until they get a response.
+
+### Two test-quality problems this exposed
+
+Neither was in production code, and both mattered.
+
+**The test frame reader could not read two frames.** It filled a buffer until it saw a
+closing `</mos>`, then returned everything it had read — including bytes belonging to the
+next frame — and kept no leftover. Every previous exchange was one request and one reply,
+so it never showed. The moment the server answered with a NACK *and* a `roReq`, the second
+read began mid-element. It now splits at the first closing tag and buffers the surplus,
+which is what the production framer already did.
+
+**The in-test repository doubles returned map order.** The production repositories were
+fixed for exactly this in §16, but the integration tests use their own doubles, and those
+still iterated a map. The recovery test failed roughly one run in twelve with
+`story order not preserved: got S-2 then S-1` — the assertion it was written to protect,
+defeated by the harness rather than the code. The doubles now sort as the real
+repositories do.
+
+A double that does not reproduce the behaviour under test cannot test it. Both were found
+by running the suite repeatedly rather than once.
+
+### Scope
+
+Implemented on the MOS 2.x transport only. The MOS 4 WebSocket path implements
+`keepAlive`, `reqMachInfo` and `roCreate` and NACKs everything else as unimplemented, so
+it has no `roStorySend` to recover from yet. That asymmetry is now the top item in the
+README rather than an unstated gap.
+
+Also outstanding: applying a `roList` converges on what the NCS sent but does not delete
+stories absent from it. "Replace its local state" arguably requires that, and a partial
+convergence is recorded here rather than presented as a full replace.

@@ -274,6 +274,8 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 		err = c.handleROReq(ctx, msg)
 	case xml.ROReqAll:
 		err = c.handleROReqAll(ctx, msg)
+	case xml.ROList:
+		err = c.handleROList(ctx, msg)
 	case xml.RunningOrderInfo:
 		err = c.handleRunningOrderInfo(ctx, msg)
 	case xml.MOSAck:
@@ -437,6 +439,30 @@ func (c *ClientConnection) handleROReqAll(ctx context.Context, _ xml.ROReqAll) e
 
 	// An empty roListAll is a valid answer, observed from a real NCS.
 	return c.writeMessage(ctx, xml.CreateROListAll(entries))
+}
+
+// handleROList applies an inbound <roList>, completing pull recovery.
+//
+// MOS 3.8.4: on lost synchronisation a device should "send roReq, and replace its local
+// state from the returned full roList". This is that replacement. A roList may also
+// arrive unsolicited -- §3.5.2 notes it "can be sent by either the NCS or MOS" -- so it
+// is applied on its own merits rather than only when a request is outstanding.
+//
+// No response is defined for roList, so none is sent.
+func (c *ClientConnection) handleROList(ctx context.Context, list xml.ROList) error {
+	logger.Infof("Received roList from client %s for RO %s with %d stories",
+		c.id, list.ID, len(list.Stories))
+
+	if err := c.server.service.ApplyROList(ctx, list, c.config.MOS.ID); err != nil {
+		logger.Errorf("Failed to apply roList for RO %s: %v", list.ID, err)
+		return nil
+	}
+
+	// The disagreement is resolved, so allow an immediate request if a later one
+	// occurs rather than holding the rate limit against a running order we now hold.
+	c.server.resync.forget(list.ID)
+	logger.Infof("Applied roList for RO %s; local state rebuilt", list.ID)
+	return nil
 }
 
 // storyInfosFor converts stored stories, with their items, into the wire shape shared

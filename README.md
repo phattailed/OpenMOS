@@ -39,8 +39,10 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Profile 0: `keepAlive` (no response) | Yes | Unit tests | **Yes** | — |
 | Profile 0: heartbeat timeout (bounded) | Yes | Server closes on timeout | No | — |
 | `roCreate`: validate, persist, ack after persist | Yes | Integration tests | **Yes** | — |
-| `roReplace`, `roStorySend`, `roDelete` | Yes | Integration tests | **Yes** | — |
+| `roReplace`, `roStorySend`, `roDelete` | MOS 2.x only | Integration tests | **Yes** | The MOS 4 transport NACKs these as unimplemented |
 | `roStorySend` refuses an unknown `roID` | Yes | Integration test | **Yes** | Reports rather than fabricating a running order |
+| Pull recovery: unknown `roID` triggers `roReq` | MOS 2.x only | Integration tests | No | Rate-limited so recovery cannot loop |
+| Inbound `roList` rebuilds local state | MOS 2.x only | Integration tests | No | Does not yet delete stories absent from the list |
 | Authentic captured fixtures (Profile 0 and 2) | Yes | Live-frame tests | **Yes** | Sanitized; raw captures never committed |
 | Cross-vendor frames (4 other vendors) | Yes | Real-traffic tests | **Yes** | From ~90k logged messages, not synthesised |
 | `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
@@ -280,12 +282,10 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Recover by pulling, not just reporting.** Real devices resynchronise by sending
-   `roReq`/`roReqAll` rather than waiting for the NCS to notice — an automation
-   system's startup is `reqMachInfo` then `roReqAll` inside one second, and a prompter
-   pulls twelve times over three days (`doc/interop/README.md` §14). OpenMOS now
-   refuses a `roStorySend` for an unknown `roID` but does not yet ask for what it is
-   missing, so it reports the divergence without healing it.
+1. **Profile 2 on the MOS 4 transport.** The WebSocket path implements `keepAlive`,
+   `reqMachInfo` and `roCreate`, and NACKs everything else as unimplemented. So
+   running-order maintenance and pull recovery exist on the MOS 2.x transport only,
+   which is the larger remaining asymmetry between the two.
 2. **Passive mode against a real NCS.** Standard mode is now proven live; passive
    mode is implemented and loopback-tested but the reference NCS has no passive
    device configured.

@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -239,9 +240,25 @@ func TestRoStorySendForUnknownRunningOrderIsRefused(t *testing.T) {
 	}
 	readMOS28XMLForTest(t, conn, &ack)
 
-	if ack.RoAck.RoStatus != "ERROR" {
-		t.Errorf("roStatus = %q, want ERROR: an unknown roID must be reported so the NCS can resync",
+	if !strings.Contains(ack.RoAck.RoStatus, "NACK") {
+		t.Errorf("roStatus = %q, want a NACK: an unknown roID must be reported so the NCS can resync",
 			ack.RoAck.RoStatus)
+	}
+
+	// The NACK is only half the protocol's answer. MOS 3.8.4: on an unknown roID a
+	// device "should treat this as lost synchronization, send roReq, and replace its
+	// local state from the returned full roList". So a roReq must follow, on this same
+	// connection, naming the running order we are missing.
+	var pull struct {
+		ROReq struct {
+			ROID string `xml:"roID"`
+		} `xml:"roReq"`
+	}
+	readMOS28XMLForTest(t, conn, &pull)
+
+	if pull.ROReq.ROID != unknown {
+		t.Errorf("roReq roID = %q, want %q: recovery must ask for the running order it lacks",
+			pull.ROReq.ROID, unknown)
 	}
 
 	// Nothing may be fabricated as a side effect.
@@ -682,20 +699,53 @@ func stripXMLDeclarationForTest(value string) []byte {
 	return []byte(value)
 }
 
+// testFrameLeftovers holds bytes already read from a connection that belong to the
+// NEXT frame.
+//
+// The reader below fills a buffer until it sees a closing </mos>, which routinely
+// over-reads when the server writes two frames back to back. Returning the whole
+// buffer and forgetting the surplus makes the following read start mid-element, so a
+// test that expects two frames sees one empty and one fragment. That stayed hidden
+// while every exchange was a single request and a single reply.
+var (
+	testFrameLeftovers   = map[net.Conn][]byte{}
+	testFrameLeftoversMu sync.Mutex
+)
+
+// readUCS2BEFrameForTest returns exactly one UCS-2BE frame, buffering any surplus for
+// the next call. The production framer does the same thing; this keeps the harness
+// honest about frame boundaries so multi-frame exchanges can be asserted.
 func readUCS2BEFrameForTest(t *testing.T, conn net.Conn) []byte {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	closingTag := encodeUCS2BEForTest("</mos>")
-	var frame []byte
+
+	testFrameLeftoversMu.Lock()
+	frame := testFrameLeftovers[conn]
+	testFrameLeftoversMu.Unlock()
+
 	buffer := make([]byte, 256)
 	for !bytes.Contains(frame, closingTag) {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			t.Fatalf("read UCS-2BE ACK: %v", err)
+			t.Fatalf("read UCS-2BE frame: %v", err)
 		}
 		frame = append(frame, buffer[:n]...)
 	}
-	return frame
+
+	// Split immediately after the first closing tag and keep the rest.
+	end := bytes.Index(frame, closingTag) + len(closingTag)
+	rest := append([]byte(nil), frame[end:]...)
+
+	testFrameLeftoversMu.Lock()
+	if len(rest) == 0 {
+		delete(testFrameLeftovers, conn)
+	} else {
+		testFrameLeftovers[conn] = rest
+	}
+	testFrameLeftoversMu.Unlock()
+
+	return frame[:end]
 }
 
 type memoryRunningOrders struct {
@@ -807,6 +857,13 @@ func (r *memoryStories) ListByRunningOrder(_ context.Context, roID string) ([]*m
 			values = append(values, value)
 		}
 	}
+	// Sort by the NCS-supplied order, exactly as both real repositories do.
+	//
+	// A double that returns map order cannot catch ordering defects, which is the whole
+	// class of bug the production repositories were just fixed for. This one silently
+	// reordered rundowns and made a recovery test intermittently fail on the assertion
+	// it was written to protect.
+	sortStoriesForTest(values)
 	return values, nil
 }
 
@@ -876,7 +933,27 @@ func (r *memoryItems) ListByStory(_ context.Context, storyID string) ([]*model.I
 			values = append(values, value)
 		}
 	}
+	sortItemsForTest(values)
 	return values, nil
+}
+
+// sortStoriesForTest and sortItemsForTest mirror the production repositories' ordering.
+func sortStoriesForTest(values []*model.Story) {
+	sort.SliceStable(values, func(i, j int) bool {
+		if values[i].Order != values[j].Order {
+			return values[i].Order < values[j].Order
+		}
+		return values[i].ID < values[j].ID
+	})
+}
+
+func sortItemsForTest(values []*model.Item) {
+	sort.SliceStable(values, func(i, j int) bool {
+		if values[i].Order != values[j].Order {
+			return values[i].Order < values[j].Order
+		}
+		return values[i].ID < values[j].ID
+	})
 }
 
 func (r *memoryItems) value(id string) *model.Item {
