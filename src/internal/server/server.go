@@ -32,6 +32,10 @@ type TCPServer struct {
 	// capture records raw frames when enabled. Nil means capture is off, which a
 	// nil *capture.Recorder handles safely.
 	capture *capture.Recorder
+	// resync rate-limits outbound roReq so pull recovery cannot loop. Shared across
+	// connections, because the NCS may reconnect between the divergence and our
+	// request and the disagreement is about state, not about a socket.
+	resync *resyncGuard
 }
 
 // NewTCPServer creates a new TCP server instance
@@ -46,6 +50,7 @@ func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *
 		listener:   listener,
 		dedup:      NewMemoryDedupStore(),
 		capture:    frames,
+		resync:     newResyncGuard(),
 		clients:    make(map[string]*ClientConnection),
 		service:    mosService,
 		config:     cfg,

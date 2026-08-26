@@ -147,9 +147,7 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 	// broken. Issuing that pull is tracked separately; until then this error at least
 	// names the mechanism instead of implying roCreate is the only route.
 	if _, err := s.runningOrderRepo.Get(ctx, storySend.ROID); err != nil {
-		return fmt.Errorf("roStorySend for unknown running order %q: "+
-			"the NCS believes this device holds it, so recover with roReq for this roID "+
-			"or roReqAll, or await a roCreate (%w)", storySend.ROID, err)
+		return &UnknownRunningOrderError{ROID: storySend.ROID, Err: err}
 	}
 
 	storyID := storyPersistenceID(storySend.ROID, storySend.StoryID)
