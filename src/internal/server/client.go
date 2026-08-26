@@ -295,9 +295,13 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 	case xml.ROItemCue:
 		err = c.handleROItemCue(ctx, msg)
 
-	// Profile 6: MOS Redirection / Story Send
+	// Profile 4 continued: roStorySend carries the body of a story (MOS 4.0 §2.5).
+	// It is NOT Profile 6 -- Profile 6 is MOS Redirection and "does not include any
+	// additional MOS messages", being only a mosID naming convention (§2.7).
 	case xml.ROStorySend:
 		err = c.handleROStorySend(ctx, msg)
+
+	// Profile 7: MOS RO/Content List Modification (§2.8).
 	case xml.ROReqStoryAction:
 		err = c.handleROReqStoryAction(ctx, msg)
 

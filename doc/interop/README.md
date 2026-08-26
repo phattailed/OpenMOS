@@ -1140,3 +1140,113 @@ README rather than an unstated gap.
 Also outstanding: applying a `roList` converges on what the NCS sent but does not delete
 stories absent from it. "Replace its local state" arguably requires that, and a partial
 convergence is recorded here rather than presented as a full replace.
+
+## 19. Reading MOS 4.0 properly
+
+§15 read MOS 3.8.4. The MOS 4.0 document had not been read in full, despite MOS 4.0
+being one of the two transports implemented and despite §-references to it appearing
+throughout this artifact. Those references were carried from notes rather than checked.
+This corrects that.
+
+Most of what was asserted holds. Four things did not.
+
+### Corrected: `roStorySend` is Profile 4, not Profile 6
+
+MOS 4.0 §2 is specific about which messages belong to which profile:
+
+- **Profile 4** (Advanced RO/Content List Workflow, §2.5) requires `roReqAll`,
+  `roListAll` and **`roStorySend`**.
+- **Profile 6** (MOS Redirection, §2.7) "does not include any additional MOS
+  messages". It is a naming convention for fully qualified mosIDs —
+  `<family>.<machine>.<location>.<enterprise>.mos` — and nothing else.
+- **Profile 7** (§2.8) has one message, `roReqStoryAction`.
+
+OpenMOS had `roStorySend` and `roReqStoryAction` in a file called
+`client_profile6_handler.go`, both attributed to Profile 6, which owns neither. Renamed
+and corrected. This matters because precise profile attribution is what the README's
+status table is for; a file asserting the wrong profile quietly undermines it.
+
+### Confirmed clean: none of MOS 4.0's deprecated messages exist here
+
+MOS 4.0 removes thirteen messages outright and states that an implementation "should
+NEVER initiate" them: `roStoryAppend`, `roStoryInsert`, `roStoryReplace`, `roStoryMove`,
+`roStoryMoveMultiple`, `roStorySwap`, `roStoryDelete`, `roItemInsert`, `roItemReplace`,
+`roItemMoveMultiple`, `roItemDelete`, `roStat`, `roItemStat` — all superseded by
+`roElementAction`.
+
+Checked: not one of them exists in this codebase, so there is nothing to accidentally
+initiate. Receipt of legacy messages is explicitly permitted, so nothing needs adding
+either.
+
+### Sharpened: `messageID` persistence is a MUST
+
+§15 recorded persistence as something the spec "expects". §4.1.7 is firmer: "the last
+used messageID **must be persistent**". Since the section also describes retry
+deduplication as the field's whole purpose, a restarted OpenMOS reissuing 1, 2, 3 could
+have those answered from a peer's dedup cache rather than processed. Still outstanding,
+now stated at the right strength.
+
+### Not implemented: the DISCONNECTED signal
+
+§2.3 requires that if a device's running-order sequence is "intentionally changed such
+that it no longer represents the sequence as transmitted from the NCS", the device
+"will immediately send a series of `roElementStat` messages to the NCS with a `status`
+of `DISCONNECTED` and ACK all subsequent 'ro' messages with a `status` of
+`DISCONNECTED`", recovering afterwards via `roReq`.
+
+OpenMOS never reorders on its own, so the trigger cannot currently fire. That makes
+this inapplicable rather than broken — but it would become required the moment any
+local reordering were added, and it is not implemented.
+
+### Confirmed by MOS 4.0, having previously been taken on trust
+
+- **Encoding is UCS-2 big-endian**: "All MOS message contents are transmitted in
+  Unicode, high-order byte first, also known as 'big endian.'"
+- **Channel-to-port mapping**: `mom` = 10540, `ro` = 10541, `aux` = 10542, exactly as
+  implemented, with `aux` carrying the `mosReqObjList` query family.
+- **`keepAlive` needs no `messageID`**: "Since a reply is not required and therefore not
+  sequenced, the messageID field is not required for this message." Its example carries
+  none.
+- **Passive mode** is `passive=true` on the URL, one connection per channel, and the
+  inner device must re-establish "as quickly as possible" if it drops.
+- **Authentication** is HTTP Basic in the `Authorization` header, explicitly to avoid
+  credentials "in the URL", and devices "are also expected to accept self-signed
+  certificates, or provide an option to do so".
+- **Pull recovery** is stated twice, once in §2.3 in more operational language than
+  3.8.4 uses, confirming §18's implementation.
+- **Profile 2 requires Profiles 0 AND 1.** Profile 1 is object workflow — `mosObj`,
+  `mosReqObj`, `mosReqAll`, `mosListAll`. OpenMOS implements no object workflow, so it
+  could not claim Profile 2 even if the running-order family were complete. The
+  README's "Profile 2 running-order construction" phrasing is right for a second
+  reason.
+
+### More spec self-contradictions
+
+§15 found the `listMachInfo` profile encoding defined two ways. There are more, and each
+argues for lenient parsing:
+
+- **The XSD types `mosProfile` as `xsd:boolean`**, which accepts `true`/`false`/`1`/`0`
+  and specifically **not** `YES`/`NO` — while the prose says "A `YES` or `NO` value is
+  required for each profile" and every example uses `YES`. The `YesNo` type accepts all
+  of them, which is now justified by the document disagreeing with itself rather than by
+  vendor sympathy.
+- **The DTD allows exactly one profile**: `<!ELEMENT supportedProfiles (mosProfile)>`,
+  no repetition operator, while every example lists eight and the XSD permits
+  `maxOccurs='8'`.
+- **`roElementStat` requires `itemID` in the DTD** but marks it optional in the
+  structural outline. Real traffic with `element="RO"` omits it, so the outline wins in
+  practice.
+- The `keepAlive` example is malformed, closing a tag it never opens.
+
+### Sequential flow, per port
+
+§2.3 states a constraint worth recording: a sender "will not send another message to the
+target device on the same port until it receives an acknowledgement", and acknowledgement
+on one port is independent of the other. Unacknowledged messages are buffered and
+retried, and the spec recommends buffering them across a restart.
+
+OpenMOS answers requests rather than driving long outbound sequences, so this mostly
+constrains the peer. Where it touches us is pull recovery: the `roReq` in §18 is a new
+request, and the rate limit that keeps recovery from looping also happens to keep only
+one outstanding. That is a coincidence of design rather than an implementation of the
+rule, and is worth knowing if outbound traffic ever grows.

@@ -142,12 +142,15 @@ func ValidateOutboundMessageID(raw string) error {
 //     there: a real automation system in the sampled multi-vendor traffic was already
 //     at messageID 1,127,213.
 //
-// Note this does NOT address persistence. The spec also expects the last value to
-// survive a restart, so that a fresh process does not reissue identifiers the peer
-// still associates with earlier requests -- which a peer implementing retry
-// deduplication may answer from its cache instead of processing. OpenMOS keeps the
-// counter in memory only, so that hazard is real and is recorded in
-// doc/interop/README.md rather than silently ignored.
+// Note this does NOT address persistence, which the specification requires in
+// stronger terms than a recommendation: "The sender in a MOS communication increments
+// the messageID by one for each new request it sends, the last used messageID MUST be
+// persistent" (MOS 4.0 §4.1.7). OpenMOS keeps the counter in memory only, so a
+// restarted process reissues identifiers a peer may still associate with earlier
+// requests -- and a peer implementing retry deduplication, which §4.1.7 describes as
+// the whole purpose of the field, could answer from its cache instead of processing.
+// That is an outstanding conformance gap, recorded in doc/interop/README.md rather
+// than left implicit.
 func FormatMessageID(n int64) string {
 	if n < 1 {
 		return "1"

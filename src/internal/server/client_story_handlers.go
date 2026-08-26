@@ -1,5 +1,19 @@
 package server
 
+// Story-oriented handlers, deliberately not named after a single profile.
+//
+// This file was called client_profile6_handler.go, which attributed both of its
+// handlers to the wrong profile. MOS 4.0 §2 is specific:
+//
+//   - roStorySend belongs to Profile 4, Advanced RO/Content List Workflow, alongside
+//     roReqAll and roListAll (§2.5).
+//   - roReqStoryAction belongs to Profile 7, MOS RO/Content List Modification (§2.8).
+//   - Profile 6, MOS Redirection, "does not include any additional MOS messages"
+//     (§2.7). It is a naming convention for fully qualified mosIDs, nothing more.
+//
+// The mislabel mattered because precise profile claims are the point of this
+// project's status table; a file asserting the wrong profile undermines it.
+
 import (
 	"airshift/openmos/internal/service"
 	"context"
@@ -72,7 +86,10 @@ func (c *ClientConnection) requestResync(ctx context.Context, roID string) {
 	}
 }
 
-// handleROReqStoryAction processes a roReqStoryAction message (Profile 6)
+// handleROReqStoryAction processes a roReqStoryAction message.
+//
+// This is Profile 7 (MOS RO/Content List Modification), not Profile 6. MOS 4.0 §2.8
+// lists roReqStoryAction as Profile 7's only additional message.
 // MOS requests a story modification from the NCS
 func (c *ClientConnection) handleROReqStoryAction(ctx context.Context, msg xml.ROReqStoryAction) error {
 	span := sentry.StartSpan(ctx, "handle_ro_req_story_action")
