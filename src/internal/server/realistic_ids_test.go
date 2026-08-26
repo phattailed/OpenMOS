@@ -13,12 +13,12 @@ import (
 // uses tokens like RO-41 and STORY-1; real ENPS identifiers are composites
 // containing semicolons and backslashes, and a database path segment:
 //
-//	APSTSNOM21;P_STORYTELLING\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538
+//	NCS-HOST;P_NEWS\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538
 //
 // This worked on first contact, but it worked untested. These tests pin it.
 const (
-	realROID    = `APSTSNOM21;P_STORYTELLING\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538`
-	realStoryID = `APSTSNOM21;P_STORYTELLING\W\R_C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538;B7C56B36-890D-4A04-9A3A-4F32D8C180C3`
+	realROID    = `NCS-HOST;P_NEWS\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538`
+	realStoryID = `NCS-HOST;P_NEWS\W\R_C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538;B7C56B36-890D-4A04-9A3A-4F32D8C180C3`
 )
 
 func TestRealENPSIdentifiersRoundTripThroughRoCreate(t *testing.T) {

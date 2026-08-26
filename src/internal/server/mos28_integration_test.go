@@ -208,6 +208,51 @@ func TestMOS28RejectsUnexpectedNCSID(t *testing.T) {
 // carry the odd identifier back verbatim rather than a "corrected" value, because
 // correlation belongs to the peer that chose it — a peer that sent 0 is waiting to
 // see 0 come back.
+// TestRoStorySendForUnknownRunningOrderIsRefused pins behaviour that a live NCS
+// exercised and that no test previously covered.
+//
+// roStorySend adds a story to a running order; it is not a way to create one.
+// OpenMOS used to fabricate a missing running order with the slug "Auto-created
+// RO", which invented state the NCS never asked for and hid the one condition worth
+// reporting.
+//
+// The condition is real. After OpenMOS restarted with in-memory storage, a live
+// ENPS resynchronised by sending ten roStorySend messages and no roCreate, because
+// from its side the device still held the running order. Answering roStatus=ERROR
+// is what tells the NCS its assumption is stale.
+func TestRoStorySendForUnknownRunningOrderIsRefused(t *testing.T) {
+	tcpServer, runningOrders, stories, _ := startMOS28Server(t)
+	conn := dialMOS28(t, tcpServer)
+
+	const unknown = `NCS-HOST;P_TEST\W;11111111-2222-3333-4444-555555555555`
+	request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+		`<messageID>90</messageID><roStorySend><roID>` + unknown + `</roID>` +
+		`<storyID>STORY-1</storyID><storySlug>orphan</storySlug>` +
+		`<storyBody><p>body</p></storyBody></roStorySend></mos>`
+	writeMOS28ForTest(t, conn, request)
+
+	var ack struct {
+		RoAck struct {
+			RoID     string `xml:"roID"`
+			RoStatus string `xml:"roStatus"`
+		} `xml:"roAck"`
+	}
+	readMOS28XMLForTest(t, conn, &ack)
+
+	if ack.RoAck.RoStatus != "ERROR" {
+		t.Errorf("roStatus = %q, want ERROR: an unknown roID must be reported so the NCS can resync",
+			ack.RoAck.RoStatus)
+	}
+
+	// Nothing may be fabricated as a side effect.
+	if _, err := runningOrders.Get(context.Background(), unknown); err == nil {
+		t.Error("a running order was fabricated for an unknown roID; roStorySend must not create one")
+	}
+	if all, err := stories.ListByRunningOrder(context.Background(), unknown); err == nil && len(all) != 0 {
+		t.Errorf("stored %d stories for an unknown running order, want 0", len(all))
+	}
+}
+
 func TestMOS28ToleratesUnusualMessageID(t *testing.T) {
 	tcpServer, runningOrders, _, _ := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
@@ -309,8 +354,15 @@ func TestMOS28ROReplaceReplacesPersistedContentAndAcknowledges(t *testing.T) {
 }
 
 func TestMOS28ROStorySendUpdatesCompositeStoryAndAcknowledges(t *testing.T) {
-	tcpServer, _, stories, _ := startMOS28Server(t)
+	tcpServer, runningOrders, stories, _ := startMOS28Server(t)
 	ctx := context.Background()
+	// The running order must exist: roStorySend updates a story within one, and
+	// OpenMOS now refuses a send for an unknown roID rather than leaving the story
+	// pointing at nothing. See TestRoStorySendForUnknownRunningOrderIsRefused.
+	_, _ = runningOrders.Create(ctx, &model.RunningOrder{
+		ID:   "RO-STORY",
+		Slug: "Story test",
+	})
 	_, _ = stories.Create(ctx, &model.Story{
 		ID:             "RO-STORY/STORY-1",
 		RawID:          "STORY-1",

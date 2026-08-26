@@ -4,7 +4,7 @@
 // hand-written frames use identifiers like RO-41, while a live NCS sends
 // composites such as
 //
-//	APSTSNOM21;P_STORYTELLING\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538
+//	NCS-HOST;P_NEWS\W;C45B2CF1-D7C9-4E3D-AEF9-C60DAEC93538
 //
 // and the difference has already caught us out once. Capturing genuine traffic
 // lets real frames replace invented ones.
