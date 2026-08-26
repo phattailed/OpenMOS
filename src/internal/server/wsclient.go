@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -44,10 +43,14 @@ func NewWSClient(cfg *config.Config) *WSClient {
 	}
 }
 
-// messageID returns the next outbound messageID as a decimal string, satisfying
-// MOS 4.0 §4.1.6 (32-bit signed integer >= 1).
+// messageID returns the next outbound messageID.
+//
+// Origination goes through xml.FormatMessageID so the §4.1.6 rule lives in one
+// place rather than being restated at each emit site. The counter starts at 0 and
+// is incremented before use, so the first identifier is 1, which is the spec's
+// floor.
 func (c *WSClient) messageID() string {
-	return strconv.FormatInt(atomic.AddInt64(&c.nextMessageID, 1), 10)
+	return mosxml.FormatMessageID(atomic.AddInt64(&c.nextMessageID, 1))
 }
 
 // dialURL builds the outbound connect URL with the mosID, ncsID and channel

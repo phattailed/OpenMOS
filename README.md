@@ -32,7 +32,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | MOS 2.x transport (raw TCP, UCS-2BE) | Yes | Integration tests | **Yes** | — |
 | MOS 4.0 transport (WebSocket, UCS-2BE binary frames) | Yes | Loopback tests | **Yes** | TLS untested with real certs |
 | Both transports concurrently, one shared service | Yes | — | **Yes** | — |
-| MOS envelope, generation-aware `messageID` | Yes | Unit tests | **Yes** | Format strictness differs per transport (#20) |
+| MOS envelope, generation-aware `messageID` | Yes | Unit tests | **Yes** | — |
+| `messageID` format: strict outbound, lenient inbound | Yes | Unit + integration tests | **Yes** | Echoed IDs reproduce the peer's value verbatim |
 | Profile 0: `heartbeat` | Yes | Unit tests | **Yes** | — |
 | Profile 0: `reqMachInfo`/`listMachInfo` | Yes | Unit tests | **Yes** | — |
 | Profile 0: `keepAlive` (no response) | Yes | Unit tests | **Yes** | — |
@@ -273,10 +274,7 @@ The next interoperability steps, in order of value:
 2. **Capture authentic fixtures.** Every fixture here is hand-written apart from the
    identifiers in `doc/interop/`. With `capture.dir` set, one live rundown would
    produce real `roCreate` and `roStorySend` frames to replace them.
-3. **Agree `messageID` format handling across transports** (#20). Observed NCS
-   behaviour is now recorded — the reference ENPS emits plain incrementing integers
-   — so this is a decision rather than an investigation.
-4. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
+3. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License
 

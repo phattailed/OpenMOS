@@ -353,6 +353,41 @@ validation toward the spec's "32-bit signed integer >= 1" is safe against this
 NCS rather than speculative. Note this is one vendor's behaviour, so leniency on
 receipt is still the right posture.
 
+#### Decision taken
+
+**Strict outbound, lenient inbound** — option 3 of the three in #20.
+
+Everything OpenMOS originates satisfies §4.1.6, funnelled through
+`xml.FormatMessageID` so the rule lives in one place, and guarded by
+`xml.ValidateOutboundMessageID`. Inbound, both transports now share
+`xml.AcceptInboundMessageID`, which requires presence where the generation
+requires it and does not police format.
+
+The evidence supports enforcing on both sides, and this NCS would pass either way.
+It was not the deciding factor. Two things were:
+
+1. **The failure modes are not symmetric.** A spurious rejection discards a running
+   order — real editorial content — because a correlation token is spelled
+   unexpectedly. Accepting an odd-looking identifier costs nothing, since we only
+   echo it. One vendor's conformance is thin evidence about the next vendor's.
+2. **This same NCS already deviates on this very element.** It answered a request
+   carrying `messageID` `9001` with a `mosAck` bearing no `messageID` at all,
+   though §4.1.6 says responses carry the request's ID (§5 above). A vendor loose
+   about presence is not a safe bet to be strict about format.
+
+One consequence worth stating plainly: **echoing is not origination.** When a
+request arrives with a non-numeric `messageID`, the reply reproduces it verbatim
+rather than substituting a conformant value. Correlation belongs to the peer that
+chose the identifier; "correcting" it would leave that peer unable to match the
+reply to its request. So an outbound frame may legitimately carry a
+non-conformant `messageID` — but only ever one the peer chose itself.
+
+Inbound validation was therefore loosened rather than tightened, so #20's
+acceptance criterion about NACKing rejections applies to the structural faults that
+remain. Those now name the fault in `statusDescription` instead of returning a bare
+`invalid envelope`, bounded so a NACK cannot reflect an unbounded amount of
+peer-supplied text.
+
 ### Getting NOM to connect at all
 
 Three findings, each of which cost real time and none of which is documented
