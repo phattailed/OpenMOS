@@ -53,10 +53,35 @@ func RequiresMessageID(gen Generation, payload MOSMessage) bool {
 	return gen != Gen2x
 }
 
-// ParseMessageID validates and parses a MOS messageID.
+// messageID handling is deliberately asymmetric: strict on what we emit, lenient
+// on what we accept.
 //
-// MOS 4.0 §4.1.6: "The contents of the element must be a 32-bit signed integer,
-// decimal or hexadecimal, with a value larger than or equal to 1."
+// MOS 4.0 §4.1.6 is unambiguous about the format — "a 32-bit signed integer,
+// decimal or hexadecimal, with a value larger than or equal to 1" — and the XSD
+// codifies it. So everything OpenMOS originates obeys it.
+//
+// Inbound is a different question. Rejecting a message we understood perfectly
+// well, because an identifier we only ever echo back is spelled unexpectedly,
+// breaks a running order for no protocol benefit. We already know the reference
+// ENPS deviates on this element: it answered a request carrying messageID 9001
+// with a mosAck bearing no messageID at all, though §4.1.6 says responses carry
+// the request's ID. A vendor loose about presence may be loose about format, and
+// the cost of guessing wrong is asymmetric — a spurious rejection loses editorial
+// content, while an odd-looking identifier costs nothing.
+//
+// So inbound checks presence, which the protocol genuinely depends on for
+// correlation and deduplication, and does not police format.
+//
+// Note that echoing an inbound identifier is not origination. When a request
+// arrives with a non-numeric messageID, the response reproduces it verbatim:
+// correlation belongs to the peer that chose the value, and "correcting" it would
+// leave that peer unable to match the reply to its request.
+
+// ParseMessageID parses a MOS messageID and enforces the §4.1.6 format.
+//
+// Use it where a numeric value is actually needed, and for validating identifiers
+// OpenMOS originates. It is deliberately not used to screen inbound envelopes —
+// see AcceptInboundMessageID.
 func ParseMessageID(raw string) (int32, error) {
 	text := raw
 	base := 10
@@ -72,6 +97,45 @@ func ParseMessageID(raw string) (int32, error) {
 		return 0, fmt.Errorf("invalid MOS messageID %q: must be a 32-bit signed integer >= 1", raw)
 	}
 	return int32(value), nil
+}
+
+// AcceptInboundMessageID applies the inbound rule to a received envelope, and is
+// the single place both transports decide whether an arriving messageID is
+// acceptable.
+//
+// Presence is required wherever the generation requires it. Format is not
+// enforced, for the reasons above.
+func AcceptInboundMessageID(gen Generation, payload MOSMessage, raw string) error {
+	if RequiresMessageID(gen, payload) && raw == "" {
+		return fmt.Errorf("%s envelope is missing messageID", gen)
+	}
+	return nil
+}
+
+// ValidateOutboundMessageID applies the outbound rule to an identifier OpenMOS
+// originated, and enforces §4.1.6 exactly.
+//
+// This guards identifiers we mint, not ones we echo. An empty value is accepted
+// because some messages legitimately carry none, keepAlive being the obvious case.
+func ValidateOutboundMessageID(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	_, err := ParseMessageID(raw)
+	return err
+}
+
+// FormatMessageID renders a counter as a spec-valid messageID.
+//
+// Origination goes through here so that emitting a malformed identifier requires
+// bypassing the helper rather than merely forgetting the rule. Values below 1 are
+// lifted to 1, since §4.1.6 sets that floor and a counter that has not yet been
+// incremented would otherwise emit 0.
+func FormatMessageID(n int64) string {
+	if n < 1 {
+		n = 1
+	}
+	return strconv.FormatInt(n, 10)
 }
 
 // ValidateEnvelope checks envelope identity and messageID for the given
@@ -92,19 +156,8 @@ func ValidateEnvelope(env Envelope, gen Generation, expectedMosID, expectedNcsID
 		return nil, err
 	}
 
-	if RequiresMessageID(gen, payload) {
-		if env.MessageID == "" {
-			return nil, fmt.Errorf("%s envelope is missing messageID", gen)
-		}
-		if _, err := ParseMessageID(env.MessageID); err != nil {
-			return nil, err
-		}
-	} else if env.MessageID != "" {
-		// Optional here, but if supplied it must still be well formed so that
-		// responses can correlate against it.
-		if _, err := ParseMessageID(env.MessageID); err != nil {
-			return nil, err
-		}
+	if err := AcceptInboundMessageID(gen, payload, env.MessageID); err != nil {
+		return nil, err
 	}
 
 	if env.MosID != expectedMosID {

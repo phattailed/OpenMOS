@@ -103,14 +103,11 @@ func ParseEnvelope(data []byte) (*MosEnvelope, MOSMessage, []byte, error) {
 	}
 
 	// This is the MOS 4.0 transport, so messageID is mandatory except for
-	// keepAlive (MOS 4.0 §4.1.1).
-	//
-	// Only presence is checked here. MOS 4.0 §4.1.6 also requires the value to be
-	// a 32-bit signed integer >= 1, which the MOS 2.x transport does enforce, but
-	// aligning the two transports on format is tracked separately so that the
-	// change can be made against observed NCS behaviour rather than assumption.
-	if RequiresMessageID(Gen4x, msg) && raw.MessageID == "" {
-		return env, nil, nil, fmt.Errorf("mos envelope missing messageID")
+	// keepAlive (MOS 4.0 §4.1.1). Both transports now apply this same shared rule:
+	// presence as the generation requires, format not policed inbound. See
+	// AcceptInboundMessageID for why.
+	if err := AcceptInboundMessageID(Gen4x, msg, raw.MessageID); err != nil {
+		return env, nil, nil, err
 	}
 
 	return env, msg, operationXML, nil

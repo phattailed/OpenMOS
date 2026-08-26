@@ -197,16 +197,40 @@ func TestMOS28RejectsUnexpectedNCSID(t *testing.T) {
 	}
 }
 
-func TestMOS28RejectsInvalidMessageID(t *testing.T) {
-	tcpServer, _, _, _ := startMOS28Server(t)
+// TestMOS28ToleratesUnusualMessageID pins the inbound half of the messageID
+// policy on the wire, not just in the validator.
+//
+// messageID 0 violates MOS 4.0 §4.1.6, which requires >= 1. We accept it anyway:
+// the message was understood, and the identifier is one we only echo. Rejecting it
+// would discard a running order over the spelling of a correlation token.
+//
+// The echo is the second assertion and the more interesting one. The reply must
+// carry the odd identifier back verbatim rather than a "corrected" value, because
+// correlation belongs to the peer that chose it — a peer that sent 0 is waiting to
+// see 0 come back.
+func TestMOS28ToleratesUnusualMessageID(t *testing.T) {
+	tcpServer, runningOrders, _, _ := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>0</messageID><roCreate><roID>RO-0</roID><roSlug>Invalid ID</roSlug></roCreate></mos>`
+	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>0</messageID><roCreate><roID>RO-0</roID><roSlug>Unusual ID</roSlug></roCreate></mos>`
 	writeMOS28ForTest(t, conn, request)
-	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := conn.Read(make([]byte, 1)); err == nil {
-		t.Fatal("invalid messageID was accepted")
-	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		t.Fatalf("invalid messageID left connection open: %v", err)
+
+	var ack struct {
+		MessageID string `xml:"messageID"`
+		RoAck     struct {
+			RoID     string `xml:"roID"`
+			RoStatus string `xml:"roStatus"`
+		} `xml:"roAck"`
+	}
+	readMOS28XMLForTest(t, conn, &ack)
+
+	if ack.RoAck.RoStatus != "OK" {
+		t.Fatalf("roStatus = %q, want OK: an unusual messageID must not fail the operation", ack.RoAck.RoStatus)
+	}
+	if ack.MessageID != "0" {
+		t.Errorf("messageID echoed as %q, want verbatim \"0\" so the peer can correlate its own request", ack.MessageID)
+	}
+	if _, err := runningOrders.Get(context.Background(), "RO-0"); err != nil {
+		t.Errorf("running order was not persisted despite a valid roCreate: %v", err)
 	}
 }
 

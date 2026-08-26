@@ -175,11 +175,53 @@ func TestValidateEnvelope_Identity(t *testing.T) {
 		}
 	})
 
-	t.Run("malformed messageID is refused even when optional", func(t *testing.T) {
+	t.Run("malformed messageID is accepted inbound", func(t *testing.T) {
+		// Deliberate policy, see AcceptInboundMessageID. messageID 0 violates
+		// §4.1.6, but we understood the message and the identifier is one we only
+		// ever echo, so rejecting it would lose the payload for no benefit.
 		env := base
 		env.MessageID = "0"
-		if _, err := ValidateEnvelope(env, Gen2x, base.MosID, ""); err == nil {
-			t.Fatal("messageID 0 must be refused; the spec requires >= 1")
+		if _, err := ValidateEnvelope(env, Gen2x, base.MosID, ""); err != nil {
+			t.Fatalf("malformed inbound messageID must be tolerated, got %v", err)
+		}
+	})
+
+	t.Run("non-numeric messageID is accepted inbound on both generations", func(t *testing.T) {
+		for _, gen := range []Generation{Gen2x, Gen4x} {
+			env := base
+			env.MessageID = "msg-123"
+			if _, err := ValidateEnvelope(env, gen, base.MosID, ""); err != nil {
+				t.Fatalf("%s: non-numeric inbound messageID must be tolerated, got %v", gen, err)
+			}
+		}
+	})
+
+	t.Run("outbound origination stays strict", func(t *testing.T) {
+		// The other half of the policy: leniency is inbound only.
+		for _, bad := range []string{"0", "-1", "msg-123", "1.5", "abc"} {
+			if err := ValidateOutboundMessageID(bad); err == nil {
+				t.Errorf("originating messageID %q must be refused; §4.1.6 requires a 32-bit signed integer >= 1", bad)
+			}
+		}
+		for _, good := range []string{"1", "9001", "0x1F", "2147483647"} {
+			if err := ValidateOutboundMessageID(good); err != nil {
+				t.Errorf("originating messageID %q must be allowed: %v", good, err)
+			}
+		}
+		// Empty is legitimate: keepAlive carries none.
+		if err := ValidateOutboundMessageID(""); err != nil {
+			t.Errorf("empty messageID must be allowed for messages that carry none: %v", err)
+		}
+	})
+
+	t.Run("FormatMessageID never emits below the spec floor", func(t *testing.T) {
+		for _, n := range []int64{-5, 0, 1} {
+			if err := ValidateOutboundMessageID(FormatMessageID(n)); err != nil {
+				t.Errorf("FormatMessageID(%d) produced a spec-invalid identifier: %v", n, err)
+			}
+		}
+		if got := FormatMessageID(42); got != "42" {
+			t.Errorf("FormatMessageID(42) = %q, want \"42\"", got)
 		}
 	})
 }

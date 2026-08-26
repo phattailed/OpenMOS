@@ -331,8 +331,21 @@ func (s *WSServer) handleSession(sess *WSSession) {
 func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []byte) {
 	env, msg, innerOpXML, err := mosxml.ParseEnvelope(data)
 	if err != nil {
+		// Say what was actually wrong. A bare "invalid envelope" gives a vendor
+		// nothing to debug against, and since inbound messageID format is no longer
+		// policed, the rejections that remain are real structural faults worth
+		// naming precisely.
+		//
+		// ParseEnvelope returns a nil envelope on some paths, so echo the messageID
+		// only when there is one, and bound the text: the error can embed
+		// peer-supplied content and a NACK is not the place to reflect an arbitrary
+		// amount of it.
 		logger.Errorf("Envelope parse error from ncsID=%s: %v", sess.ncsID, err)
-		s.sendNack(ctx, sess, "", "NACK", "invalid envelope")
+		echoID := ""
+		if env != nil {
+			echoID = env.MessageID
+		}
+		s.sendNack(ctx, sess, echoID, "NACK", truncateForNack("invalid envelope: "+err.Error()))
 		return
 	}
 
@@ -444,6 +457,18 @@ func (s *WSServer) handleRoCreate(ctx context.Context, sess *WSSession, env *mos
 	// identically without the operation being applied a second time.
 	s.dedup.Remember(scope, env.NcsID, env.MessageID, response)
 	s.writeMessage(ctx, sess, response)
+}
+
+// maxNackDescription bounds what a NACK reflects back to the peer.
+const maxNackDescription = 200
+
+// truncateForNack keeps a statusDescription useful without reflecting an
+// unbounded amount of peer-supplied text.
+func truncateForNack(text string) string {
+	if len(text) <= maxNackDescription {
+		return text
+	}
+	return text[:maxNackDescription] + "..."
 }
 
 // sendNack sends a NACK response envelope.
