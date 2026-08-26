@@ -44,7 +44,9 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Authentic captured fixtures (Profile 0 and 2) | Yes | Live-frame tests | **Yes** | Sanitized; raw captures never committed |
 | Cross-vendor frames (4 other vendors) | Yes | Real-traffic tests | **Yes** | From ~90k logged messages, not synthesised |
 | `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
-| `roReq`/`roList`/`roReqAll`/`roListAll`/`roElementStat` parse on both transports | Yes | Real-traffic tests | Partly | Parsed and routed; not yet acted on |
+| `roReq` answered with `roList` for one running order | Yes | Integration tests | No | Was inverted with `roReqAll`; see `doc/interop` §17 |
+| `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | No | Discovery only, as the spec requires |
+| `roElementStat` parses and routes on both transports | Yes | Real-traffic tests | Partly | Parsed and routed; not yet acted on |
 | Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | Not durable across restart |
 | `messageID` conflict detection | Yes | Unit tests | **Yes** | — |
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |

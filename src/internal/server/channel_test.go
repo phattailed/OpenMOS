@@ -114,7 +114,7 @@ func TestUnknownMessagesAreNotBlockedByChannel(t *testing.T) {
 	// rather than being refused, so that adding message types cannot silently break
 	// a peer before the routing catches up.
 	//
-	// This previously used ReqRunningOrderList, which is <roReq>. That is now
+	// This previously used ROReq, which is <roReq>. That is now
 	// correctly classified as a running-order message, so it no longer demonstrates
 	// anything about unknown families.
 	if got := classifyMessage(mosxml.NCSReqStoryAction{}); got != familyUnknown {
@@ -135,11 +135,11 @@ func TestUnknownMessagesAreNotBlockedByChannel(t *testing.T) {
 // Order". The enquiry family belongs with it.
 func TestRunningOrderEnquiryMessagesRouteToRO(t *testing.T) {
 	enquiry := []mosxml.MOSMessage{
-		mosxml.ReqRunningOrderList{}, // <roReq>
-		mosxml.RunningOrderList{},    // <roList>
-		mosxml.ReqRunningOrder{},     // <roReqAll>
-		mosxml.ROListAll{},           // <roListAll>
-		mosxml.ROElementStat{},       // <roElementStat>
+		mosxml.ROReq{},         // <roReq>
+		mosxml.ROList{},        // <roList>
+		mosxml.ROReqAll{},      // <roReqAll>
+		mosxml.ROListAll{},     // <roListAll>
+		mosxml.ROElementStat{}, // <roElementStat>
 	}
 
 	for _, msg := range enquiry {

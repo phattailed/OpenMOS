@@ -31,6 +31,17 @@ func GenerateEnvelope(mosID, ncsID, messageID string, message MOSMessage) ([]byt
 		envelope.ListMachInfo = &value
 	case KeepAlive:
 		envelope.KeepAlive = &value
+	// Running-order enquiry replies. Without these, answering a roReq or roReqAll
+	// failed at the envelope stage and the connection was dropped -- the message layer
+	// was correct and the reply could not be sent.
+	case ROList:
+		envelope.ROList = &value
+	case ROListAll:
+		envelope.ROListAll = &value
+	case ROReq:
+		envelope.ROReq = &value
+	case ROReqAll:
+		envelope.ROReqAll = &value
 	default:
 		return nil, fmt.Errorf("unsupported enveloped message type %T", message)
 	}
@@ -85,13 +96,38 @@ func CreateMOSAck(source string, requestID string, status string, description st
 	}
 }
 
-// CreateRunningOrderList creates a running order list message
-func CreateRunningOrderList(source string, requestID string, items []ROListItem) RunningOrderList {
-	return RunningOrderList{
-		RequestID:    requestID,
-		Timestamp:    Now(),
-		Source:       source,
-		RunningOrder: items,
+// ROListEntry carries the fields needed to build either a roList or a roListAll
+// entry, so a caller assembles a running order once regardless of which it emits.
+type ROListEntry struct {
+	ID       string
+	Slug     string
+	Channel  string
+	EdStart  string
+	EdDur    string
+	Trigger  string
+	MacroIn  string
+	MacroOut string
+	Stories  []StoryInfo
+}
+
+// CreateROList builds a <roList>: the complete build of ONE running order, in
+// response to a roReq.
+//
+// MOS 3.8.4 §3.5.2 carries the running-order fields directly followed by story*, with
+// no nested <ro> element and no attributes. This previously emitted a list of running
+// order summaries wrapped in <ro>, which is roListAll's shape, decorated with three
+// attributes the specification does not define. A conformant peer could not read it.
+func CreateROList(ro ROListEntry) ROList {
+	return ROList{
+		ID:       ro.ID,
+		Slug:     ro.Slug,
+		Channel:  ro.Channel,
+		EdStart:  ro.EdStart,
+		EdDur:    ro.EdDur,
+		Trigger:  ro.Trigger,
+		MacroIn:  ro.MacroIn,
+		MacroOut: ro.MacroOut,
+		Stories:  ro.Stories,
 	}
 }
 
