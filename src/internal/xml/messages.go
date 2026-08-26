@@ -35,6 +35,27 @@ type Envelope struct {
 	ROReplace   *ROReplace        `xml:"roReplace,omitempty"`
 	RODelete    *RODelete         `xml:"roDelete,omitempty"`
 	ROStorySend *ROStorySend      `xml:"roStorySend,omitempty"`
+
+	// Running-order enquiry and status. These were reachable on the MOS 4.0
+	// transport but not on the socket, which meant the two transports understood
+	// different vocabularies over one shared message core -- exactly the split this
+	// project exists to avoid.
+	//
+	// All four are observed in real multi-vendor traffic: prompters and automation
+	// systems send roReq and roReqAll to pull running orders after a restart, NOM
+	// answers with roList and roListAll, and automation reports playback with
+	// roElementStat, which was the single most common non-heartbeat message in the
+	// sampled corpus.
+	// Careful with the two request types: their Go names are the inverse of their
+	// XML names. ReqRunningOrderList is <roReq>, which asks for ONE running order,
+	// and ReqRunningOrder is <roReqAll>, which asks for ALL of them. Mapping them by
+	// intuition rather than by XMLName produces an encoding/xml tag conflict at
+	// unmarshal time, not a compile error.
+	ROReq         *ReqRunningOrderList `xml:"roReq,omitempty"`
+	ROList        *RunningOrderList    `xml:"roList,omitempty"`
+	ROReqAll      *ReqRunningOrder     `xml:"roReqAll,omitempty"`
+	ROListAll     *ROListAll           `xml:"roListAll,omitempty"`
+	ROElementStat *ROElementStat       `xml:"roElementStat,omitempty"`
 }
 
 // GetMessageType returns the enclosed message type.
@@ -77,6 +98,22 @@ func (e Envelope) Message() (MOSMessage, error) {
 	}
 	if e.ROStorySend != nil {
 		messages = append(messages, *e.ROStorySend)
+	}
+	// Running-order enquiry and status
+	if e.ROReq != nil {
+		messages = append(messages, *e.ROReq)
+	}
+	if e.ROList != nil {
+		messages = append(messages, *e.ROList)
+	}
+	if e.ROReqAll != nil {
+		messages = append(messages, *e.ROReqAll)
+	}
+	if e.ROListAll != nil {
+		messages = append(messages, *e.ROListAll)
+	}
+	if e.ROElementStat != nil {
+		messages = append(messages, *e.ROElementStat)
 	}
 	if len(messages) == 0 {
 		return nil, ErrUnknownMessage
@@ -136,18 +173,73 @@ func (r ReqMachInfo) GetMessageType() string {
 // ListMachInfo represents a machine info response (Profile 0)
 // Per XSD: manufacturer, model, hwRev, swRev, DOM, SN, ID, time, opTime, mosRev, supportedProfiles
 type ListMachInfo struct {
-	XMLName           xml.Name          `xml:"listMachInfo"`
-	Manufacturer      string            `xml:"manufacturer,omitempty"`
-	Model             string            `xml:"model,omitempty"`
-	HwRev             string            `xml:"hwRev,omitempty"`
-	SwRev             string            `xml:"swRev,omitempty"`
-	DOM               string            `xml:"DOM,omitempty"`
-	SN                string            `xml:"SN,omitempty"`
-	ID                string            `xml:"ID,omitempty"`
-	Time              string            `xml:"time,omitempty"`
-	OpTime            string            `xml:"opTime,omitempty"`
-	MosRev            string            `xml:"mosRev,omitempty"`
+	XMLName      xml.Name `xml:"listMachInfo"`
+	Manufacturer string   `xml:"manufacturer,omitempty"`
+	Model        string   `xml:"model,omitempty"`
+	HwRev        string   `xml:"hwRev,omitempty"`
+	SwRev        string   `xml:"swRev,omitempty"`
+	DOM          string   `xml:"DOM,omitempty"`
+	SN           string   `xml:"SN,omitempty"`
+	ID           string   `xml:"ID,omitempty"`
+	Time         string   `xml:"time,omitempty"`
+	OpTime       string   `xml:"opTime,omitempty"`
+	MosRev       string   `xml:"mosRev,omitempty"`
+
+	// SupportedProfiles is the container encoding:
+	//
+	//	<supportedProfiles deviceType="NCS">
+	//	  <mosProfile number="0">YES</mosProfile>
+	//	</supportedProfiles>
 	SupportedProfiles SupportedProfiles `xml:"supportedProfiles"`
+
+	// MosProfile0..7 are the flat encoding:
+	//
+	//	<mosProfile0>YES</mosProfile0>
+	//
+	// Both are real and both come from AP ENPS. Version 9.6 sends the container form
+	// on the MOS 4.0 WebSocket transport; version 8.2 sends the flat form on the MOS
+	// 2.x socket. A device that reads only one silently loses the peer's
+	// capabilities, so we read either and emit the container form.
+	//
+	// These are pointers so that an absent element is distinguishable from an
+	// explicit NO. Without that, "profile not mentioned" and "profile not supported"
+	// would be the same value.
+	MosProfile0 *YesNo `xml:"mosProfile0,omitempty"`
+	MosProfile1 *YesNo `xml:"mosProfile1,omitempty"`
+	MosProfile2 *YesNo `xml:"mosProfile2,omitempty"`
+	MosProfile3 *YesNo `xml:"mosProfile3,omitempty"`
+	MosProfile4 *YesNo `xml:"mosProfile4,omitempty"`
+	MosProfile5 *YesNo `xml:"mosProfile5,omitempty"`
+	MosProfile6 *YesNo `xml:"mosProfile6,omitempty"`
+	MosProfile7 *YesNo `xml:"mosProfile7,omitempty"`
+}
+
+// Profiles reports which MOS profiles the peer claims, reading whichever encoding
+// it used.
+//
+// The container form wins where both appear, on the grounds that a peer sending the
+// newer encoding means it. Absent profiles are simply not in the map, so callers can
+// tell "not claimed" from "claimed as NO".
+func (l ListMachInfo) Profiles() map[int]bool {
+	profiles := make(map[int]bool, 8)
+
+	for _, flat := range []struct {
+		number int
+		value  *YesNo
+	}{
+		{0, l.MosProfile0}, {1, l.MosProfile1}, {2, l.MosProfile2}, {3, l.MosProfile3},
+		{4, l.MosProfile4}, {5, l.MosProfile5}, {6, l.MosProfile6}, {7, l.MosProfile7},
+	} {
+		if flat.value != nil {
+			profiles[flat.number] = bool(*flat.value)
+		}
+	}
+
+	for _, entry := range l.SupportedProfiles.Profiles {
+		profiles[entry.Number] = entry.Value.Bool()
+	}
+
+	return profiles
 }
 
 // GetMessageType returns the type of the message

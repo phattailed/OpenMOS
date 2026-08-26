@@ -42,6 +42,9 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `roReplace`, `roStorySend`, `roDelete` | Yes | Integration tests | **Yes** | — |
 | `roStorySend` refuses an unknown `roID` | Yes | Integration test | **Yes** | Reports rather than fabricating a running order |
 | Authentic captured fixtures (Profile 0 and 2) | Yes | Live-frame tests | **Yes** | Sanitized; raw captures never committed |
+| Cross-vendor frames (4 other vendors) | Yes | Real-traffic tests | **Yes** | From ~90k logged messages, not synthesised |
+| `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
+| `roReq`/`roList`/`roReqAll`/`roListAll`/`roElementStat` parse on both transports | Yes | Real-traffic tests | Partly | Parsed and routed; not yet acted on |
 | Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | Not durable across restart |
 | `messageID` conflict detection | Yes | Unit tests | **Yes** | — |
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
@@ -273,14 +276,20 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Passive mode against a real NCS.** Standard mode is now proven live; passive
+1. **Recover by pulling, not just reporting.** Real devices resynchronise by sending
+   `roReq`/`roReqAll` rather than waiting for the NCS to notice — an automation
+   system's startup is `reqMachInfo` then `roReqAll` inside one second, and a prompter
+   pulls twelve times over three days (`doc/interop/README.md` §14). OpenMOS now
+   refuses a `roStorySend` for an unknown `roID` but does not yet ask for what it is
+   missing, so it reports the divergence without healing it.
+2. **Passive mode against a real NCS.** Standard mode is now proven live; passive
    mode is implemented and loopback-tested but the reference NCS has no passive
    device configured.
-2. **Durable storage by default for interop work.** In-memory storage means a
+3. **Durable storage by default for interop work.** In-memory storage means a
    restart silently desynchronises us from the NCS, which is what exposed the
    `roStorySend` defect in `doc/interop/README.md` §13. MongoDB is supported but
    not the default.
-3. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
+4. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License
 
