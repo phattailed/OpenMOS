@@ -69,6 +69,16 @@ func classifyMessage(msg mosxml.MOSMessage) messageFamily {
 		return familyProfile0
 	case mosxml.RunningOrderInfo, mosxml.ROReplace, mosxml.RODelete, mosxml.ROStorySend, mosxml.ROAck:
 		return familyRunningOrder
+	// Running-order enquiry and status. These parse on both transports but were not
+	// classified, so channel routing treated them as unknown and refused them on
+	// MOS 4 even though the socket path accepted them.
+	//
+	// MOS 3.8.4 is explicit for roElementStat: "Port: MOS Upper Port (10541) -
+	// Running Order". The enquiry family belongs with it, being about running orders
+	// rather than objects.
+	case mosxml.ReqRunningOrderList, mosxml.RunningOrderList,
+		mosxml.ReqRunningOrder, mosxml.ROListAll, mosxml.ROElementStat:
+		return familyRunningOrder
 	case mosxml.MosObj, mosxml.MosObjAck, mosxml.MosReqObj, mosxml.MosReqAll, mosxml.MosListAll:
 		return familyObject
 	default:

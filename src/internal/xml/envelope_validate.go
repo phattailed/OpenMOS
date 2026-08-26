@@ -2,6 +2,7 @@ package xml
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -128,12 +129,33 @@ func ValidateOutboundMessageID(raw string) error {
 // FormatMessageID renders a counter as a spec-valid messageID.
 //
 // Origination goes through here so that emitting a malformed identifier requires
-// bypassing the helper rather than merely forgetting the rule. Values below 1 are
-// lifted to 1, since §4.1.6 sets that floor and a counter that has not yet been
-// incremented would otherwise emit 0.
+// bypassing the helper rather than merely forgetting the rule.
+//
+// Two bounds are enforced, both from MOS 3.8.4 §"IDs": the value is "a decimal or
+// hexadecimal signed 32-bit integer of at least 1", and the sender "increments IDs
+// [...] and wraps to 1".
+//
+//   - Values below 1 are lifted to 1, since a counter that has not yet been
+//     incremented would otherwise emit 0.
+//   - Values above the signed 32-bit maximum wrap back to 1 rather than overflowing
+//     into something ParseMessageID would reject. A long-lived process really can get
+//     there: a real automation system in the sampled multi-vendor traffic was already
+//     at messageID 1,127,213.
+//
+// Note this does NOT address persistence. The spec also expects the last value to
+// survive a restart, so that a fresh process does not reissue identifiers the peer
+// still associates with earlier requests -- which a peer implementing retry
+// deduplication may answer from its cache instead of processing. OpenMOS keeps the
+// counter in memory only, so that hazard is real and is recorded in
+// doc/interop/README.md rather than silently ignored.
 func FormatMessageID(n int64) string {
 	if n < 1 {
-		n = 1
+		return "1"
+	}
+	if n > math.MaxInt32 {
+		// Cycle through 1..MaxInt32 rather than clamping, so a wrapped sender keeps
+		// producing distinct identifiers instead of repeating one forever.
+		n = ((n - 1) % int64(math.MaxInt32)) + 1
 	}
 	return strconv.FormatInt(n, 10)
 }

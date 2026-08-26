@@ -54,6 +54,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | MOS 4 outbound client, standard mode | Yes | Loopback tests | **Yes** | Profile 0 completed against a live NCS |
 | MOS 4 outbound client, passive mode | Yes | Loopback tests | No | Live NCS has no passive device configured |
 | MOS booleans as `YES`/`NO` | Yes | Unit + live-frame tests | **Yes** | — |
+| MOS timestamps with comma fractions | Yes | Unit tests (spec examples) | **Yes** | `ParseMOSTime`; Go's stdlib cannot read them |
+| Story and item order preserved | Yes | Unit tests, both backends | No | In-memory backend previously returned map order |
 | Spec-clean `heartbeat` with no invented attributes | Yes | Unit + live-frame tests | **Yes** | — |
 | MOS 4 authentication (HTTP Basic over TLS) | Yes | Unit tests | No | Live NCS cert is for an unrelated domain |
 | Raw frame capture for fixtures | Yes | Unit tests | **Yes** | Off unless a directory is configured |
@@ -285,11 +287,18 @@ The next interoperability steps, in order of value:
 2. **Passive mode against a real NCS.** Standard mode is now proven live; passive
    mode is implemented and loopback-tested but the reference NCS has no passive
    device configured.
-3. **Durable storage by default for interop work.** In-memory storage means a
+3. **Persist the `messageID` counter.** The spec has the sender "increment IDs,
+   persist the last value, and wrap to 1". Wrapping is implemented; persistence is
+   not, so a restart reissues identifiers a peer may still associate with earlier
+   requests (`doc/interop/README.md` §15).
+4. **Preserve `mosExternalMetadata`.** The payload is opaque and must be carried, but
+   the model holds `map[string]string`, which cannot represent the nested vendor XML
+   real traffic sends in `<mosPayload>`.
+5. **Durable storage by default for interop work.** In-memory storage means a
    restart silently desynchronises us from the NCS, which is what exposed the
    `roStorySend` defect in `doc/interop/README.md` §13. MongoDB is supported but
    not the default.
-4. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
+6. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License
 

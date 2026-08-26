@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"airshift/openmos/internal/model"
@@ -138,6 +139,23 @@ func (r *MemoryStoryRepository) ListByRunningOrder(_ context.Context, roID strin
 			result = append(result, &clone)
 		}
 	}
+	// Return stories in the order the NCS supplied, which for a rundown is play
+	// order. This backend stores them in a map, so without an explicit sort the
+	// order is whatever Go's map iteration produces -- different on every call.
+	//
+	// MOS 3.8.4: "Element order is significant. Items arrive in intended play order,
+	// and a MOS device must retain the sequence supplied by the NCS even if it
+	// executes items out of order." The Mongo backend already sorted by this field;
+	// the in-memory one did not, which meant the DEFAULT backend silently reordered
+	// rundowns and no test could see it.
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Order != result[j].Order {
+			return result[i].Order < result[j].Order
+		}
+		// Ties should not happen, but if they do, stay deterministic rather than
+		// falling back to map order.
+		return result[i].ID < result[j].ID
+	})
 	return result, nil
 }
 
@@ -210,6 +228,14 @@ func (r *MemoryItemRepository) ListByStory(_ context.Context, storyID string) ([
 			result = append(result, &clone)
 		}
 	}
+	// Items are ordered within their story for the same reason stories are ordered
+	// within the running order: play order is meaning, not presentation.
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Order != result[j].Order {
+			return result[i].Order < result[j].Order
+		}
+		return result[i].ID < result[j].ID
+	})
 	return result, nil
 }
 

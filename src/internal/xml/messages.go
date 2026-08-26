@@ -4,7 +4,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // MOSMessage is the base interface for all MOS messages
@@ -562,7 +561,4 @@ type ROAckStory struct {
 	Status      string `xml:"status"`
 }
 
-// Now returns the current timestamp in MOS format
-func Now() string {
-	return time.Now().Format(time.RFC3339)
-}
+// Now has moved to mostime.go, alongside MOS time parsing and formatting.

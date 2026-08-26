@@ -1,6 +1,7 @@
 package xml
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -222,6 +223,31 @@ func TestValidateEnvelope_Identity(t *testing.T) {
 		}
 		if got := FormatMessageID(42); got != "42" {
 			t.Errorf("FormatMessageID(42) = %q, want \"42\"", got)
+		}
+	})
+
+	t.Run("FormatMessageID wraps at the 32-bit boundary", func(t *testing.T) {
+		// MOS 3.8.4: the sender "increments IDs [...] and wraps to 1", and the value
+		// must be a signed 32-bit integer >= 1. Past the boundary we must cycle rather
+		// than emit something ParseMessageID would reject.
+		const maxInt32 = int64(math.MaxInt32)
+
+		if got := FormatMessageID(maxInt32); got != "2147483647" {
+			t.Errorf("FormatMessageID(MaxInt32) = %q, want the boundary value itself", got)
+		}
+		if got := FormatMessageID(maxInt32 + 1); got != "1" {
+			t.Errorf("FormatMessageID(MaxInt32+1) = %q, want \"1\" per the wrap rule", got)
+		}
+		if got := FormatMessageID(maxInt32 + 2); got != "2" {
+			t.Errorf("FormatMessageID(MaxInt32+2) = %q, want \"2\"", got)
+		}
+
+		// Whatever the counter reaches, the output must stay valid to originate.
+		for _, n := range []int64{maxInt32 - 1, maxInt32, maxInt32 + 1, maxInt32 * 2, maxInt32*3 + 7} {
+			got := FormatMessageID(n)
+			if err := ValidateOutboundMessageID(got); err != nil {
+				t.Errorf("FormatMessageID(%d) = %q, which is not valid to originate: %v", n, got, err)
+			}
 		}
 	})
 }
