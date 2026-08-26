@@ -108,12 +108,52 @@ func TestRejectionNamesTheLegacyPort(t *testing.T) {
 // reports it as unimplemented instead, which is a more accurate diagnosis than
 // claiming it arrived on the wrong channel.
 func TestUnknownMessagesAreNotBlockedByChannel(t *testing.T) {
-	if got := classifyMessage(mosxml.ReqRunningOrderList{}); got != familyUnknown {
+	// NCSReqStoryAction is a Profile 6 message we can parse but have not placed on a
+	// channel. It stands in for "something we do not yet route", which is the case
+	// this test exists to cover: an unclassified message must pass channel routing
+	// rather than being refused, so that adding message types cannot silently break
+	// a peer before the routing catches up.
+	//
+	// This previously used ReqRunningOrderList, which is <roReq>. That is now
+	// correctly classified as a running-order message, so it no longer demonstrates
+	// anything about unknown families.
+	if got := classifyMessage(mosxml.NCSReqStoryAction{}); got != familyUnknown {
 		t.Fatalf("expected an unclassified family, got %v", got)
 	}
 	for _, channel := range []string{ChannelMom, ChannelRO, ChannelAux} {
 		if ok, _ := channelAccepts(channel, familyUnknown); !ok {
 			t.Errorf("unclassified message blocked on channel %s", channel)
+		}
+	}
+}
+
+// TestRunningOrderEnquiryMessagesRouteToRO pins the classification added alongside
+// socket-transport parsing for these types. They parsed but were unclassified, so
+// channel routing treated them as unknown.
+//
+// MOS 3.8.4 is explicit for roElementStat: "Port: MOS Upper Port (10541) - Running
+// Order". The enquiry family belongs with it.
+func TestRunningOrderEnquiryMessagesRouteToRO(t *testing.T) {
+	enquiry := []mosxml.MOSMessage{
+		mosxml.ReqRunningOrderList{}, // <roReq>
+		mosxml.RunningOrderList{},    // <roList>
+		mosxml.ReqRunningOrder{},     // <roReqAll>
+		mosxml.ROListAll{},           // <roListAll>
+		mosxml.ROElementStat{},       // <roElementStat>
+	}
+
+	for _, msg := range enquiry {
+		if got := classifyMessage(msg); got != familyRunningOrder {
+			t.Errorf("%T classified as %v, want familyRunningOrder", msg, got)
+			continue
+		}
+		if ok, why := channelAccepts(ChannelRO, familyRunningOrder); !ok {
+			t.Errorf("%T refused on the ro channel: %s", msg, why)
+		}
+		// And they must be refused on a channel they do not belong to, otherwise the
+		// classification is not doing any work.
+		if ok, _ := channelAccepts(ChannelMom, familyRunningOrder); ok {
+			t.Errorf("%T accepted on the mom channel, which carries objects", msg)
 		}
 	}
 }

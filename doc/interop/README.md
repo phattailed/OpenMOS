@@ -878,8 +878,8 @@ least names it.
   but missing from the socket envelope, so our two transports understood different
   vocabularies over one supposedly shared core. `roReq`, `roList`, `roReqAll` and
   `roListAll` had the same gap. All now present on both.
-- **Timestamps use a comma decimal separator**: `2022-03-29T20:05:07,453Z`. ISO 8601
-  allows it, this vendor uses it, and Go's `time` package rejects it.
+- **Timestamps use a comma decimal separator**: `2022-03-29T20:05:07,453Z`. This was
+  first recorded here as a vendor quirk. It is not — see §15.
 - **Operations arrive self-closing**: `<roReqAll/>`, `<reqMachInfo/>`, `<itemChannel/>`.
 - **An empty `<roListAll></roListAll>` is a valid answer**, not a failure.
 - **`messageID` values run large**: 1,127,213 on one automation system. Still within
@@ -897,3 +897,131 @@ Seven more came from reading somebody else's logs. Neither exercise required wri
 a fixture, and neither could have been replaced by re-reading the specification: every
 finding here is a place where real implementations and a reasonable reading of the
 document differ.
+
+## 15. What the specification says, and where it disagrees with itself
+
+§14 was written from traffic alone. Reading MOS 3.8.4 afterwards confirmed most of
+it, corrected one item, and settled two questions that observation could only leave
+open.
+
+### Corrected: the comma timestamp is normative, not a vendor quirk
+
+§14 filed `2022-03-29T20:05:07,453Z` under vendor oddities. The specification defines
+exactly that:
+
+> Format is `YYYY-MM-DD'T'hh:mm:ss[,ddd]['Z']`, e.g. `1999-04-11T14:22:07,125Z` or
+> `1999-04-11T14:22:07,125-05:00`. [...] `[,ddd]` represents fractional time in which
+> all three digits must be present.
+
+So the automation system is right and Go is the awkward one: `time.Parse` accepts only
+a period, which means **no stdlib layout can read a conformant MOS timestamp carrying a
+fraction.** There is now a `ParseMOSTime` that accepts the comma form the spec defines
+and the period form everything else uses, and a `FormatMOSTime` that emits the comma
+with the required three digits.
+
+Because everything in brackets is optional, all of these are conformant, and all four
+appear in real traffic:
+
+```
+2026-08-26T03:52:26            no fraction, no zone   (live ENPS)
+2022-03-29T20:05:07,453Z       comma fraction, UTC    (automation system)
+1999-04-11T14:22:07,125-05:00  comma fraction, offset (spec example)
+2026-08-25T23:52:26-04:00      no fraction, offset    (OpenMOS)
+```
+
+That last line matters: OpenMOS's own output was already conformant, since the spec
+permits the zone to be "an offset from UTC in hours and minutes". No change was needed
+there, only the ability to read what others send.
+
+### Settled: the spec contains BOTH profile encodings
+
+§14 recorded that ENPS 8.2 sends flat `<mosProfile0>` on the socket while 9.6 sends a
+`<supportedProfiles>` container on MOS 4.0, and treated that as vendor divergence.
+
+It is not. **The specification defines both, in the same document.** Its structural
+outline shows the container:
+
+```
+supportedProfiles (deviceType = (MOS, NCS))
+  mosProfile (number = (0))
+```
+
+while its own WSDL schema for the same message declares the flat form:
+
+```xml
+<s:element minOccurs="0" maxOccurs="1" name="supportedProfiles" type="s:string"/>
+<s:element minOccurs="0" maxOccurs="1" name="mosProfile0" type="s:string"/>
+<s:element minOccurs="0" maxOccurs="1" name="mosProfile1" type="s:string"/>
+```
+
+Note the WSDL even types `supportedProfiles` as a plain string, which cannot hold the
+nested `mosProfile` elements the outline describes. Both ENPS versions are reading the
+same specification and implementing different halves of it.
+
+That makes parsing both the only defensible behaviour, and it is now justified by the
+document rather than by vendor sympathy. It also means neither encoding can be called
+the wrong one.
+
+### Confirmed by the spec
+
+- **`roStatus` is free text.** "Options are: `"OK"` or error description. 128 chars
+  max." The buddy-server sentence in §14 is conformant, and anything treating this as
+  an enumeration is not. Note the 128-character limit, which OpenMOS does not enforce
+  on output.
+- **MOS booleans are `YES`/`NO`.** "A `"YES"` or `"NO"` value is required for each
+  profile" — the defect fixed in §12 was a genuine conformance failure, not a
+  tolerance gap.
+- **`heartbeat` carries only `time`.** The structural outline is `heartbeat` then
+  `time`, with no attributes, confirming the §12 fix. The spec also warns to "avoid an
+  endless looping condition on response", which is the reflection guard OpenMOS
+  already has.
+- **Devices recover by pulling.** "If a message references an unknown `roID` or
+  `storyID`, the MOS device should treat this as lost synchronization, send `roReq`,
+  and replace its local state from the returned full `roList`." §13's fix — refusing
+  `roStorySend` for an unknown `roID` — is the first half of a normative requirement,
+  and the pull is the second half. `roReq` may be answered with `roList` **or** a
+  NACK-bearing `roAck` when the running order is unknown or unavailable, so the
+  recovery path must handle both.
+- **The ACK contract is explicit.** An ACK means the message parsed, required metadata
+  was saved, and "referenced metadata entities assumed to exist actually exist".
+  Acking a `roStorySend` for a running order we do not hold breaks the third clause,
+  which is precisely the §13 defect.
+- **`roElementStat` belongs on the upper port.** "Port: MOS Upper Port (10541) -
+  Running Order". It and the enquiry family are now classified so channel routing
+  accepts them on `ro` and refuses them on `mom`; they parsed but were unclassified,
+  so MOS 4.0 would have refused them as unknown.
+- **Element order is significant.** Items "arrive in intended play order" and a device
+  "must retain the sequence supplied by the NCS even if it executes items out of
+  order". The in-memory backend returned stories in Go map order — see §16.
+
+### Still outstanding against the spec
+
+- **`messageID` should persist across restarts.** The sender "increments IDs, persists
+  the last value, and wraps to `1`". Wrapping is now implemented; persistence is not,
+  so a restarted OpenMOS reissues identifiers a peer may still associate with earlier
+  requests — and a peer implementing retry deduplication could answer from its cache
+  instead of processing.
+- **`mosExternalMetadata` is not preserved.** The spec calls the payload opaque and
+  requires it to be carried; our model holds `map[string]string`, which cannot
+  represent the nested vendor XML that real traffic carries in `<mosPayload>`.
+  `mosScope` propagation rules are likewise unenforced.
+- **Profile 2 is not fully implemented**, so the README deliberately claims
+  "running-order construction" rather than the profile.
+
+## 16. Story and item order: the default backend reordered rundowns
+
+Found while checking the ordering requirement above.
+
+`Order` was populated correctly on ingest, and the MongoDB backend sorted by it. The
+in-memory backend did not: it iterated a map and returned whatever order Go produced,
+which is deliberately randomised and varies between calls on the same data.
+
+In-memory is the **default** backend and the one every test uses, so the default
+configuration silently reordered rundowns and no test could have noticed. For a
+broadcast device that is the worst class of defect: order is meaning, not
+presentation.
+
+Both list methods now sort explicitly. The regression tests use twenty elements
+inserted in a jumbled sequence, because map iteration can coincidentally match
+insertion order for very small maps, and one of them reads repeatedly to catch the
+specific failure mode that a single passing read proves nothing.
