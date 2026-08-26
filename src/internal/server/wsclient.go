@@ -1,6 +1,7 @@
 package server
 
 import (
+	"airshift/openmos/internal/capture"
 	"context"
 	"crypto/tls"
 	stdxml "encoding/xml"
@@ -30,15 +31,20 @@ import (
 type WSClient struct {
 	config *config.Config
 
+	// frames optionally records raw traffic. Nil disables capture; every Recorder
+	// method tolerates a nil receiver.
+	frames *capture.Recorder
+
 	// nextMessageID is the outbound messageID sequence. MOS 4.0 §4.1.6 requires a
 	// 32-bit signed integer >= 1, so it starts at 1 and increments per send.
 	nextMessageID int64
 }
 
 // NewWSClient creates a new MOS 4 WebSocket client.
-func NewWSClient(cfg *config.Config) *WSClient {
+func NewWSClient(cfg *config.Config, frames *capture.Recorder) *WSClient {
 	return &WSClient{
 		config:        cfg,
+		frames:        frames,
 		nextMessageID: 0, // first messageID() call returns 1
 	}
 }
@@ -232,7 +238,7 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 
 	// heartbeat -> heartbeat
 	hbID := c.messageID()
-	hb := mosxml.CreateHeartbeat(c.config.MOS.ID, hbID)
+	hb := mosxml.CreateHeartbeat()
 	hbEnv, err := mosxml.GenerateEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, hbID, hb)
 	if err != nil {
 		return fmt.Errorf("build heartbeat: %w", err)
@@ -296,7 +302,7 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		case <-heartbeatTimer.C:
 			// Send a periodic heartbeat to keep the connection healthy.
 			hbID := c.messageID()
-			hb := mosxml.CreateHeartbeat(c.config.MOS.ID, hbID)
+			hb := mosxml.CreateHeartbeat()
 			hbEnv, err := mosxml.GenerateEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, hbID, hb)
 			if err != nil {
 				return fmt.Errorf("build periodic heartbeat: %w", err)
@@ -345,7 +351,11 @@ func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8
 		if respID == "" {
 			respID = c.messageID()
 		}
-		resp := mosxml.CreateHeartbeatResponse(c.config.MOS.ID, respID)
+		// Echo the peer's requestID attribute only if it sent one. respID is the
+		// envelope messageID and must not leak into the payload as an attribute the
+		// spec does not define.
+		inbound, _ := msg.(mosxml.Heartbeat)
+		resp := mosxml.CreateHeartbeatResponse(inbound.RequestID)
 		respEnv, err := mosxml.GenerateEnvelope(c.config.MOS.ID, env.NcsID, respID, resp)
 		if err != nil {
 			logger.Errorf("MOS 4 client failed to build heartbeat response: %v", err)
@@ -374,6 +384,13 @@ func (c *WSClient) readMessage(ctx context.Context, conn *websocket.Conn) (mosxm
 	}
 	if data == nil {
 		return nil, fmt.Errorf("received unsupported frame type %v", msgType)
+	}
+
+	// Capture before parsing. A frame we fail to parse is the most valuable one to
+	// have on disk: that is how the YES/NO listMachInfo defect was found.
+	if err := c.frames.Record("mos4-ws-client", capture.Inbound, c.config.WSClient.PeerURL,
+		data, len(raw), wireEncoding(msgType)); err != nil {
+		logger.Errorf("Frame capture failed: %v", err)
 	}
 
 	var env mosxml.Envelope
@@ -416,6 +433,10 @@ func (c *WSClient) writeFrame(ctx context.Context, conn *websocket.Conn, utf8XML
 	encoded, err := mosxml.EncodeUCS2BE(utf8XML)
 	if err != nil {
 		return fmt.Errorf("encode UCS-2BE: %w", err)
+	}
+	if err := c.frames.Record("mos4-ws-client", capture.Outbound, c.config.WSClient.PeerURL,
+		utf8XML, len(encoded), "UCS-2BE"); err != nil {
+		logger.Errorf("Frame capture failed: %v", err)
 	}
 	return conn.Write(ctx, websocket.MessageBinary, encoded)
 }

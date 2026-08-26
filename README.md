@@ -46,8 +46,11 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `mosID` persisted on running orders and items | Yes | Integration test | **Yes** | — |
 | MongoDB backing | Yes | Not covered in CI | **Yes** | No MongoDB in CI; in-memory used for tests |
 | MOS 4 channels `mom`, `ro`, `aux` | Yes | Unit + loopback tests | No | Object and search messages route correctly but are not implemented |
-| MOS 4 outbound client, standard and passive mode | Yes | Loopback tests | No | Not yet exercised against a real NCS |
-| MOS 4 authentication (HTTP Basic over TLS) | Yes | Unit tests | No | Certificate verification on by default |
+| MOS 4 outbound client, standard mode | Yes | Loopback tests | **Yes** | Profile 0 completed against a live NCS |
+| MOS 4 outbound client, passive mode | Yes | Loopback tests | No | Live NCS has no passive device configured |
+| MOS booleans as `YES`/`NO` | Yes | Unit + live-frame tests | **Yes** | — |
+| Spec-clean `heartbeat` with no invented attributes | Yes | Unit + live-frame tests | **Yes** | — |
+| MOS 4 authentication (HTTP Basic over TLS) | Yes | Unit tests | No | Live NCS cert is for an unrelated domain |
 | Raw frame capture for fixtures | Yes | Unit tests | **Yes** | Off unless a directory is configured |
 | MOS 3.x WebService transport | **No** | — | — | Blocked on WSDL (#15) |
 | Profiles 1, 3, 4, 5, 6, 7 | **No** | — | — | Some message types parse, none exercised |
@@ -59,8 +62,9 @@ Full evidence, reproduction scripts and the remaining defect list are in
   construction only, on the `ro` channel.
 - Not claiming Profiles 1, 3, 4, 5, 6 or 7. `listMachInfo` advertises Profile 0
   alone, which is deliberate.
-- Able to initiate a MOS 4 connection to an NCS, including passive mode, but that
-  has only been exercised against a loopback server — never against a real NCS.
+- Able to initiate a MOS 4 connection to an NCS. Standard mode has completed
+  Profile 0 against a real NCS; passive mode is implemented but loopback-tested
+  only.
 - The MOS 2.x transport is listener-only: the NCS connects to us.
 - Not MOS 3.x capable.
 - Not suitable for production without durable storage, TLS, and authentication on
@@ -267,13 +271,14 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Exercise the MOS 4 client against a real NCS.** The client, passive mode and
-   HTTP Basic auth are implemented and tested against a loopback server, but no MOS
-   4 exchange has yet been initiated *by* OpenMOS to a live NCS. That needs our MOS
-   ID registered as a device on the target NCS.
-2. **Capture authentic fixtures.** Every fixture here is hand-written apart from the
-   identifiers in `doc/interop/`. With `capture.dir` set, one live rundown would
-   produce real `roCreate` and `roStorySend` frames to replace them.
+1. **Capture authentic Profile 2 fixtures.** Profile 0 frames are now real, captured
+   from a live NCS. The running-order messages are still hand-written, because the
+   NCS only dials a device when it has queued work — see `doc/interop/README.md`
+   §12. One rundown edit on the NCS side would produce genuine `roCreate` and
+   `roStorySend` frames.
+2. **Passive mode against a real NCS.** Standard mode is now proven live; passive
+   mode is implemented and loopback-tested but the reference NCS has no passive
+   device configured.
 3. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License

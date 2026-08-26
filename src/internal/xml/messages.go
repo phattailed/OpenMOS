@@ -2,6 +2,8 @@ package xml
 
 import (
 	"encoding/xml"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -164,7 +166,77 @@ type SupportedProfiles struct {
 type MosProfile struct {
 	XMLName xml.Name `xml:"mosProfile"`
 	Number  int      `xml:"number,attr"`
-	Value   bool     `xml:",chardata"`
+	Value   YesNo    `xml:",chardata"`
+}
+
+// YesNo is a MOS boolean, which is spelled YES or NO on the wire rather than
+// true or false.
+//
+// This exists because Go's encoding/xml maps a bool to the XML Schema spelling,
+// "true"/"false", and MOS does not use it. listMachInfo carries
+//
+//	<mosProfile number="0">YES</mosProfile>
+//
+// so a plain bool field both emits the wrong text and fails to read the right
+// text. A live AP ENPS caught this the first time OpenMOS dialled it: its
+// listMachInfo reply was rejected with
+//
+//	parse envelope: strconv.ParseBool: parsing "YES": invalid syntax
+//
+// Encoding follows the project's standing rule of strict outbound, lenient
+// inbound. We always emit YES or NO. On receipt we accept YES/NO in any case, and
+// also tolerate true/false/1/0, because a peer that has made the same mistake we
+// just made should still be able to talk to us.
+//
+// Note this implements encoding.TextMarshaler and encoding.TextUnmarshaler rather
+// than xml.Marshaler and xml.Unmarshaler. A field tagged `,chardata` never
+// consults the XML interfaces -- encoding/xml reads and writes character data
+// through the text interfaces, so implementing the XML ones leaves the default
+// bool behaviour silently in place.
+type YesNo bool
+
+// UnmarshalText reads a MOS boolean, tolerantly.
+func (y *YesNo) UnmarshalText(text []byte) error {
+	value, err := ParseYesNo(string(text))
+	if err != nil {
+		return err
+	}
+	*y = YesNo(value)
+	return nil
+}
+
+// MarshalText writes a MOS boolean in the spec's spelling.
+func (y YesNo) MarshalText() ([]byte, error) {
+	return []byte(y.String()), nil
+}
+
+// String renders the wire form.
+func (y YesNo) String() string {
+	if y {
+		return "YES"
+	}
+	return "NO"
+}
+
+// Bool exposes the value as an ordinary Go bool.
+func (y YesNo) Bool() bool { return bool(y) }
+
+// ParseYesNo reads a MOS boolean. YES/NO in any case is the spec form;
+// true/false/1/0 are accepted as a courtesy to peers that emit XML Schema
+// booleans, which is the mistake OpenMOS itself was making.
+func ParseYesNo(text string) (bool, error) {
+	switch strings.ToUpper(strings.TrimSpace(text)) {
+	case "YES", "Y", "TRUE", "1":
+		return true, nil
+	case "NO", "N", "FALSE", "0":
+		return false, nil
+	case "":
+		// An empty element is not a value. Treat it as absent rather than false, so
+		// a missing profile entry cannot silently read as "not supported".
+		return false, fmt.Errorf("empty MOS boolean: expected YES or NO")
+	default:
+		return false, fmt.Errorf("invalid MOS boolean %q: expected YES or NO", text)
+	}
 }
 
 // ReqRunningOrderList represents a request for running order list

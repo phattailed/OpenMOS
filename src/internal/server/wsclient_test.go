@@ -117,7 +117,7 @@ func (p *ncsPeer) handle(w http.ResponseWriter, r *http.Request) {
 			info := mosxml.CreateListMachInfo(p.cfg, mosxml.MosRev40)
 			reply, err = mosxml.GenerateEnvelope(p.cfg.MOS.ID, env.NcsID, env.MessageID, info)
 		case mosxml.Heartbeat:
-			hb := mosxml.CreateHeartbeatResponse(p.cfg.MOS.ID, env.MessageID)
+			hb := mosxml.CreateHeartbeatResponse("")
 			reply, err = mosxml.GenerateEnvelope(p.cfg.MOS.ID, env.NcsID, env.MessageID, hb)
 		default:
 			continue
@@ -169,7 +169,7 @@ func TestWSClientProfile0AgainstPeer(t *testing.T) {
 	peer := newNCSPeer(t, cfg)
 	cfg.WSClient.PeerURL = peer.wsURL()
 
-	client := NewWSClient(cfg)
+	client := NewWSClient(cfg, nil)
 	stop := runClient(t, client)
 	defer stop()
 
@@ -198,7 +198,7 @@ func TestWSClientReqMachInfoAgainstRealWSServer(t *testing.T) {
 	// The real WSServer never replies to heartbeat, so a slow periodic timer
 	// keeps the client from erroring on the handshake heartbeat wait. Instead we
 	// assert the reqMachInfo leg directly by driving doProfile0's first half.
-	client := NewWSClient(cfg)
+	client := NewWSClient(cfg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -237,7 +237,7 @@ func TestWSClientReconnectsAfterDrop(t *testing.T) {
 	peer.forceDropAfterFirst.Store(true)
 	cfg.WSClient.PeerURL = peer.wsURL()
 
-	client := NewWSClient(cfg)
+	client := NewWSClient(cfg, nil)
 	stop := runClient(t, client)
 	defer stop()
 
@@ -272,7 +272,7 @@ func TestWSClientSendsBasicAuthAndNeverLogsCredentials(t *testing.T) {
 	peer := newNCSPeer(t, cfg)
 	cfg.WSClient.PeerURL = peer.wsURL()
 
-	client := NewWSClient(cfg)
+	client := NewWSClient(cfg, nil)
 	stop := runClient(t, client)
 	defer stop()
 

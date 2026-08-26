@@ -509,3 +509,155 @@ alongside the spec's `<time>` element. Compatible equipment "will ignore, withou
 error, any unknown tags", so this is harmless, but the spec's guidance is that
 vendor additions belong in `mosExternalMetadata` rather than on predefined
 elements. Pre-existing, not introduced by any of the fixes above.
+
+## 12. MOS 4.0 initiated by OpenMOS: first outbound exchange
+
+Every exchange before this one was initiated by the NCS. This is the first in which
+OpenMOS dialled *out*, on the MOS 4.0 WebSocket transport, and completed Profile 0
+against a live AP ENPS.
+
+### The endpoint
+
+Not IIS. NOM self-hosts an HTTP listener; `<NOM-DIR>\LOGS\MOS4STARTUP.LOG`
+records the prefixes it registers:
+
+```
+http://*/MOS4NCS/
+https://*/MOS4NCS/
+```
+
+No port in the prefix means the .NET `HttpListener` defaults, 80 and 443, which
+`netsh http show servicestate` confirms as `HTTP://*:80/MOS4NCS/`. The
+implementation is `<NOM-DIR>\MOS4WebSockets.dll` alongside
+`Microsoft.Owin.Host.HttpListener.dll`. The MOS 3.8.4 WebService is a separate
+product on `:10543/MOS384/` under IIS proper — do not confuse them.
+
+The `*` wildcard prefix ignores the `Host` header, which is why the endpoint is
+reachable through an SSH forward tunnel at all: a request arriving with
+`Host: 127.0.0.1:8090` still matches.
+
+TLS on 443 negotiates TLS 1.2 with a certificate for an unrelated wildcard domain,
+so it will not validate against the host's own name. Plain `ws://` on 80 is the
+usable path until that is addressed.
+
+### Result: Profile 0 completed
+
+```
+MOS 4 client completed Profile 0 exchange with ncsID=NCS-HOST
+```
+
+Four frames, all UCS-2BE binary, captured with `capture.dir`:
+
+| # | Direction | Message | Wire bytes |
+|---|---|---|---|
+| 1 | out | `reqMachInfo` | 324 |
+| 2 | in | `listMachInfo` | 1680 |
+| 3 | out | `heartbeat` | 394 |
+| 4 | in | `heartbeat` | 332 |
+
+The old `NACK — MOS ID is not recognized by this NOM` is gone: registering the
+device in `g_mos` resolved it.
+
+### Two defects found in the first seconds
+
+Both had existed since the beginning. Neither was caught by any hand-written
+fixture, because our encoder and our parser agreed with each other and were both
+wrong. This is the case for capturing real traffic, made concrete.
+
+**1. MOS booleans are `YES`/`NO`, not `true`/`false`.** `listMachInfo` could not be
+parsed at all:
+
+```
+parse envelope: strconv.ParseBool: parsing "YES": invalid syntax
+```
+
+Go's `encoding/xml` maps a `bool` to the XML Schema spelling. MOS does not use it.
+A `YesNo` type now handles both directions, strictly emitting `YES`/`NO` and
+leniently accepting `true`/`false`/`1`/`0` on receipt. Note it implements
+`encoding.TextMarshaler`, not `xml.Marshaler`: a field tagged `,chardata` never
+consults the XML interfaces, so implementing those leaves the broken default
+quietly in place.
+
+**2. Our heartbeat carried three invented attributes.** The NCS rejected it and
+quoted the offending element back:
+
+```
+<mos>Invalid command: heartbeat requestID="2" timestamp="..." source="..."</mos>
+```
+
+The spec is `<!ELEMENT heartbeat (time)>` with no attributes at all. OpenMOS was
+emitting `requestID`, `timestamp` and `source`. They are still tolerated inbound,
+and a peer-supplied `requestID` is echoed for correlation, but we no longer
+originate any of them. This affected the MOS 2.x transport equally, since both
+share the generator.
+
+### Observations worth recording
+
+**The NCS reports `mosRev 2.8.4` on the MOS 4.0 WebSocket transport.** Not 4.0.
+The natural assumption that the MOS 4 transport implies `mosRev 4.0` does not hold
+for this NCS, and there is now a test asserting the observed value so that
+assumption cannot quietly return.
+
+**It advertises Profiles 0, 1, 2, 3, 4, 6 and 7 as `YES`, and Profile 5 as `NO`,**
+with `deviceType="NCS"`.
+
+**`messageID` is echoed verbatim** on both replies — `1` then `2` — consistent with
+§4.1.6 and with the socket transport's behaviour.
+
+**Its `time` carries no UTC offset** (`2026-08-26T03:52:26`, which is UTC) while
+OpenMOS emits an offset (`2026-08-25T23:52:26-04:00`). The NCS accepted ours, so
+this is a note rather than a defect.
+
+**`DOM` is US-locale text**, `4/15/2026 2:21:26 PM`, not ISO 8601.
+
+**The handshake does not validate `channel` or `mosID`.** A bogus value in either
+still returns `101 Switching Protocols`; authorization happens at the message
+layer.
+
+### Reproduction
+
+The Mac cannot route to the NCS, so the outbound leg needs a forward tunnel. Add it
+to an existing SSH master rather than opening a new one, which avoids the
+`ssh -f` hazard noted below:
+
+```sh
+ssh -O forward -L 8090:127.0.0.1:80 -S <control-socket> $NCS_SSH_HOST
+```
+
+Then point the client at it:
+
+```sh
+WS_CLIENT_ENABLED=true \
+WS_CLIENT_PEER_URL=ws://127.0.0.1:8090/MOS4NCS/ \
+WS_CLIENT_CHANNEL=ro \
+MOS_NCS_ID=<NCS-ID> \
+CAPTURE_DIR=./capture ./openmos --config=config.yaml
+```
+
+### Operational note: NOM only dials when it has queued work
+
+Worth stating because it looks like a connectivity fault and is not. After
+re-enabling the device and restarting NOM, no connection arrived. The cause was an
+empty queue, proven three ways: no `SYN_SENT` or `ESTABLISHED` to the MOS port at
+all; `MOS\OUT\<mosID>` empty with an mtime matching the moment the previous
+session's queue drained; and a bare TCP probe from the NCS host reaching OpenMOS
+immediately, confirming the path was fine.
+
+The earlier NCS-initiated session succeeded because a queue had accumulated during
+a period when the device's endpoint was misconfigured, and NOM drained all eleven
+messages within two seconds of restarting. Retries are logged every 30 seconds when
+work exists, so total silence in `EXCEP.LOG` means no work rather than failing work.
+
+Consequence for testing: an NCS-initiated exercise needs a fresh MOS event
+generated on the NCS side. And because OpenMOS defaults to in-memory storage, a
+restart leaves it with no record of a previously delivered running order, so a bare
+`roStorySend` would be NACKed for an unknown `roID` — a new `roCreate` is required,
+or durable storage.
+
+### Tooling hazard: `ssh -f` hangs an agent shell
+
+`ssh -f` forks into the background but leaves stdout attached to the caller's pipe,
+so a wrapper waiting on that pipe never returns even though the tunnel is up. Two
+practical rules: add forwards to an existing master with `ssh -O forward` instead of
+spawning new backgrounded clients, and verify the *listener* rather than the exit
+status.
