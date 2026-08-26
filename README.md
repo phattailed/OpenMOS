@@ -143,6 +143,8 @@ websocket:
     tlskeyfile: ""
 storage:
     backend: memory        # "memory" or "mongo"
+capture:
+    dir: ""                # set to record raw MOS frames; off when empty
 mongo:
     uri: "mongodb://localhost:27017"
     database: openmos
@@ -192,6 +194,37 @@ Environment variables override YAML (e.g., `WS_PORT`, `MOS_ID`, `MOS_NCS_ID`, `W
 cd src
 go build -o openmos
 ```
+
+## Capturing frames for interop work
+
+Setting `capture.dir` (or `CAPTURE_DIR`) records every MOS frame, in both
+directions and on both transports, as a file plus a line in `manifest.jsonl`:
+
+```bash
+CAPTURE_DIR=./capture ./openmos --config=config.yaml
+```
+
+```
+capture/
+  0001-mos2-tcp-in.xml       the frame, verbatim, usable as a fixture
+  0002-mos2-tcp-out.xml
+  0003-mos4-ws-ro-in.xml
+  manifest.jsonl             timestamp, transport, direction, peer,
+                             wire bytes and encoding per frame
+```
+
+`wireBytes` is the size before decoding, so a UCS-2BE frame records roughly twice
+its UTF-8 length — the encoding is evidenced rather than merely asserted.
+
+This exists because every fixture in this repository was written by hand, and
+hand-written frames are misleadingly tidy. A live NCS sends identifiers like
+`APSTSNOM21;P_STORYTELLING\W;C45B2CF1-...`, not `RO-41`, and that difference has
+already caught us out once.
+
+> **Capture is off unless a directory is set, and should stay that way.** Frames
+> contain message payloads, and `roStorySend` carries the full body of news
+> stories. Treat the destination as holding editorial content. Capture is bounded
+> at 2000 frames so an enabled run cannot fill a disk.
 
 ## Running Tests
 

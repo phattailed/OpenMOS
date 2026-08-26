@@ -27,7 +27,7 @@ func TestReconnectNoDuplicate(t *testing.T) {
 	svc := service.NewMOSService(roRepo, storyRepo, itemRepo, objRepo, eventBus)
 	dedup := NewMemoryDedupStore()
 
-	srv := NewWSServer(cfg, svc, eventBus, dedup)
+	srv := NewWSServer(cfg, svc, eventBus, dedup, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

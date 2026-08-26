@@ -30,7 +30,7 @@ func TestPersistenceRestart(t *testing.T) {
 	// --- First server instance ---
 	eventBus1 := events.NewEventBus()
 	svc1 := service.NewMOSService(roRepo, storyRepo, itemRepo, objRepo, eventBus1)
-	srv1 := NewWSServer(cfg, svc1, eventBus1, dedup)
+	srv1 := NewWSServer(cfg, svc1, eventBus1, dedup, nil)
 
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	go func() { _ = srv1.Start(ctx1) }()
@@ -84,7 +84,7 @@ func TestPersistenceRestart(t *testing.T) {
 	// --- Second server instance (simulated restart) ---
 	eventBus2 := events.NewEventBus()
 	svc2 := service.NewMOSService(roRepo, storyRepo, itemRepo, objRepo, eventBus2)
-	srv2 := NewWSServer(cfg, svc2, eventBus2, dedup)
+	srv2 := NewWSServer(cfg, svc2, eventBus2, dedup, nil)
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()

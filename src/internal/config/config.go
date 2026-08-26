@@ -45,6 +45,14 @@ type Config struct {
 		Backend string
 	}
 
+	// Capture writes raw MOS frames to disk for interop work. Off unless Dir is
+	// set. Frames include message payloads -- roStorySend carries full story
+	// bodies -- so enabling this must be deliberate and the destination treated as
+	// holding editorial content.
+	Capture struct {
+		Dir string
+	}
+
 	// MongoDB configuration
 	Mongo struct {
 		URI      string
@@ -186,6 +194,11 @@ func LoadConfig() (*Config, error) {
 	}
 	if envVal := getEnv("WS_TLS_KEY_FILE", ""); envVal != "" {
 		config.WebSocket.TLSKeyFile = getEnv("WS_TLS_KEY_FILE", "")
+	}
+
+	// Frame capture (off unless a directory is given)
+	if envVal := getEnv("CAPTURE_DIR", ""); envVal != "" {
+		config.Capture.Dir = envVal
 	}
 
 	// Storage backend

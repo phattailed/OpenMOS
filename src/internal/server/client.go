@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/config"
 	"airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
@@ -132,6 +133,12 @@ func (c *ClientConnection) Start(ctx context.Context) {
 					if !complete {
 						break
 					}
+					// frame is decoded UTF-8; on the wire it was UCS-2BE, so the
+					// wire size is twice its rune count. Recorded before parsing so
+					// a frame we reject is captured too -- those are the ones worth
+					// having.
+					c.recordFrame(capture.Inbound, frame)
+
 					c.parser.Clear()
 					c.parser.AppendData(frame)
 					message, _, err := c.parser.Parse()
@@ -579,7 +586,24 @@ func (c *ClientConnection) Write(data []byte) error {
 		})
 	}
 
+	c.recordFrameWire(capture.Outbound, data, len(wireData))
 	return nil
+}
+
+// recordFrame captures a decoded frame whose wire form was UCS-2BE.
+func (c *ClientConnection) recordFrame(direction capture.Direction, utf8XML []byte) {
+	c.recordFrameWire(direction, utf8XML, len([]rune(string(utf8XML)))*2)
+}
+
+// recordFrameWire captures a frame with an explicit wire size. Capture failures
+// are logged and dropped: losing a capture must not disturb the exchange.
+func (c *ClientConnection) recordFrameWire(direction capture.Direction, utf8XML []byte, wireBytes int) {
+	if c.server == nil || c.server.capture == nil {
+		return
+	}
+	if err := c.server.capture.Record("mos2-tcp", direction, c.id, utf8XML, wireBytes, "UCS-2BE"); err != nil {
+		logger.Warningf("frame capture: %v", err)
+	}
 }
 
 // Close closes the client connection
