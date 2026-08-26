@@ -46,15 +46,15 @@ type Envelope struct {
 	// roElementStat, which was the single most common non-heartbeat message in the
 	// sampled corpus.
 	// Careful with the two request types: their Go names are the inverse of their
-	// XML names. ReqRunningOrderList is <roReq>, which asks for ONE running order,
-	// and ReqRunningOrder is <roReqAll>, which asks for ALL of them. Mapping them by
+	// XML names. ROReq is <roReq>, which asks for ONE running order,
+	// and ROReqAll is <roReqAll>, which asks for ALL of them. Mapping them by
 	// intuition rather than by XMLName produces an encoding/xml tag conflict at
 	// unmarshal time, not a compile error.
-	ROReq         *ReqRunningOrderList `xml:"roReq,omitempty"`
-	ROList        *RunningOrderList    `xml:"roList,omitempty"`
-	ROReqAll      *ReqRunningOrder     `xml:"roReqAll,omitempty"`
-	ROListAll     *ROListAll           `xml:"roListAll,omitempty"`
-	ROElementStat *ROElementStat       `xml:"roElementStat,omitempty"`
+	ROReq         *ROReq         `xml:"roReq,omitempty"`
+	ROList        *ROList        `xml:"roList,omitempty"`
+	ROReqAll      *ROReqAll      `xml:"roReqAll,omitempty"`
+	ROListAll     *ROListAll     `xml:"roListAll,omitempty"`
+	ROElementStat *ROElementStat `xml:"roElementStat,omitempty"`
 }
 
 // GetMessageType returns the enclosed message type.
@@ -330,27 +330,49 @@ func ParseYesNo(text string) (bool, error) {
 	}
 }
 
-// ReqRunningOrderList represents a request for running order list
+// ROReq represents a request for running order list
 // Format: <roReq/>
-type ReqRunningOrderList struct {
-	XMLName   xml.Name `xml:"roReq"`
-	RequestID string   `xml:"requestID,attr,omitempty"`
-	Timestamp string   `xml:"timestamp,attr,omitempty"`
-	Source    string   `xml:"source,attr,omitempty"`
+// ROReq is <roReq>: a request for a complete build of ONE running order.
+//
+// MOS 3.8.4 §3.5.1: "Request for a complete build of a Running Order Playlist. [...]
+// A MOS can use this to 'resync' its Playlist with the NCS Running Order". Answered
+// with roList, or with a NACK-bearing roAck if "the Running Order ID is not valid,
+// roList cannot be returned for some reason, or if the Running Order is not
+// available".
+//
+// The roID is required and is the whole point of the message. It was previously
+// absent from this struct, so the requested identifier was silently discarded.
+type ROReq struct {
+	XMLName xml.Name `xml:"roReq"`
+	ROID    string   `xml:"roID"`
 }
 
 // GetMessageType returns the type of the message
-func (r ReqRunningOrderList) GetMessageType() string {
+func (r ROReq) GetMessageType() string {
 	return "roReq"
 }
 
-// RunningOrderList represents a response with the list of running orders
-type RunningOrderList struct {
-	XMLName      xml.Name     `xml:"roList"`
-	RequestID    string       `xml:"requestID,attr,omitempty"`
-	Timestamp    string       `xml:"timestamp,attr,omitempty"`
-	Source       string       `xml:"source,attr,omitempty"`
-	RunningOrder []ROListItem `xml:"ro"`
+// ROList represents a response with the list of running orders
+// ROList is <roList>: a complete build or rebuild of ONE running order, in response
+// to roReq.
+//
+// MOS 3.8.4 §3.5.2. The structural outline carries the running-order fields directly
+// followed by story*, exactly like roCreate and roReplace -- there is no nested <ro>
+// element. That belongs to roListAll, and this type previously had it, which meant a
+// conformant roList parsed to nothing and the roList we emitted could not be read by
+// a conformant peer.
+type ROList struct {
+	XMLName             xml.Name              `xml:"roList"`
+	ID                  string                `xml:"roID"`
+	Slug                string                `xml:"roSlug"`
+	Channel             string                `xml:"roChannel,omitempty"`
+	EdStart             string                `xml:"roEdStart,omitempty"`
+	EdDur               string                `xml:"roEdDur,omitempty"`
+	Trigger             string                `xml:"roTrigger,omitempty"`
+	MacroIn             string                `xml:"macroIn,omitempty"`
+	MacroOut            string                `xml:"macroOut,omitempty"`
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+	Stories             []StoryInfo           `xml:"story"`
 }
 
 // ROListItem represents a single running order in a list
@@ -365,21 +387,27 @@ type ROListItem struct {
 }
 
 // GetMessageType returns the type of the message
-func (r RunningOrderList) GetMessageType() string {
+func (r ROList) GetMessageType() string {
 	return "roList"
 }
 
-// ReqRunningOrder represents a request for a specific running order
-type ReqRunningOrder struct {
-	XMLName   xml.Name `xml:"roReqAll"`
-	RequestID string   `xml:"requestID,attr,omitempty"`
-	Timestamp string   `xml:"timestamp,attr,omitempty"`
-	Source    string   `xml:"source,attr,omitempty"`
-	ROID      string   `xml:"roID"`
+// ROReqAll represents a request for a specific running order
+// ROReqAll is <roReqAll>: a request for a description of ALL running orders.
+//
+// MOS 3.8.4 §3.5.3, answered with roListAll. It carries no roID: the structural
+// outline is mosID, ncsID, messageID, roReqAll and nothing more. One was previously
+// declared here, so a conformant <roReqAll/> parsed to an empty identifier and the
+// handler then failed looking one up.
+//
+// Note roListAll is discovery only. It describes the running orders that exist; it
+// does not carry their stories. Recovering a running order means following up with
+// ROReq for each one.
+type ROReqAll struct {
+	XMLName xml.Name `xml:"roReqAll"`
 }
 
 // GetMessageType returns the type of the message
-func (r ReqRunningOrder) GetMessageType() string {
+func (r ROReqAll) GetMessageType() string {
 	return "roReqAll"
 }
 

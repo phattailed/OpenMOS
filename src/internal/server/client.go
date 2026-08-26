@@ -1,6 +1,9 @@
 package server
 
 import (
+	"strings"
+
+	"airshift/openmos/internal/model"
 	"context"
 	xmlstd "encoding/xml"
 	"fmt"
@@ -267,10 +270,10 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 		err = c.handleMosListSearchableSchema(ctx, msg)
 
 	// Running Order messages (existing)
-	case xml.ReqRunningOrderList:
-		err = c.handleReqRunningOrderList(ctx, msg)
-	case xml.ReqRunningOrder:
-		err = c.handleReqRunningOrder(ctx, msg)
+	case xml.ROReq:
+		err = c.handleROReq(ctx, msg)
+	case xml.ROReqAll:
+		err = c.handleROReqAll(ctx, msg)
 	case xml.RunningOrderInfo:
 		err = c.handleRunningOrderInfo(ctx, msg)
 	case xml.MOSAck:
@@ -373,58 +376,79 @@ func (c *ClientConnection) allowHeartbeatReply() bool {
 }
 
 // handleReqRunningOrderList processes a request for running order list
-func (c *ClientConnection) handleReqRunningOrderList(ctx context.Context, req xml.ReqRunningOrderList) error {
-	logger.Infof("Received running order list request from client %s", c.id)
+func (c *ClientConnection) handleROReq(ctx context.Context, req xml.ROReq) error {
+	logger.Infof("Received roReq from client %s for RO %s", c.id, req.ROID)
 
-	// Get running orders from the server
-	runningOrders, err := c.server.service.ListRunningOrders(ctx)
-	if err != nil {
-		return c.sendErrorAck(req.RequestID, "ERROR", fmt.Sprintf("Failed to list running orders: %v", err))
+	if strings.TrimSpace(req.ROID) == "" {
+		return c.writeMessage(ctx, xml.CreateROAck("", "NACK: roReq requires a roID", nil))
 	}
 
-	// Convert to ROListItem
-	items := make([]xml.ROListItem, 0, len(runningOrders))
+	ro, stories, err := c.server.service.GetRunningOrderWithStories(ctx, req.ROID)
+	if err != nil {
+		// MOS 3.8.4 §3.5.1: roReq is answered with roList, or "roAck with a NACK
+		// value [...] if the Running Order ID is not valid, roList cannot be returned
+		// for some reason, or if the Running Order is not available". Reporting that
+		// honestly is what lets a peer resynchronise.
+		logger.Infof("roReq for unknown or unavailable RO %s: %v", req.ROID, err)
+		return c.writeMessage(ctx, xml.CreateROAck(req.ROID,
+			"NACK: running order not available", nil))
+	}
+
+	storyInfos, err := c.storyInfosFor(ctx, stories)
+	if err != nil {
+		return c.writeMessage(ctx, xml.CreateROAck(req.ROID,
+			fmt.Sprintf("NACK: %v", err), nil))
+	}
+
+	// Answered with roList, not roCreate. roCreate is the NCS telling a device about a
+	// new running order; roList is the answer to a request for one.
+	return c.writeMessage(ctx, xml.CreateROList(xml.ROListEntry{
+		ID:      ro.ID,
+		Slug:    ro.Slug,
+		Channel: ro.Channel,
+		EdDur:   fmt.Sprintf("%d", ro.Duration),
+		Stories: storyInfos,
+	}))
+}
+
+// handleROReqAll answers <roReqAll> with <roListAll>.
+//
+// MOS 3.8.4 §3.5.3/§3.5.4: roReqAll carries no roID and roListAll describes every
+// running order in summary. Stories are deliberately absent -- this is discovery, and
+// a peer wanting content follows up with roReq per running order.
+func (c *ClientConnection) handleROReqAll(ctx context.Context, _ xml.ROReqAll) error {
+	logger.Infof("Received roReqAll from client %s", c.id)
+
+	runningOrders, err := c.server.service.ListRunningOrders(ctx)
+	if err != nil {
+		return c.writeMessage(ctx, xml.CreateROAck("",
+			fmt.Sprintf("NACK: failed to list running orders: %v", err), nil))
+	}
+
+	entries := make([]xml.ROListAllItem, 0, len(runningOrders))
 	for _, ro := range runningOrders {
-		items = append(items, xml.ROListItem{
-			ID:       ro.ID,
-			Slug:     ro.Slug,
-			Channel:  ro.Channel,
-			Status:   string(ro.Status),
-			Duration: fmt.Sprintf("%d", ro.Duration),
+		entries = append(entries, xml.ROListAllItem{
+			ID:      ro.ID,
+			Slug:    ro.Slug,
+			Channel: ro.Channel,
+			EdDur:   fmt.Sprintf("%d", ro.Duration),
 		})
 	}
 
-	// Create response
-	response := xml.CreateRunningOrderList(c.config.MOS.ID, req.RequestID, items)
-	data, err := xml.GenerateMessage(response)
-	if err != nil {
-		return fmt.Errorf("failed to generate running order list response: %w", err)
-	}
-
-	return c.Write(data)
+	// An empty roListAll is a valid answer, observed from a real NCS.
+	return c.writeMessage(ctx, xml.CreateROListAll(entries))
 }
 
-// handleReqRunningOrder processes a request for a specific running order
-func (c *ClientConnection) handleReqRunningOrder(ctx context.Context, req xml.ReqRunningOrder) error {
-	logger.Infof("Received running order request from client %s for RO %s", c.id, req.ROID)
-
-	// Get the running order from the server
-	ro, stories, err := c.server.service.GetRunningOrderWithStories(ctx, req.ROID)
-	if err != nil {
-		return c.sendErrorAck(req.RequestID, "ERROR", fmt.Sprintf("Failed to get running order: %v", err))
-	}
-
-	// Convert to StoryInfo
+// storyInfosFor converts stored stories, with their items, into the wire shape shared
+// by roList, roCreate and roReplace.
+func (c *ClientConnection) storyInfosFor(ctx context.Context, stories []*model.Story) ([]xml.StoryInfo, error) {
 	storyInfos := make([]xml.StoryInfo, 0, len(stories))
 	for _, story := range stories {
-		// Get items for this story
 		items, err := c.server.service.GetItemsForStory(ctx, story.ID)
 		if err != nil {
-			logger.Warningf("Failed to get items for story %s: %v", story.ID, err)
-			continue
+			return nil, fmt.Errorf("failed to get items for story %s: %w", story.ID, err)
 		}
 
-		// Convert items
 		itemInfos := make([]xml.ItemInfo, 0, len(items))
 		for _, item := range items {
 			itemID := item.RawID
@@ -439,7 +463,6 @@ func (c *ClientConnection) handleReqRunningOrder(ctx context.Context, req xml.Re
 			})
 		}
 
-		// Add story info
 		storyID := story.RawID
 		if storyID == "" {
 			storyID = story.ID
@@ -452,26 +475,7 @@ func (c *ClientConnection) handleReqRunningOrder(ctx context.Context, req xml.Re
 			Items:    itemInfos,
 		})
 	}
-
-	// Create response
-	response := xml.CreateRunningOrderInfo(
-		c.config.MOS.ID,
-		req.RequestID,
-		ro.ID,
-		ro.Slug,
-		ro.Channel,
-		"", // EditTime
-		"", // StartTime
-		fmt.Sprintf("%d", ro.Duration),
-		storyInfos,
-	)
-
-	data, err := xml.GenerateMessage(response)
-	if err != nil {
-		return fmt.Errorf("failed to generate running order response: %w", err)
-	}
-
-	return c.Write(data)
+	return storyInfos, nil
 }
 
 // handleRunningOrderInfo processes a running order create/update message.

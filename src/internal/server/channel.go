@@ -76,8 +76,8 @@ func classifyMessage(msg mosxml.MOSMessage) messageFamily {
 	// MOS 3.8.4 is explicit for roElementStat: "Port: MOS Upper Port (10541) -
 	// Running Order". The enquiry family belongs with it, being about running orders
 	// rather than objects.
-	case mosxml.ReqRunningOrderList, mosxml.RunningOrderList,
-		mosxml.ReqRunningOrder, mosxml.ROListAll, mosxml.ROElementStat:
+	case mosxml.ROReq, mosxml.ROList,
+		mosxml.ROReqAll, mosxml.ROListAll, mosxml.ROElementStat:
 		return familyRunningOrder
 	case mosxml.MosObj, mosxml.MosObjAck, mosxml.MosReqObj, mosxml.MosReqAll, mosxml.MosListAll:
 		return familyObject

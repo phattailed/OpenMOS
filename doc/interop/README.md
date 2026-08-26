@@ -1025,3 +1025,51 @@ Both list methods now sort explicitly. The regression tests use twenty elements
 inserted in a jumbled sequence, because map iteration can coincidentally match
 insertion order for very small maps, and one of them reads repeatedly to catch the
 specific failure mode that a single passing read proves nothing.
+
+## 17. The resynchronisation mechanism was inverted
+
+Found while starting on the pull-based recovery that §15 established is normative. The
+mechanism recovery depends on did not work in either direction.
+
+MOS 3.8.4 defines a two-stage pull:
+
+| Message | Carries | Answered with |
+|---|---|---|
+| `roReq` | a `roID` | `roList` — a full build of that ONE running order, or a NACK-bearing `roAck` |
+| `roReqAll` | nothing | `roListAll` — summary descriptions of ALL running orders |
+
+OpenMOS had the two bound the wrong way round, and the Go type names are how it
+happened: `ReqRunningOrderList` was `<roReq>` and `ReqRunningOrder` was `<roReqAll>` —
+the inverse of what the names suggest. PR #34 noted the trap in a comment; it turned
+out the trap had already been fallen into.
+
+The consequences:
+
+- **`<roReq>` silently discarded the requested `roID`.** The type had no `roID` field
+  at all, so a peer asking for one specific running order was answered with summaries
+  of every running order it knew.
+- **`<roReqAll/>` failed.** The type declared a `roID`, so a conformant self-closing
+  request parsed to an empty identifier and the handler then errored looking it up.
+- **`roList` was modelled as `roListAll`.** It carried a list of summaries in nested
+  `<ro>` elements, whereas §3.5.2 carries the running-order fields directly followed by
+  `story*`, exactly like `roCreate` and `roReplace`. So a conformant `roList` parsed to
+  nothing, and the one we emitted could not be read by a conformant peer.
+- **`roList` also carried three invented attributes** — `requestID`, `timestamp`,
+  `source` — the same defect class as the heartbeat in §12.
+- **A `roReq` was answered with `roCreate`.** Wrong message: `roCreate` is an NCS
+  telling a device about a new running order, not the answer to a request for one.
+- **Neither reply could be sent at all.** `GenerateEnvelope` had no case for `roList`
+  or `roListAll`, so even a correct message layer failed at the envelope stage and the
+  connection was dropped. That was masked because no test exercised either path.
+
+All fixed, and the types renamed to `ROReq`, `ROReqAll` and `ROList` so the names match
+the wire and the inversion cannot recur. `roListAll` was already correct.
+
+Worth stating plainly: **nothing tested any of this.** Two broken messages, a wrong
+payload shape, a wrong reply type and a missing envelope case survived together because
+the whole path was untested. The devices in §14 sent `roReq` 18 times across three
+days; against this implementation every one of those would have received the wrong
+answer.
+
+The recovery behaviour itself — reacting to an unknown `roID` by pulling — is still
+outstanding. It now has a mechanism that works underneath it.
