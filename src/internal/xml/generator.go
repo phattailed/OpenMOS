@@ -42,29 +42,35 @@ func GenerateEnvelope(mosID, ncsID, messageID string, message MOSMessage) ([]byt
 	return append([]byte(xml.Header), data...), nil
 }
 
-// CreateHeartbeat creates a heartbeat message
-func CreateHeartbeat(source string, requestID string) Heartbeat {
+// CreateHeartbeat creates a heartbeat message.
+//
+// The spec defines <!ELEMENT heartbeat (time)> and no attributes, so this emits
+// exactly that. OpenMOS previously decorated the element with requestID, timestamp
+// and source attributes of its own invention, which a live AP ENPS rejected
+// outright:
+//
+//	<mos>Invalid command: heartbeat requestID="2" timestamp="..." source="..."</mos>
+//
+// Our own parser tolerated them, so no fixture caught it. The attributes remain on
+// the struct so a peer that sends them is still understood -- lenient inbound,
+// strict outbound -- but we no longer originate them.
+func CreateHeartbeat() Heartbeat {
 	return Heartbeat{
-		RequestID: requestID,
-		Timestamp: Now(),
-		Source:    source,
-		// The spec defines <!ELEMENT heartbeat (time)>, so time is required:
 		// "Each heartbeat message contains a time stamp. This gives each
 		// application the opportunity to synchronize time of day."
 		Time: Now(),
 	}
 }
 
-// CreateHeartbeatResponse creates a heartbeat response message
-func CreateHeartbeatResponse(source string, requestID string) Heartbeat {
+// CreateHeartbeatResponse creates a heartbeat response message.
+//
+// requestID is echoed only when the peer supplied one, which is correlation rather
+// than origination. A spec-conformant peer sends no such attribute, so this
+// normally emits a bare <heartbeat><time>...</time></heartbeat>.
+func CreateHeartbeatResponse(requestID string) Heartbeat {
 	return Heartbeat{
 		RequestID: requestID,
-		Timestamp: Now(),
-		Source:    source,
-		// The spec defines <!ELEMENT heartbeat (time)>, so time is required:
-		// "Each heartbeat message contains a time stamp. This gives each
-		// application the opportunity to synchronize time of day."
-		Time: Now(),
+		Time:      Now(),
 	}
 }
 

@@ -85,7 +85,7 @@ func (h *HeartbeatMonitor) LastSeenTime() time.Time {
 
 // CreateHeartbeatResponse creates a response to a heartbeat request
 func (h *HeartbeatMonitor) CreateHeartbeatResponse(requestID string) ([]byte, error) {
-	response := CreateHeartbeatResponse(h.source, requestID)
+	response := CreateHeartbeatResponse(requestID)
 	return GenerateMessage(response)
 }
 

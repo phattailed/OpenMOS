@@ -89,7 +89,7 @@ func TestGenerateEnvelopeWrapsProfile0Replies(t *testing.T) {
 		message MOSMessage
 		want    string
 	}{
-		{"heartbeat", CreateHeartbeatResponse("mos.test", ""), "<heartbeat"},
+		{"heartbeat", CreateHeartbeatResponse(""), "<heartbeat"},
 		{"listMachInfo", ListMachInfo{Manufacturer: "Acme"}, "<listMachInfo>"},
 		{"keepAlive", KeepAlive{}, "<keepAlive>"},
 		{"roAck", ROAck{ID: "RO-1", Status: "OK"}, "<roAck>"},
@@ -114,8 +114,8 @@ func TestGenerateEnvelopeWrapsProfile0Replies(t *testing.T) {
 // A heartbeat must carry a time element: <!ELEMENT heartbeat (time)>.
 func TestHeartbeatCarriesTimeElement(t *testing.T) {
 	for name, hb := range map[string]Heartbeat{
-		"request":  CreateHeartbeat("mos.test", ""),
-		"response": CreateHeartbeatResponse("mos.test", ""),
+		"request":  CreateHeartbeat(),
+		"response": CreateHeartbeatResponse(""),
 	} {
 		if hb.Time == "" {
 			t.Errorf("%s heartbeat has an empty time element", name)

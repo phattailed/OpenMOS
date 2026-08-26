@@ -355,7 +355,7 @@ func (c *ClientConnection) handleHeartbeat(ctx context.Context, heartbeat xml.He
 		return nil
 	}
 
-	return c.writeMessage(ctx, xml.CreateHeartbeatResponse(c.config.MOS.ID, heartbeat.RequestID))
+	return c.writeMessage(ctx, xml.CreateHeartbeatResponse(heartbeat.RequestID))
 }
 
 // allowHeartbeatReply reports whether enough time has passed since the last

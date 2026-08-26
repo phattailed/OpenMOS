@@ -15,8 +15,22 @@ func TestMachineInfoAdvertisesOnlyImplementedProfiles(t *testing.T) {
 
 	for _, profile := range info.SupportedProfiles.Profiles {
 		want := profile.Number == 0
-		if profile.Value != want {
-			t.Errorf("profile %d advertised as %v, want %v", profile.Number, profile.Value, want)
+		if profile.Value.Bool() != want {
+			t.Errorf("profile %d advertised as %v, want %v", profile.Number, profile.Value.Bool(), want)
+		}
+	}
+
+	// The wire spelling is part of the contract, not an implementation detail. MOS
+	// uses YES/NO, not the XML Schema true/false that Go's encoder would produce
+	// for a plain bool, and emitting the wrong one broke parsing against a live
+	// NCS.
+	for _, profile := range info.SupportedProfiles.Profiles {
+		want := "NO"
+		if profile.Number == 0 {
+			want = "YES"
+		}
+		if got := profile.Value.String(); got != want {
+			t.Errorf("profile %d renders as %q, want %q", profile.Number, got, want)
 		}
 	}
 
