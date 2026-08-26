@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/config"
 	"airshift/openmos/internal/db"
 	"airshift/openmos/internal/events"
@@ -142,6 +143,25 @@ func main() {
 		log.Fatalf("Unknown storage backend %q; expected \"memory\" or \"mongo\"", cfg.Storage.Backend)
 	}
 
+	// Frame capture, off unless a directory is configured. Enabling it writes
+	// message payloads to disk, and roStorySend carries full story bodies, so warn
+	// clearly rather than letting it pass unnoticed.
+	frames, err := capture.New(cfg.Capture.Dir)
+	if err != nil {
+		log.Fatalf("Failed to start frame capture: %v", err)
+	}
+	if frames != nil {
+		log.Warningf("Frame capture ENABLED, writing raw MOS frames to %s. "+
+			"These contain message payloads including story bodies; treat the "+
+			"directory as editorial content.", frames.Dir())
+		defer func() {
+			if closeErr := frames.Close(); closeErr != nil {
+				log.Errorf("Error closing frame capture: %v", closeErr)
+			}
+			log.Infof("Frame capture wrote %d frames to %s", frames.Count(), frames.Dir())
+		}()
+	}
+
 	// Create event bus for pub-sub messaging
 	eventBus := events.NewEventBus()
 
@@ -162,7 +182,7 @@ func main() {
 	var tcpServer *server.TCPServer
 	if cfg.Server.Enabled {
 		log.Info("Starting MOS 2.x TCP server...")
-		tcpServer, err = server.NewTCPServer(cfg, mosService, eventBus)
+		tcpServer, err = server.NewTCPServer(cfg, mosService, eventBus, frames)
 		if err != nil {
 			log.CaptureException(err, map[string]string{
 				"component": "tcp-server",
@@ -186,7 +206,7 @@ func main() {
 	if cfg.WebSocket.Enabled {
 		log.Info("Starting MOS 4 WebSocket server...")
 		dedupStore := server.NewMemoryDedupStore()
-		wsServer = server.NewWSServer(cfg, mosService, eventBus, dedupStore)
+		wsServer = server.NewWSServer(cfg, mosService, eventBus, dedupStore, frames)
 		go func() {
 			if startErr := wsServer.Start(ctx); startErr != nil {
 				log.Errorf("WebSocket server error: %v", startErr)
