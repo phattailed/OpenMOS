@@ -15,76 +15,13 @@ package server
 // project's status table; a file asserting the wrong profile undermines it.
 
 import (
-	"airshift/openmos/internal/service"
 	"context"
-	"errors"
 
 	"airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
 
 	"github.com/getsentry/sentry-go"
 )
-
-// handleROStorySend processes a received roStorySend message.
-func (c *ClientConnection) handleROStorySend(ctx context.Context, msg xml.ROStorySend) error {
-	span := sentry.StartSpan(ctx, "handle_ro_story_send")
-	span.SetTag("ro_id", msg.ROID)
-	span.SetTag("story_id", msg.StoryID)
-	defer span.Finish()
-
-	logger.Infof("Received roStorySend from client %s: roID=%s, storyID=%s",
-		c.id, msg.ROID, msg.StoryID)
-
-	// Delegate to service layer
-	err := c.server.service.ProcessROStorySend(ctx, msg)
-	if err != nil {
-		var unknown *service.UnknownRunningOrderError
-		if errors.As(err, &unknown) {
-			// Lost synchronisation, which the specification treats as recoverable by
-			// asking rather than as a plain failure:
-			//
-			//   "If a message references an unknown roID or storyID, the MOS device
-			//   should treat this as lost synchronization, send roReq, and replace its
-			//   local state from the returned full roList."
-			//
-			// The NACK still goes first, because the peer is waiting for an answer to
-			// this message and must know it was not applied. The roReq follows as a
-			// separate request, on the same connection, because this peer is the one
-			// holding the stale belief.
-			logger.Warningf("Lost synchronisation on RO %s; requesting a rebuild", unknown.ROID)
-			if ackErr := c.writeMessage(ctx, xml.CreateROAck(msg.ROID,
-				"NACK: running order not held by this device, requesting resync", nil)); ackErr != nil {
-				return ackErr
-			}
-			c.requestResync(ctx, unknown.ROID)
-			return nil
-		}
-
-		logger.Errorf("Failed to process roStorySend for story %s in RO %s: %v",
-			msg.StoryID, msg.ROID, err)
-		return c.writeMessage(ctx, xml.CreateROAck(msg.ROID, "ERROR", nil))
-	}
-
-	return c.writeMessage(ctx, xml.CreateROAck(msg.ROID, "OK", nil))
-}
-
-// requestResync sends a roReq for a running order we should be holding but are not.
-//
-// Failures are logged and swallowed. Recovery is best-effort: the operation that
-// triggered it has already been answered, and turning a failed recovery attempt into a
-// connection error would replace a recoverable disagreement with an outage.
-func (c *ClientConnection) requestResync(ctx context.Context, roID string) {
-	if c.server == nil || !c.server.resync.shouldRequest(roID) {
-		// Either already asked recently, or asking is not possible. Declining is safe;
-		// the guard exists because asking on every refusal is how a loop starts.
-		return
-	}
-
-	logger.Infof("Sending roReq for RO %s to recover local state", roID)
-	if err := c.writeMessage(ctx, xml.ROReq{ROID: roID}); err != nil {
-		logger.Errorf("Failed to send roReq for RO %s: %v", roID, err)
-	}
-}
 
 // handleROReqStoryAction processes a roReqStoryAction message.
 //

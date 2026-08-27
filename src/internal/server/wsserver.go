@@ -30,10 +30,14 @@ import (
 // the hole punched in the initiator's firewall. That is implemented separately in
 // WSClient, which is the side that dials out.
 type WSServer struct {
-	config     *config.Config
-	service    *service.MOSService
-	eventBus   *events.EventBus
-	dedup      DedupStore
+	config   *config.Config
+	service  *service.MOSService
+	eventBus *events.EventBus
+	dedup    DedupStore
+	// resync rate-limits outbound roReq so pull recovery cannot loop, exactly as on the
+	// socket transport. Separate from the TCP server's guard because the two transports
+	// hold independent conversations with independent state.
+	resync     *resyncGuard
 	httpServer *http.Server
 	listener   net.Listener
 	ready      chan struct{} // closed once the listener is bound
@@ -63,6 +67,7 @@ func NewWSServer(cfg *config.Config, mosService *service.MOSService, eventBus *e
 		service:    mosService,
 		eventBus:   eventBus,
 		dedup:      dedup,
+		resync:     newResyncGuard(),
 		sessions:   make(map[string]*WSSession),
 		shutdownCh: make(chan struct{}),
 		ready:      make(chan struct{}),
@@ -379,6 +384,18 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 		return
 
 	default:
+		// Running-order handling is shared with the MOS 2.x transport. Previously this
+		// transport NACKed everything except roCreate as unimplemented, which made the
+		// "one shared message core" claim untrue for the entire Profile 2 family.
+		if handled, err := dispatchRunningOrder(ctx, s.roDeps(),
+			wsResponder{server: s, sess: sess, messageID: env.MessageID}, msg); handled {
+			if err != nil {
+				logger.Errorf("Failed to handle %s from ncsID=%s: %v",
+					msg.GetMessageType(), sess.ncsID, err)
+			}
+			return
+		}
+
 		// Recognised as belonging on this channel, but not implemented. Say so
 		// rather than staying silent: the spec has senders retrying until they get
 		// a response, so silence would just invite a retry.

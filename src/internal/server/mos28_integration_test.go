@@ -453,8 +453,14 @@ func TestMOS28RODeleteReportsChildDeleteFailure(t *testing.T) {
 		} `xml:"roAck"`
 	}
 	readMOS28XMLForTest(t, conn, &ack)
-	if ack.ROAck.Status != "ERROR" {
-		t.Fatalf("ACK status = %q, want ERROR", ack.ROAck.Status)
+	// roStatus is "OK" or an error description (MOS 4.0 §6), so a descriptive NACK is
+	// what conformance wants here -- not the bare word "ERROR", which describes nothing.
+	// A real NCS sends whole sentences in this field.
+	if ack.ROAck.Status == "OK" || !strings.Contains(ack.ROAck.Status, "NACK") {
+		t.Fatalf("ACK status = %q, want a descriptive NACK", ack.ROAck.Status)
+	}
+	if !strings.Contains(ack.ROAck.Status, "delete item") {
+		t.Errorf("ACK status = %q; it should name the failure so the NCS can act", ack.ROAck.Status)
 	}
 	if runningOrders.value("RO-DELETE-FAIL") == nil || stories.value("RO-DELETE-FAIL/STORY") == nil || items.value("RO-DELETE-FAIL/STORY/ITEM") == nil {
 		t.Fatal("roDelete continued after a child deletion failed")
@@ -532,8 +538,14 @@ func TestMOS28RejectsMissingRequiredFieldsBeforeMutation(t *testing.T) {
 		} `xml:"roAck"`
 	}
 	readMOS28XMLForTest(t, conn, &ack)
-	if ack.ROAck.Status != "ERROR" {
-		t.Fatalf("ACK status = %q, want ERROR", ack.ROAck.Status)
+	// roStatus is "OK" or an error description (MOS 4.0 §6), so a descriptive NACK is
+	// what conformance wants here -- not the bare word "ERROR", which describes nothing.
+	// A real NCS sends whole sentences in this field.
+	if ack.ROAck.Status == "OK" || !strings.Contains(ack.ROAck.Status, "NACK") {
+		t.Fatalf("ACK status = %q, want a descriptive NACK", ack.ROAck.Status)
+	}
+	if !strings.Contains(ack.ROAck.Status, "required") {
+		t.Errorf("ACK status = %q; it should name the missing field so the NCS can correct it", ack.ROAck.Status)
 	}
 	if runningOrders.value("RO-INVALID") != nil || stories.value("RO-INVALID/STORY-INVALID") != nil || items.value("RO-INVALID/STORY-INVALID/") != nil {
 		t.Fatal("invalid roCreate mutated persistence")
@@ -576,8 +588,14 @@ func TestMOS28RejectsMissingRequiredObjectFieldsBeforeMutation(t *testing.T) {
 		} `xml:"roAck"`
 	}
 	readMOS28XMLForTest(t, conn, &ack)
-	if ack.ROAck.Status != "ERROR" {
-		t.Fatalf("ACK status = %q, want ERROR", ack.ROAck.Status)
+	// roStatus is "OK" or an error description (MOS 4.0 §6), so a descriptive NACK is
+	// what conformance wants here -- not the bare word "ERROR", which describes nothing.
+	// A real NCS sends whole sentences in this field.
+	if ack.ROAck.Status == "OK" || !strings.Contains(ack.ROAck.Status, "NACK") {
+		t.Fatalf("ACK status = %q, want a descriptive NACK", ack.ROAck.Status)
+	}
+	if !strings.Contains(ack.ROAck.Status, "required") {
+		t.Errorf("ACK status = %q; it should name the missing field so the NCS can correct it", ack.ROAck.Status)
 	}
 	if runningOrders.value("RO-MISSING-OBJECT") != nil || stories.value("RO-MISSING-OBJECT/STORY") != nil || items.value("RO-MISSING-OBJECT/STORY/ITEM") != nil {
 		t.Fatal("invalid item mutated persistence")
@@ -604,8 +622,14 @@ func TestMOS28ROReplaceStopsOnDeleteFailure(t *testing.T) {
 		} `xml:"roAck"`
 	}
 	readMOS28XMLForTest(t, conn, &ack)
-	if ack.ROAck.Status != "ERROR" {
-		t.Fatalf("ACK status = %q, want ERROR", ack.ROAck.Status)
+	// roStatus is "OK" or an error description (MOS 4.0 §6), so a descriptive NACK is
+	// what conformance wants here -- not the bare word "ERROR", which describes nothing.
+	// A real NCS sends whole sentences in this field.
+	if ack.ROAck.Status == "OK" || !strings.Contains(ack.ROAck.Status, "NACK") {
+		t.Fatalf("ACK status = %q, want a descriptive NACK", ack.ROAck.Status)
+	}
+	if !strings.Contains(ack.ROAck.Status, "delete item") {
+		t.Errorf("ACK status = %q; it should name the failure so the NCS can act", ack.ROAck.Status)
 	}
 	if ro := runningOrders.value("RO-DELETE-FAIL"); ro == nil || ro.Slug != "Original" {
 		t.Fatalf("running order changed after delete failure: %#v", ro)

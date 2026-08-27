@@ -72,14 +72,28 @@ func (r ROReadyToAir) GetMessageType() string {
 // ROElementStat represents an element status report (Profile 4)
 // Per XSD: roID, storyID?, itemID, objID?, itemChannel?, status, time
 type ROElementStat struct {
-	XMLName     xml.Name `xml:"roElementStat"`
-	ROID        string   `xml:"roID"`
-	StoryID     string   `xml:"storyID,omitempty"`
-	ItemID      string   `xml:"itemID"`
-	ObjID       string   `xml:"objID,omitempty"`
-	ItemChannel string   `xml:"itemChannel,omitempty"`
-	Status      string   `xml:"status"`
-	Time        string   `xml:"time"`
+	XMLName xml.Name `xml:"roElementStat"`
+
+	// Element is the required attribute naming what the status is about: RO, STORY or
+	// ITEM. MOS 4.0 declares it `<!ATTLIST roElementStat element CDATA #REQUIRED>` and
+	// §3.7.1 gives the value set.
+	//
+	// It was absent from this struct, which meant the one field distinguishing a
+	// running-order status from a story or item status was silently discarded. All three
+	// values appear in real multi-vendor traffic, and roElementStat was the most common
+	// non-heartbeat message in the sampled corpus.
+	Element string `xml:"element,attr,omitempty"`
+
+	ROID    string `xml:"roID"`
+	StoryID string `xml:"storyID,omitempty"`
+	// ItemID is required by the DTD and optional in the structural outline. Real traffic
+	// with element="RO" omits it, so the outline wins: emit it when set, tolerate its
+	// absence on receipt.
+	ItemID      string `xml:"itemID,omitempty"`
+	ObjID       string `xml:"objID,omitempty"`
+	ItemChannel string `xml:"itemChannel,omitempty"`
+	Status      string `xml:"status"`
+	Time        string `xml:"time"`
 }
 
 // GetMessageType returns the type of the message

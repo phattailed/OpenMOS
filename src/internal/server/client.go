@@ -1,9 +1,6 @@
 package server
 
 import (
-	"strings"
-
-	"airshift/openmos/internal/model"
 	"context"
 	xmlstd "encoding/xml"
 	"fmt"
@@ -226,6 +223,13 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 
 	var err error
 
+	// Running-order handling is shared with the MOS 4.0 transport, so it lives outside
+	// this switch. Both transports call the same functions; only the reply mechanics
+	// differ, which is what peerResponder abstracts.
+	if handled, hErr := dispatchRunningOrder(ctx, c.roDeps(), tcpResponder{conn: c}, message); handled {
+		return hErr
+	}
+
 	switch msg := message.(type) {
 	// Profile 0: Basic Communication
 	case xml.Heartbeat:
@@ -247,13 +251,8 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 	case xml.MosListAll:
 		err = c.handleMosListAll(ctx, msg)
 
-	// Profile 2: Basic Running Order Workflow
-	case xml.ROReplace:
-		err = c.handleROReplace(ctx, msg)
-	case xml.RODelete:
-		err = c.handleRODelete(ctx, msg)
-	case xml.ROMetadataReplace:
-		err = c.handleROMetadataReplace(ctx, msg)
+	// Profile 2 and the Profile 4 messages that accompany it are handled by the
+	// shared running-order dispatcher above, so they do not appear here.
 	case xml.ROListAll:
 		err = c.handleROListAll(ctx, msg)
 	case xml.ROAck:
@@ -269,37 +268,16 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 	case xml.MosListSearchableSchema:
 		err = c.handleMosListSearchableSchema(ctx, msg)
 
-	// Running Order messages (existing)
-	case xml.ROReq:
-		err = c.handleROReq(ctx, msg)
-	case xml.ROReqAll:
-		err = c.handleROReqAll(ctx, msg)
-	case xml.ROList:
-		err = c.handleROList(ctx, msg)
 	case xml.RunningOrderInfo:
 		err = c.handleRunningOrderInfo(ctx, msg)
 	case xml.MOSAck:
 		err = c.handleMOSAck(ctx, msg)
-
-	// Profile 4: Advanced RO/Content List Workflow
-	case xml.ROElementAction:
-		err = c.handleROElementAction(ctx, msg)
-	case xml.ROReadyToAir:
-		err = c.handleROReadyToAir(ctx, msg)
-	case xml.ROElementStat:
-		err = c.handleROElementStat(ctx, msg)
 
 	// Profile 5: Item Control
 	case xml.ROCtrl:
 		err = c.handleROCtrl(ctx, msg)
 	case xml.ROItemCue:
 		err = c.handleROItemCue(ctx, msg)
-
-	// Profile 4 continued: roStorySend carries the body of a story (MOS 4.0 §2.5).
-	// It is NOT Profile 6 -- Profile 6 is MOS Redirection and "does not include any
-	// additional MOS messages", being only a mosID naming convention (§2.7).
-	case xml.ROStorySend:
-		err = c.handleROStorySend(ctx, msg)
 
 	// Profile 7: MOS RO/Content List Modification (§2.8).
 	case xml.ROReqStoryAction:
@@ -381,133 +359,6 @@ func (c *ClientConnection) allowHeartbeatReply() bool {
 	return true
 }
 
-// handleReqRunningOrderList processes a request for running order list
-func (c *ClientConnection) handleROReq(ctx context.Context, req xml.ROReq) error {
-	logger.Infof("Received roReq from client %s for RO %s", c.id, req.ROID)
-
-	if strings.TrimSpace(req.ROID) == "" {
-		return c.writeMessage(ctx, xml.CreateROAck("", "NACK: roReq requires a roID", nil))
-	}
-
-	ro, stories, err := c.server.service.GetRunningOrderWithStories(ctx, req.ROID)
-	if err != nil {
-		// MOS 3.8.4 §3.5.1: roReq is answered with roList, or "roAck with a NACK
-		// value [...] if the Running Order ID is not valid, roList cannot be returned
-		// for some reason, or if the Running Order is not available". Reporting that
-		// honestly is what lets a peer resynchronise.
-		logger.Infof("roReq for unknown or unavailable RO %s: %v", req.ROID, err)
-		return c.writeMessage(ctx, xml.CreateROAck(req.ROID,
-			"NACK: running order not available", nil))
-	}
-
-	storyInfos, err := c.storyInfosFor(ctx, stories)
-	if err != nil {
-		return c.writeMessage(ctx, xml.CreateROAck(req.ROID,
-			fmt.Sprintf("NACK: %v", err), nil))
-	}
-
-	// Answered with roList, not roCreate. roCreate is the NCS telling a device about a
-	// new running order; roList is the answer to a request for one.
-	return c.writeMessage(ctx, xml.CreateROList(xml.ROListEntry{
-		ID:      ro.ID,
-		Slug:    ro.Slug,
-		Channel: ro.Channel,
-		EdDur:   fmt.Sprintf("%d", ro.Duration),
-		Stories: storyInfos,
-	}))
-}
-
-// handleROReqAll answers <roReqAll> with <roListAll>.
-//
-// MOS 3.8.4 §3.5.3/§3.5.4: roReqAll carries no roID and roListAll describes every
-// running order in summary. Stories are deliberately absent -- this is discovery, and
-// a peer wanting content follows up with roReq per running order.
-func (c *ClientConnection) handleROReqAll(ctx context.Context, _ xml.ROReqAll) error {
-	logger.Infof("Received roReqAll from client %s", c.id)
-
-	runningOrders, err := c.server.service.ListRunningOrders(ctx)
-	if err != nil {
-		return c.writeMessage(ctx, xml.CreateROAck("",
-			fmt.Sprintf("NACK: failed to list running orders: %v", err), nil))
-	}
-
-	entries := make([]xml.ROListAllItem, 0, len(runningOrders))
-	for _, ro := range runningOrders {
-		entries = append(entries, xml.ROListAllItem{
-			ID:      ro.ID,
-			Slug:    ro.Slug,
-			Channel: ro.Channel,
-			EdDur:   fmt.Sprintf("%d", ro.Duration),
-		})
-	}
-
-	// An empty roListAll is a valid answer, observed from a real NCS.
-	return c.writeMessage(ctx, xml.CreateROListAll(entries))
-}
-
-// handleROList applies an inbound <roList>, completing pull recovery.
-//
-// MOS 3.8.4: on lost synchronisation a device should "send roReq, and replace its local
-// state from the returned full roList". This is that replacement. A roList may also
-// arrive unsolicited -- §3.5.2 notes it "can be sent by either the NCS or MOS" -- so it
-// is applied on its own merits rather than only when a request is outstanding.
-//
-// No response is defined for roList, so none is sent.
-func (c *ClientConnection) handleROList(ctx context.Context, list xml.ROList) error {
-	logger.Infof("Received roList from client %s for RO %s with %d stories",
-		c.id, list.ID, len(list.Stories))
-
-	if err := c.server.service.ApplyROList(ctx, list, c.config.MOS.ID); err != nil {
-		logger.Errorf("Failed to apply roList for RO %s: %v", list.ID, err)
-		return nil
-	}
-
-	// The disagreement is resolved, so allow an immediate request if a later one
-	// occurs rather than holding the rate limit against a running order we now hold.
-	c.server.resync.forget(list.ID)
-	logger.Infof("Applied roList for RO %s; local state rebuilt", list.ID)
-	return nil
-}
-
-// storyInfosFor converts stored stories, with their items, into the wire shape shared
-// by roList, roCreate and roReplace.
-func (c *ClientConnection) storyInfosFor(ctx context.Context, stories []*model.Story) ([]xml.StoryInfo, error) {
-	storyInfos := make([]xml.StoryInfo, 0, len(stories))
-	for _, story := range stories {
-		items, err := c.server.service.GetItemsForStory(ctx, story.ID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get items for story %s: %w", story.ID, err)
-		}
-
-		itemInfos := make([]xml.ItemInfo, 0, len(items))
-		for _, item := range items {
-			itemID := item.RawID
-			if itemID == "" {
-				itemID = item.ID
-			}
-			itemInfos = append(itemInfos, xml.ItemInfo{
-				ID:       itemID,
-				Slug:     item.Slug,
-				Duration: fmt.Sprintf("%d", item.Duration),
-				ObjectID: item.ObjectID,
-			})
-		}
-
-		storyID := story.RawID
-		if storyID == "" {
-			storyID = story.ID
-		}
-		storyInfos = append(storyInfos, xml.StoryInfo{
-			ID:       storyID,
-			Slug:     story.Slug,
-			Number:   story.Number,
-			Duration: fmt.Sprintf("%d", story.Duration),
-			Items:    itemInfos,
-		})
-	}
-	return storyInfos, nil
-}
-
 // handleRunningOrderInfo processes a running order create/update message.
 //
 // Retried messageIDs are made idempotent: a re-delivery replays the original ack
@@ -554,7 +405,7 @@ func (c *ClientConnection) handleRunningOrderInfo(ctx context.Context, roInfo xm
 	err := c.server.service.ProcessRunningOrderInfo(ctx, roInfo, c.config.MOS.ID)
 	if err != nil {
 		logger.Errorf("Failed to process running order %s: %v", roInfo.ID, err)
-		return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "ERROR", nil))
+		return c.writeMessage(ctx, xml.CreateROAck(roInfo.ID, "NACK: "+firstLine(err), nil))
 	}
 
 	// Acknowledge only after the running order is persisted.

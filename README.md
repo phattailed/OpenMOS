@@ -39,16 +39,17 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Profile 0: `keepAlive` (no response) | Yes | Unit tests | **Yes** | — |
 | Profile 0: heartbeat timeout (bounded) | Yes | Server closes on timeout | No | — |
 | `roCreate`: validate, persist, ack after persist | Yes | Integration tests | **Yes** | — |
-| `roReplace`, `roStorySend`, `roDelete` | MOS 2.x only | Integration tests | **Yes** | The MOS 4 transport NACKs these as unimplemented |
+| `roReplace`, `roStorySend`, `roDelete` | Both transports | Integration + loopback tests | **Yes** (2.x) | Shared handlers, so the two cannot diverge |
+| `roMetadataReplace`, `roReadyToAir`, `roElementAction` | Both transports | Loopback tests | No | Routed through the same shared dispatcher |
 | `roStorySend` refuses an unknown `roID` | Yes | Integration test | **Yes** | Reports rather than fabricating a running order |
-| Pull recovery: unknown `roID` triggers `roReq` | MOS 2.x only | Integration tests | No | Rate-limited so recovery cannot loop |
-| Inbound `roList` rebuilds local state | MOS 2.x only | Integration tests | No | Does not yet delete stories absent from the list |
+| Pull recovery: unknown `roID` triggers `roReq` | Both transports | Integration + loopback tests | No | Rate-limited so recovery cannot loop |
+| Inbound `roList` rebuilds local state | Both transports | Integration tests | No | Does not yet delete stories absent from the list |
 | Authentic captured fixtures (Profile 0 and 2) | Yes | Live-frame tests | **Yes** | Sanitized; raw captures never committed |
 | Cross-vendor frames (4 other vendors) | Yes | Real-traffic tests | **Yes** | From ~90k logged messages, not synthesised |
 | `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
 | `roReq` answered with `roList` for one running order | Yes | Integration tests | No | Was inverted with `roReqAll`; see `doc/interop` §17 |
 | `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | No | Discovery only, as the spec requires |
-| `roElementStat` parses and routes on both transports | Yes | Real-traffic tests | Partly | Parsed and routed; not yet acted on |
+| `roElementStat` parses, routes and acks on both | Yes | Real-traffic + loopback tests | Partly | `element` attribute now preserved; not yet acted on |
 | Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | Not durable across restart |
 | `messageID` conflict detection | Yes | Unit tests | **Yes** | — |
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
@@ -100,8 +101,11 @@ protocol generation; they do not own message semantics.
   and `channel`, adding `passive=true` for passive mode. Sends HTTP Basic
   credentials when configured, verifies TLS certificates by default, and
   reconnects with capped backoff. Disabled unless a peer URL is set.
-- **Shared message core** — envelope handling, Profile 0, running-order
-  construction, deduplication and persistence, used identically by both.
+- **Shared message core** — envelope handling, Profile 0, the running-order family,
+  deduplication and persistence, used identically by both. The running-order handlers
+  are transport-agnostic functions that take a responder, so a message type either
+  works on both transports or on neither; that is asserted by test rather than left to
+  discipline.
 - **Repositories** — in-memory or MongoDB, selected by `storage.backend`.
 - **Event bus** — internal pub-sub for running order change notifications.
 - **Sentry** (optional) — error tracking when a DSN is configured.
@@ -282,18 +286,14 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Profile 2 on the MOS 4 transport.** The WebSocket path implements `keepAlive`,
-   `reqMachInfo` and `roCreate`, and NACKs everything else as unimplemented. So
-   running-order maintenance and pull recovery exist on the MOS 2.x transport only,
-   which is the larger remaining asymmetry between the two.
+1. **Persist the `messageID` counter.** MOS 4.0 §4.1.7 states "the last used messageID
+   must be persistent", and describes retry deduplication as the field's purpose — so a
+   restart reissuing 1, 2, 3 risks having them answered from a peer's dedup cache instead
+   of processed (`doc/interop/README.md` §19).
 2. **Passive mode against a real NCS.** Standard mode is now proven live; passive
    mode is implemented and loopback-tested but the reference NCS has no passive
    device configured.
-3. **Persist the `messageID` counter.** The spec has the sender "increment IDs,
-   persist the last value, and wrap to 1". Wrapping is implemented; persistence is
-   not, so a restart reissues identifiers a peer may still associate with earlier
-   requests (`doc/interop/README.md` §15).
-4. **Preserve `mosExternalMetadata`.** The payload is opaque and must be carried, but
+3. **Preserve `mosExternalMetadata`.** The payload is opaque and must be carried, but
    the model holds `map[string]string`, which cannot represent the nested vendor XML
    real traffic sends in `<mosPayload>`.
 5. **Durable storage by default for interop work.** In-memory storage means a

@@ -1250,3 +1250,70 @@ constrains the peer. Where it touches us is pull recovery: the `roReq` in §18 i
 request, and the rate limit that keeps recovery from looping also happens to keep only
 one outstanding. That is a coincidence of design rather than an implementation of the
 rule, and is worth knowing if outbound traffic ever grows.
+
+## 20. One shared message core, actually
+
+The README has claimed since the beginning that OpenMOS is "one message core behind two
+transports", with the transports owning framing and envelope rules and nothing else. For
+the running-order family that was not true.
+
+The MOS 2.x socket path had fifteen running-order handlers. The MOS 4.0 WebSocket path had
+one — `roCreate` — and answered everything else with `message type X is not implemented`.
+So a rundown could be built and maintained over the socket, and only created over
+WebSocket.
+
+### Why not simply add fifteen more handlers
+
+Because that is how the divergence happened in the first place. §14 found `roElementStat`
+parseable on one transport and not the other; §17 found the `roReq`/`roReqAll` pair bound
+inversely, with `roList` shaped as `roListAll`. Each was a case of the same message being
+implemented twice and drifting.
+
+Fifteen more methods on the WebSocket server would have doubled the surface and guaranteed
+the next drift. So the running-order handling moved out of both transports into
+`dispatch_ro.go`, and each transport supplies a `peerResponder` — an interface with two
+methods, "who is this peer" and "send this message back to them". Everything above that
+line is shared.
+
+The handlers are now identical by construction rather than by discipline. A test asserts
+the seam directly: every message in the family must be recognised by the shared dispatcher,
+which means it either works on both transports or on neither.
+
+### What this closed
+
+On the MOS 4.0 transport, these went from `not implemented` to working, exercised end to
+end over real UCS-2BE binary frames:
+
+`roReplace`, `roDelete`, `roMetadataReplace`, `roStorySend`, `roReadyToAir`,
+`roElementAction`, `roElementStat`, `roReq`, `roReqAll`, `roList`
+
+Pull recovery (§18) came with them, because it lives in the shared `roStorySend` handler
+rather than in a transport. There is a loopback test proving a MOS 4 peer that sends a
+story for an unknown running order gets a NACK and then a `roReq`, exactly as the socket
+peer does.
+
+### Two defects found while doing it
+
+**`roElementStat` was discarding its `element` attribute.** The struct had no field for
+it. MOS 4.0 declares it `<!ATTLIST roElementStat element CDATA #REQUIRED>` and §3.7.1 gives
+the values `RO`, `STORY`, `ITEM` — it is the one field distinguishing a running-order
+status from a story or item status. All three appear in real traffic, and §14 recorded
+`roElementStat` as the most common non-heartbeat message in the sampled corpus. We were
+parsing the message and throwing away its subject.
+
+**`roStatus` was the bare word `ERROR`.** MOS 4.0 §6 defines the field as `"OK"` or an
+error description, 128 characters. `ERROR` describes nothing, and a peer that cannot see
+why its `roReplace` was refused cannot correct it — which is presumably why a real ENPS
+puts whole sentences here, as §14 found. Failures now name their cause, trimmed to fit the
+128-character limit, with a test asserting the bound.
+
+### What is deliberately still per-transport
+
+`roCreate` keeps its own handler on each side. Both already do deduplication with
+ack-after-persist, but the dedup scoping differs — the socket scopes by connection, MOS 4.0
+scopes by channel because each channel carries an independent `messageID` sequence.
+Unifying that is a separate change with its own reasoning, and folding it in here would
+have mixed two arguments.
+
+Profile 0 also stays per-transport, correctly: `messageID` requirements and frame encoding
+are exactly the things that legitimately differ between generations.
