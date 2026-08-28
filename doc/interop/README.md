@@ -1640,3 +1640,85 @@ and has not been made.
 
 Until then the README records passive mode as implemented, loopback-tested, and **not** proven
 live, with the reason stated rather than left as "untested".
+
+## 26. Acting on the Sofie breadcrumbs: two gaps, seven already closed
+
+`doc/mos-protocol-source-synthesis.md` now pins nine Sofie-to-OpenMOS breadcrumbs, each with a
+source reference, the behaviour it demonstrates, the corresponding OpenMOS seam, and
+adopt/adapt/do-not-copy guidance. Working through them: seven describe things this repository
+already does, and two named real gaps. Both are now closed.
+
+### Breadcrumb 5, the invariant worth having mechanically
+
+"A parsed type is not an implemented workflow. Add a startup/test assertion tying every
+advertised profile/message to a real handler and response path."
+
+This is the single most useful item in the table, because it is the failure this project keeps
+having. It has happened three separate ways: `roElementStat` parsed on one transport and not the
+other (§14); `roReq` and `roReqAll` parsed but bound to each other's handlers (§17); and the
+whole Profile 2 family parsed on MOS 4.0 while the transport answered "not implemented" (§20).
+Every one was a message the parser accepted and the application did nothing with.
+
+`internal/server/message_inventory_test.go` now records, for all 32 elements the parser accepts,
+whether it is handled by the shared dispatcher, handled per-transport, or parsed with nothing
+acting on it — and *why*, for the last category. Three checks enforce it:
+
+- **The inventory must cover the parser.** The test reads the parser's own `case` list, so
+  adding a message type fails the build until somebody classifies it. Verified by adding a
+  fake `roFakeNewMessage` case: `the parser accepts these messages and nothing records what
+  happens to them: [roFakeNewMessage]`.
+- **Claims must be truthful.** Anything marked shared must actually be recognised by
+  `dispatchRunningOrder`, and anything else must not be — so the classification cannot drift
+  into aspiration.
+- **Every gap must state a reason.** A parsed-but-unimplemented entry with no explanation is
+  indistinguishable from an oversight.
+
+It found one on its first run: **`roListAll`**. It has a handler, so it looked handled. The
+handler only logs. `roListAll` is the discovery *answer*, and its only real use is driving a
+follow-up `roReq` per running order — MOS 4.0 §2.5: "For a full listing of the contents of the
+RO the MOS device must issue a subsequent roReq". That two-stage walk is not implemented, so an
+inbound `roListAll` changes nothing. It is now classified by **effect** rather than by whether a
+function exists, and the missing walk is recorded in the README.
+
+### Breadcrumb 3, framing cases without Sofie's parser
+
+"Adopt the cases, not the parser: retain OpenMOS's UCS-2BE byte discipline and 4 MiB bound;
+test arbitrary splits, coalesced frames, junk, and partial tags. Do not copy Sofie's unbounded
+string buffer or automatic junk discard."
+
+The framer was already correct, and the 4 MiB bound already enforced in `Append`. But two subtle
+protections carried no tests and either could be "simplified" away by someone who did not know
+why they were there:
+
+- `searchFrom` retains a trailing window rather than jumping to the buffer end, so a `</mos>`
+  split across two reads is still found.
+- `index%2 != 0` rejects a terminator match at an odd byte offset. In UCS-2BE a frame boundary
+  is only real at an even offset, and a payload can contain byte runs that look exactly like
+  `</mos>` one byte out of alignment. This is a hazard a string-based parser such as Sofie's
+  cannot have, so the case had to be constructed rather than borrowed: the characters
+  U+3C00 U+2F00 U+6D00 U+6F00 U+7300 U+3E00 preceded by one whose low byte is zero encode to
+  exactly `</mos>` in UCS-2BE, starting at an odd offset. The test asserts its own setup, and
+  fails if the decoy does not land misaligned.
+
+`internal/xml/framing_robustness_test.go` adds seven tests: every split point of a two-frame
+stream, byte-at-a-time delivery, five coalesced frames in one read, the odd-offset decoy, a
+withheld half-code-unit terminator, non-MOS roots refused rather than discarded, and the 4 MiB
+ceiling on an unterminated frame.
+
+Both protections were then removed deliberately to confirm the tests earn their place. Dropping
+the alignment check fails exactly `TestFramerIgnoresCloseTagAtOddByteOffset`; dropping the
+window retention fails the three split-related tests and nothing else.
+
+### The seven already satisfied
+
+Architecture boundary, port/role separation by generation, ACK-after-persistence, the
+`roReq`/`roReqAll` direction split, and fixture-driven in-process peers all describe existing
+structure. Serialization and retry are partly satisfied — the durable sequence, dedup and
+conflict detection are in place, but OpenMOS does not yet enforce one in-flight request per
+ordered lane on its own outbound traffic, which matters more once it originates more than
+Profile 0. Primary/secondary failover is marked do-not-copy-yet and has correctly not been
+copied.
+
+The central warning in that section is the one to keep: a connector can parse or send a message
+its consuming application does not meaningfully handle. Handler wiring, state effects,
+acknowledgements and end-to-end tests remain the authority for what this repository claims.
