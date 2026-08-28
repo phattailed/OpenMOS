@@ -239,15 +239,16 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 	if err != nil { // Running order doesn't exist
 		// Create new running order
 		ro := &model.RunningOrder{
-			ID:        roInfo.ID,
-			MosID:     mosID,
-			Slug:      roInfo.Slug,
-			Status:    model.StatusPending,
-			Duration:  duration,
-			Channel:   roInfo.Channel,
-			Version:   1,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			ID:               roInfo.ID,
+			MosID:            mosID,
+			Slug:             roInfo.Slug,
+			Status:           model.StatusPending,
+			Duration:         duration,
+			Channel:          roInfo.Channel,
+			Version:          1,
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
+			ExternalMetadata: preserveExternalMetadata(roInfo.MosExternalMetadata),
 		}
 
 		_, err = s.runningOrderRepo.Create(ctx, ro)
@@ -277,15 +278,16 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 		storyID := storyPersistenceID(roInfo.ID, storyInfo.ID)
 		// Create or update each story
 		story := &model.Story{
-			ID:             storyID,
-			RawID:          storyInfo.ID,
-			RunningOrderID: roInfo.ID,
-			Slug:           storyInfo.Slug,
-			Number:         storyInfo.Number,
-			Status:         model.StatusPending,
-			Order:          i + 1,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
+			ID:               storyID,
+			RawID:            storyInfo.ID,
+			RunningOrderID:   roInfo.ID,
+			Slug:             storyInfo.Slug,
+			Number:           storyInfo.Number,
+			Status:           model.StatusPending,
+			Order:            i + 1,
+			ExternalMetadata: preserveExternalMetadata(storyInfo.MosExternalMetadata),
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
 		}
 
 		// Parse duration if provided
@@ -380,14 +382,15 @@ func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.RORe
 	if err != nil {
 		// Create new running order
 		ro := &model.RunningOrder{
-			ID:        roReplace.ID,
-			Slug:      roReplace.Slug,
-			Status:    model.StatusPending,
-			Duration:  duration,
-			Channel:   roReplace.Channel,
-			Version:   1,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			ID:               roReplace.ID,
+			Slug:             roReplace.Slug,
+			Status:           model.StatusPending,
+			Duration:         duration,
+			Channel:          roReplace.Channel,
+			Version:          1,
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
+			ExternalMetadata: preserveExternalMetadata(roReplace.MosExternalMetadata),
 		}
 
 		_, err = s.runningOrderRepo.Create(ctx, ro)
@@ -412,15 +415,16 @@ func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.RORe
 	for i, storyInfo := range roReplace.Stories {
 		storyID := storyPersistenceID(roReplace.ID, storyInfo.ID)
 		story := &model.Story{
-			ID:             storyID,
-			RawID:          storyInfo.ID,
-			RunningOrderID: roReplace.ID,
-			Slug:           storyInfo.Slug,
-			Number:         storyInfo.Number,
-			Status:         model.StatusPending,
-			Order:          i + 1,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
+			ID:               storyID,
+			RawID:            storyInfo.ID,
+			RunningOrderID:   roReplace.ID,
+			Slug:             storyInfo.Slug,
+			Number:           storyInfo.Number,
+			Status:           model.StatusPending,
+			Order:            i + 1,
+			ExternalMetadata: preserveExternalMetadata(storyInfo.MosExternalMetadata),
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
 		}
 
 		if storyInfo.Duration != "" {
@@ -454,15 +458,16 @@ func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.RORe
 func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml.ItemInfo) error {
 	for order, info := range infos {
 		item := &model.Item{
-			ID:        itemPersistenceID(storyID, info.ID),
-			RawID:     info.ID,
-			StoryID:   storyID,
-			Slug:      info.Slug,
-			ObjectID:  info.ObjectID,
-			Status:    model.StatusPending,
-			Order:     order + 1,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			ID:               itemPersistenceID(storyID, info.ID),
+			RawID:            info.ID,
+			StoryID:          storyID,
+			Slug:             info.Slug,
+			ObjectID:         info.ObjectID,
+			Status:           model.StatusPending,
+			Order:            order + 1,
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
+			ExternalMetadata: preserveExternalMetadata(info.MosExternalMetadata),
 		}
 		if info.Duration != "" {
 			item.Duration, _ = strconv.Atoi(info.Duration)

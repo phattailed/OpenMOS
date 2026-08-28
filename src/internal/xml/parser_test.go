@@ -595,8 +595,11 @@ func TestParserROItemCueWithMetadata(t *testing.T) {
 	if cue.MosExternalMetadata[0].MosSchema != "http://example.com/cue-schema" {
 		t.Errorf("expected mosSchema, got %s", cue.MosExternalMetadata[0].MosSchema)
 	}
-	if cue.MosExternalMetadata[0].MosPayload != "cue metadata payload" {
-		t.Errorf("expected mosPayload, got %s", cue.MosExternalMetadata[0].MosPayload)
+	// The payload is now captured as raw XML rather than as chardata, so a text-only
+	// payload arrives as that text. The point of the change is that ELEMENT content
+	// survives too, which a plain string field silently discarded.
+	if got := cue.MosExternalMetadata[0].MosPayload.Raw; got != "cue metadata payload" {
+		t.Errorf("expected mosPayload, got %s", got)
 	}
 }
 
@@ -641,8 +644,8 @@ func TestParserROStorySendWithExternalMeta(t *testing.T) {
 	if len(ss.ExternalMeta) != 1 {
 		t.Fatalf("expected 1 mosExternalMetadata, got %d", len(ss.ExternalMeta))
 	}
-	if ss.ExternalMeta[0].MosPayload != "story metadata" {
-		t.Errorf("expected mosPayload 'story metadata', got %s", ss.ExternalMeta[0].MosPayload)
+	if ss.ExternalMeta[0].MosPayload.Raw != "story metadata" {
+		t.Errorf("expected mosPayload 'story metadata', got %s", ss.ExternalMeta[0].MosPayload.Raw)
 	}
 }
 

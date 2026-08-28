@@ -4,6 +4,27 @@ import (
 	"time"
 )
 
+// ExternalMetadata is a mosExternalMetadata block preserved verbatim.
+//
+// MOS treats this as an opaque payload to be carried, not interpreted: MOS 4.0 §4.1.5
+// describes it as "a mechanism for transporting additional metadata, independent of schema
+// or DTD", and the DTD types the payload as ANY. So it is stored as the raw XML it arrived
+// as, alongside the scope and schema that describe it.
+//
+// It cannot live in the Metadata map[string]string that these types already carry: real
+// payloads are nested XML documents -- a graphics device sends entire template definitions
+// -- and flattening them to key/value pairs would lose exactly the structure the spec
+// requires be preserved.
+type ExternalMetadata struct {
+	// Scope is OBJECT, STORY or PLAYLIST, controlling how far the block propagates
+	// through the production workflow.
+	Scope string `bson:"scope,omitempty" json:"scope,omitempty"`
+	// Schema identifies the payload's schema, by convention a URL.
+	Schema string `bson:"schema,omitempty" json:"schema,omitempty"`
+	// Payload is the raw XML content of mosPayload, byte-for-byte as received.
+	Payload string `bson:"payload,omitempty" json:"payload,omitempty"`
+}
+
 // MOSObject represents the lowest level media object in the MOS hierarchy
 type MOSObject struct {
 	ID          string            `bson:"_id" json:"id"`                // Unique MOS Object ID
@@ -16,8 +37,11 @@ type MOSObject struct {
 	MediaID     string            `bson:"mediaID,omitempty" json:"mediaID,omitempty"`
 	MosAbstract string            `bson:"mosAbstract,omitempty" json:"mosAbstract,omitempty"`
 	Metadata    map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
-	CreatedAt   time.Time         `bson:"createdAt" json:"createdAt"`
-	UpdatedAt   time.Time         `bson:"updatedAt" json:"updatedAt"`
+	// ExternalMetadata holds mosExternalMetadata blocks verbatim, because the
+	// specification requires the payload be carried rather than interpreted.
+	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
+	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt        time.Time          `bson:"updatedAt" json:"updatedAt"`
 }
 
 // Item represents a single item within a story
@@ -33,8 +57,11 @@ type Item struct {
 	Order             int               `bson:"order" json:"order"`     // Order within the story
 	StoryID           string            `bson:"storyID" json:"storyID"` // Parent story ID
 	Metadata          map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
-	CreatedAt         time.Time         `bson:"createdAt" json:"createdAt"`
-	UpdatedAt         time.Time         `bson:"updatedAt" json:"updatedAt"`
+	// ExternalMetadata holds mosExternalMetadata blocks verbatim, because the
+	// specification requires the payload be carried rather than interpreted.
+	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
+	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt        time.Time          `bson:"updatedAt" json:"updatedAt"`
 }
 
 // Story represents a story in the running order (collection of items)
@@ -51,8 +78,11 @@ type Story struct {
 	NextID         string            `bson:"nextID,omitempty" json:"nextID,omitempty"`         // Next story ID for linked list
 	Presenter      string            `bson:"presenter,omitempty" json:"presenter,omitempty"`
 	Metadata       map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
-	CreatedAt      time.Time         `bson:"createdAt" json:"createdAt"`
-	UpdatedAt      time.Time         `bson:"updatedAt" json:"updatedAt"`
+	// ExternalMetadata holds mosExternalMetadata blocks verbatim, because the
+	// specification requires the payload be carried rather than interpreted.
+	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
+	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt        time.Time          `bson:"updatedAt" json:"updatedAt"`
 }
 
 // RunningOrder represents the top-level running order (collection of stories)
@@ -69,6 +99,9 @@ type RunningOrder struct {
 	Metadata     map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
 	Version      int               `bson:"version" json:"version"`
 	CreatedBy    string            `bson:"createdBy,omitempty" json:"createdBy,omitempty"`
-	CreatedAt    time.Time         `bson:"createdAt" json:"createdAt"`
-	UpdatedAt    time.Time         `bson:"updatedAt" json:"updatedAt"`
+	// ExternalMetadata holds mosExternalMetadata blocks verbatim, because the
+	// specification requires the payload be carried rather than interpreted.
+	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
+	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt        time.Time          `bson:"updatedAt" json:"updatedAt"`
 }

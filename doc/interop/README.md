@@ -1437,3 +1437,122 @@ persistence explicitly rather than by accident.
 
 Still outstanding: the socket transport does not originate requests, so it has no counter to
 persist. If it ever does, it should share this sequence rather than grow its own.
+
+## 23. mosExternalMetadata was being discarded
+
+The payload MOS exists to carry was being thrown away, in three places at once.
+
+MOS 4.0 §4.1.5 describes `mosExternalMetadata` as "a mechanism for transporting additional
+metadata, independent of schema or DTD", and the DTD types the payload as
+`<!ELEMENT mosPayload ANY>`. It is explicitly opaque: a device carries it without
+interpreting it, which is how MOS supports vendor schemas it has never heard of.
+
+### Three simultaneous losses
+
+**1. The payload was typed as a string.** `MosPayload string` with an element tag means
+`encoding/xml` collects only the element's *character data* — and a payload made of child
+elements has none. So every real payload parsed to `""` and vanished with no error. Proven
+before fixing:
+
+```
+mosScope="PLAYLIST"   mosSchema="http://example/schema"   mosPayload=""  (len 0)
+```
+
+It is now captured with `,innerxml`, which preserves the raw XML on read and writes it back
+literally, because that is what carrying an opaque payload requires.
+
+**2. Story and item had no field for it at all.** The spec places `mosExternalMetadata*` at
+running-order, story *and* item level. `StoryInfo` and `ItemInfo` declared none, so those two
+levels were dropped structurally regardless of the payload typing.
+
+**3. `roCreate` had no running-order-level field either.** So all three levels were lost.
+
+### The model could not hold it
+
+These types already carried `Metadata map[string]string`, which cannot represent nested XML.
+Real payloads are documents: ENPS sends a dozen production fields, and an automation vendor
+sends entire template definitions several levels deep with attributes. Flattening those to
+key/value pairs destroys exactly the structure the spec requires be preserved.
+
+There is now an `ExternalMetadata` type holding scope, schema and the raw payload, on running
+orders, stories, items and objects. A regression test confirms the loss is detected: with
+preservation removed, all three levels report "metadata was not stored at all".
+
+### Two non-conformant shapes noticed, not changed
+
+Recorded rather than fixed, because both reach beyond this change:
+
+- **`storyDur` is emitted on a story.** The spec's story outline is
+  `(storyID, storySlug?, storyNum?, mosExternalMetadata*, item*)` — there is no story
+  duration element. A conformant peer ignores unknown tags, so it is tolerated, but it is
+  invented output.
+- **`objPath` is emitted bare on an item.** The spec nests paths in an `objPaths` structure
+  containing `objPath*`, `objProxyPath*` and `objMetadataPath*`. Changing it touches the
+  object family too.
+
+### And a lever on the NCS side
+
+An ENPS device row carries a **`PreserveExternalMetadata`** boolean, and it is `false` by
+default on every device inspected — including this project's test device. So whether ENPS
+sends the payload at all is configurable per device, which means an empty payload in captured
+traffic does not by itself prove a parsing fault. Worth setting before concluding anything
+from a capture.
+
+## 24. What ENPS actually means by "passive"
+
+Vendor documentation for ENPS MOS support settles this, and it inverts a working assumption.
+
+### Passive is about which side dials, and it changes what a connection is FOR
+
+ENPS describes three arrangements:
+
+| ENPS term | Who connects | What the connection carries |
+|---|---|---|
+| **Active** | the MOS device connects to ENPS | messages **from** the device |
+| **Passive** (primary sense) | **ENPS connects to the MOS device** | messages **from** the device, over a link ENPS opened |
+| **Passive** (inbound variant) | the device connects to ENPS with `passive=true` | messages **to** the device — ENPS creates a `MOSOutput` for it |
+
+The third row is the operationally decisive one. In ENPS's words, when an inbound connection
+is passive "the NOM creates a new instance MOSSocket for the WebSocket connection, and an
+associated instance of **MOSOutput** [...] ENPS (NOM) will use this connection for messages
+to the MOS device." Whereas if the connection is **not** passive, "ENPS (NOM) creates a new
+instance MOSSocket (**for incoming messages**)".
+
+So a plain inbound MOS 4.0 connection is read-only from ENPS's point of view. It will accept
+what we send and answer it, but it will never push a running order down it.
+
+**That explains §12 exactly.** OpenMOS dialled in without the flag, completed Profile 0, and
+received nothing further — not because Profile 2 was unavailable, but because ENPS had
+classified the link as input-only. And it means passive mode is not merely a firewall
+convenience: **it is the mechanism by which an outbound-dialling device receives NCS-initiated
+traffic at all.** For this project that removes the need for a reverse tunnel on the MOS 4
+transport entirely.
+
+### Basic authentication applies only to wss, not ws
+
+"Per protocol only the WSS (WebSocket Secure), and not WS (Web Socket) connection will include
+Basic Authentication", and where it is used "the username and password provided in the Basic
+Authentication header must match a valid username and password on the ENPS NOM Server".
+
+Two consequences. The credential is a **server account**, not a per-device secret. And over
+plain `ws://` it is neither sent nor checked — so the client's HTTP Basic support, which is
+implemented and unit-tested, cannot be exercised at all without a TLS endpoint whose
+certificate validates. The reference host's certificate is for an unrelated domain, which is
+why that row still reads "No" for live proof.
+
+### Message flow is queued and tick-driven
+
+Input is processed on a `tmrInput` tick and output on a `tmrOutput` tick, with both queues
+persisted. Notably: "if a WebSocket connection exists for outgoing messages for the MOS
+device, then the next queued output message is sent". If no such connection exists, output
+simply accumulates.
+
+That is the same behaviour §12 recorded from the outside — NOM only appears to dial when it
+has queued work — now explained from the inside. It also means a passive connection that drops
+does not lose queued messages; they wait.
+
+### Configuration is per device
+
+The MOS table in System Maintenance holds the `Passive` flag, the URL of the MOS endpoint, and
+the credentials for `wss://`. The device row exposed through the global tables endpoint
+confirms it as a boolean field alongside `PreserveExternalMetadata`, both `false` by default.

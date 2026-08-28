@@ -124,12 +124,41 @@ func (e Envelope) Message() (MOSMessage, error) {
 }
 
 // MosExternalMetadata represents external metadata in MOS messages
+// MosExternalMetadata is the opaque metadata block MOS carries between systems.
+//
+// MOS 4.0 §4.1.5 and the DTD are explicit that the payload is arbitrary XML:
+// `<!ELEMENT mosPayload ANY>`, and "the contents of <mosPayload> must be well formed XML,
+// regardless of the schema used". It is a payload MOS transports without interpreting, so
+// the only correct handling is to keep it byte-for-byte.
+//
+// MosPayload was previously typed as a plain string, which meant encoding/xml collected
+// only the element's character data -- and a payload made of child elements has none. So
+// every real payload parsed to the empty string and was silently discarded. Real traffic
+// carries nested vendor XML here: a graphics device sends whole template definitions, and
+// ENPS sends a dozen production fields.
 type MosExternalMetadata struct {
-	XMLName    xml.Name `xml:"mosExternalMetadata"`
-	MosScope   string   `xml:"mosScope,omitempty"`
-	MosSchema  string   `xml:"mosSchema"`
-	MosPayload string   `xml:"mosPayload"`
+	XMLName    xml.Name   `xml:"mosExternalMetadata"`
+	MosScope   string     `xml:"mosScope,omitempty"`
+	MosSchema  string     `xml:"mosSchema"`
+	MosPayload MosPayload `xml:"mosPayload"`
 }
+
+// MosPayload holds arbitrary XML verbatim.
+//
+// The `,innerxml` tag captures the element's raw content on unmarshal and writes it back
+// literally on marshal, which is what carrying an opaque payload requires. Anything that
+// parsed the payload into a typed structure would have to know the vendor's schema, which
+// is precisely what MOS is designed not to require.
+type MosPayload struct {
+	XMLName xml.Name `xml:"mosPayload"`
+	Raw     string   `xml:",innerxml"`
+}
+
+// String returns the raw payload XML.
+func (p MosPayload) String() string { return p.Raw }
+
+// IsEmpty reports whether there is any payload content, ignoring insignificant whitespace.
+func (p MosPayload) IsEmpty() bool { return strings.TrimSpace(p.Raw) == "" }
 
 // Heartbeat represents a MOS heartbeat message
 // Format: <heartbeat/>
@@ -413,26 +442,37 @@ func (r ROReqAll) GetMessageType() string {
 
 // RunningOrderInfo represents a full running order with stories and items
 type RunningOrderInfo struct {
-	XMLName   xml.Name    `xml:"roCreate"`
-	RequestID string      `xml:"requestID,attr,omitempty"`
-	Timestamp string      `xml:"timestamp,attr,omitempty"`
-	Source    string      `xml:"source,attr,omitempty"`
-	ID        string      `xml:"roID"`
-	Slug      string      `xml:"roSlug"`
-	Channel   string      `xml:"roChannel,omitempty"`
-	EditTime  string      `xml:"roEdStart,omitempty"`
-	StartTime string      `xml:"roTrigger,omitempty"`
-	Duration  string      `xml:"roEdDur,omitempty"`
-	Stories   []StoryInfo `xml:"story"`
+	XMLName   xml.Name `xml:"roCreate"`
+	RequestID string   `xml:"requestID,attr,omitempty"`
+	Timestamp string   `xml:"timestamp,attr,omitempty"`
+	Source    string   `xml:"source,attr,omitempty"`
+	ID        string   `xml:"roID"`
+	Slug      string   `xml:"roSlug"`
+	Channel   string   `xml:"roChannel,omitempty"`
+	EditTime  string   `xml:"roEdStart,omitempty"`
+	StartTime string   `xml:"roTrigger,omitempty"`
+	Duration  string   `xml:"roEdDur,omitempty"`
+	// MosExternalMetadata at running-order level. The spec's roCreate outline carries
+	// mosExternalMetadata* immediately before story*, and this field was absent, so
+	// running-order metadata was dropped structurally.
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+	Stories             []StoryInfo           `xml:"story"`
 }
 
 // StoryInfo represents a story within a running order
 type StoryInfo struct {
-	ID       string     `xml:"storyID"`
-	Slug     string     `xml:"storySlug,omitempty"`
-	Number   string     `xml:"storyNum,omitempty"`
-	Duration string     `xml:"storyDur,omitempty"`
-	Items    []ItemInfo `xml:"item,omitempty"`
+	ID     string `xml:"storyID"`
+	Slug   string `xml:"storySlug,omitempty"`
+	Number string `xml:"storyNum,omitempty"`
+	// Duration is emitted as storyDur, which the specification does not define for a
+	// story -- the outline is (storyID, storySlug?, storyNum?, mosExternalMetadata*,
+	// item*). A conformant peer ignores unknown tags, so this is tolerated rather than
+	// harmful, but it is an invented element and is recorded as such.
+	Duration string `xml:"storyDur,omitempty"`
+	// MosExternalMetadata must appear before item to match the spec's element order,
+	// which MOS declares significant.
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+	Items               []ItemInfo            `xml:"item,omitempty"`
 }
 
 // ItemInfo represents an item within a story
@@ -442,8 +482,12 @@ type ItemInfo struct {
 	Duration string `xml:"itemEdDur,omitempty"`
 	ObjectID string `xml:"objID"`
 	MosID    string `xml:"mosID"`
-	ObjPath  string `xml:"objPath,omitempty"`
-	Channel  string `xml:"itemChannel,omitempty"`
+	// ObjPath is emitted bare, whereas the specification nests paths inside an objPaths
+	// structure: objPaths?(objPath*, objProxyPath*, objMetadataPath*). Recorded rather
+	// than changed here, since altering it touches the object family too.
+	ObjPath             string                `xml:"objPath,omitempty"`
+	Channel             string                `xml:"itemChannel,omitempty"`
+	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
 }
 
 // GetMessageType returns the type of the message

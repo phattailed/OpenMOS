@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"airshift/openmos/internal/model"
 	"airshift/openmos/internal/xml"
 )
 
@@ -70,4 +71,46 @@ func (s *MOSService) ApplyROList(ctx context.Context, list xml.ROList, mosID str
 		return fmt.Errorf("failed to apply roList for %q: %w", list.ID, err)
 	}
 	return nil
+}
+
+// preserveExternalMetadata converts wire mosExternalMetadata blocks into their stored form.
+//
+// The payload is kept as the raw XML it arrived as. MOS 4.0 §4.1.5 calls this an opaque
+// transport mechanism "independent of schema or DTD", and the DTD types mosPayload as ANY,
+// so interpreting it would require knowing every vendor's schema -- which is the thing MOS
+// is designed to avoid.
+//
+// Before this existed the blocks were dropped twice over: mosPayload was typed as a string,
+// so a payload made of child elements parsed to empty, and story and item had no field for
+// the block at all.
+func preserveExternalMetadata(blocks []xml.MosExternalMetadata) []model.ExternalMetadata {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]model.ExternalMetadata, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, model.ExternalMetadata{
+			Scope:   b.MosScope,
+			Schema:  b.MosSchema,
+			Payload: b.MosPayload.Raw,
+		})
+	}
+	return out
+}
+
+// restoreExternalMetadata converts stored blocks back to their wire form, so a roList built
+// from local state carries what was originally received.
+func restoreExternalMetadata(blocks []model.ExternalMetadata) []xml.MosExternalMetadata {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]xml.MosExternalMetadata, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, xml.MosExternalMetadata{
+			MosScope:   b.Scope,
+			MosSchema:  b.Schema,
+			MosPayload: xml.MosPayload{Raw: b.Payload},
+		})
+	}
+	return out
 }
