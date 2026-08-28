@@ -49,6 +49,9 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
 | `roReq` answered with `roList` for one running order | Yes | Integration tests | No | Was inverted with `roReqAll`; see `doc/interop` §17 |
 | `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | No | Discovery only, as the spec requires |
+| Inbound `roListAll` drives `roReq` per running order | **No** | — | — | Logged only; the two-stage discovery walk is not implemented |
+| Every parseable message classified as handled or not | Yes | Inventory test reads the parser | — | Adding a message type fails the build until classified |
+| Frame splits, coalescing, misaligned terminators, junk | Yes | Unit tests, incl. odd-offset decoy | **Yes** | Bounded at 4 MiB; non-MOS roots refused, not discarded |
 | `roElementStat` parses, routes and acks on both | Yes | Real-traffic + loopback tests | Partly | `element` attribute now preserved; not yet acted on |
 | Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | Not durable across restart |
 | `messageID` conflict detection | Yes | Unit tests | **Yes** | — |
