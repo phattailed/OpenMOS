@@ -27,7 +27,10 @@ func clientTestConfig(peerURL string) *config.Config {
 	cfg.WSClient.Enabled = true
 	cfg.WSClient.PeerURL = peerURL
 	cfg.WSClient.Channel = "ro"
-	cfg.WSClient.Passive = true
+	// Active mode by default. Passive is not cosmetic -- it stops the client driving a
+	// handshake, because a passive peer treats the connection as its own output channel and
+	// does not answer our requests. Tests that want a handshake must therefore be active.
+	cfg.WSClient.Passive = false
 	cfg.WSClient.ReconnectInitial = 20 * time.Millisecond
 	cfg.WSClient.ReconnectMax = 200 * time.Millisecond
 	return cfg
@@ -169,16 +172,17 @@ func TestWSClientProfile0AgainstPeer(t *testing.T) {
 	peer := newNCSPeer(t, cfg)
 	cfg.WSClient.PeerURL = peer.wsURL()
 
-	client := NewWSClient(cfg, nil)
+	client := NewWSClient(cfg, nil, nil)
 	stop := runClient(t, client)
 	defer stop()
 
 	// The peer flips firstExchangeDone once reqMachInfo + heartbeat both replied.
 	waitFor(t, 2*time.Second, func() bool { return peer.firstExchangeDone.Load() })
 
-	// Passive mode and the required query params must be present on the dial URL.
+	// The required query params must be present on the dial URL. passive is asserted by
+	// TestWSClientPassiveModeDoesNotInitiate, which is the mode that uses it.
 	q := peer.query()
-	for _, want := range []string{"mosID=OPENMOS_TEST", "channel=ro", "passive=true"} {
+	for _, want := range []string{"mosID=OPENMOS_TEST", "channel=ro"} {
 		if !strings.Contains(q, want) {
 			t.Errorf("dial query %q missing %q", q, want)
 		}
@@ -198,7 +202,7 @@ func TestWSClientReqMachInfoAgainstRealWSServer(t *testing.T) {
 	// The real WSServer never replies to heartbeat, so a slow periodic timer
 	// keeps the client from erroring on the handshake heartbeat wait. Instead we
 	// assert the reqMachInfo leg directly by driving doProfile0's first half.
-	client := NewWSClient(cfg, nil)
+	client := NewWSClient(cfg, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -237,7 +241,7 @@ func TestWSClientReconnectsAfterDrop(t *testing.T) {
 	peer.forceDropAfterFirst.Store(true)
 	cfg.WSClient.PeerURL = peer.wsURL()
 
-	client := NewWSClient(cfg, nil)
+	client := NewWSClient(cfg, nil, nil)
 	stop := runClient(t, client)
 	defer stop()
 
@@ -272,7 +276,7 @@ func TestWSClientSendsBasicAuthAndNeverLogsCredentials(t *testing.T) {
 	peer := newNCSPeer(t, cfg)
 	cfg.WSClient.PeerURL = peer.wsURL()
 
-	client := NewWSClient(cfg, nil)
+	client := NewWSClient(cfg, nil, nil)
 	stop := runClient(t, client)
 	defer stop()
 
@@ -359,5 +363,42 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	}
 	if !cond() {
 		t.Fatalf("condition not met within %s", timeout)
+	}
+}
+
+// TestWSClientPassiveModeDoesNotInitiate pins the behaviour a live NCS forced us to learn.
+//
+// ENPS treats a passive inbound connection as an output channel: it creates a MOSOutput for
+// it and uses it for messages TO the device (doc/interop §24). It does not answer device
+// requests on it. Verified against a live NCS -- a reqMachInfo sent on a passive connection
+// received no reply at all, and the client sat wedged awaiting listMachInfo with no timeout.
+//
+// So in passive mode the client must connect and listen, not interrogate. And it must hold the
+// connection with keepAlive rather than heartbeat: MOS 4.0 §2.1 says keepAlive is "utilized as
+// a mechanism to keep the connection active, especially when MOS passive mode is in use", and
+// unlike a heartbeat it expects no reply.
+func TestWSClientPassiveModeDoesNotInitiate(t *testing.T) {
+	cfg := clientTestConfig("")
+	cfg.WSClient.Passive = true
+	peer := newNCSPeer(t, cfg)
+	cfg.WSClient.PeerURL = peer.wsURL()
+
+	client := NewWSClient(cfg, nil, nil)
+	stop := runClient(t, client)
+	defer stop()
+
+	// The connection must be made.
+	waitFor(t, 2*time.Second, func() bool { return peer.connections() >= 1 })
+
+	// passive=true must reach the peer, since that is what makes it an output channel.
+	if q := peer.query(); !strings.Contains(q, "passive=true") {
+		t.Errorf("dial URL lacked passive=true: %s", q)
+	}
+
+	// And the client must NOT have driven a Profile 0 handshake. A passive peer would never
+	// answer one, so initiating it is how the client previously wedged itself.
+	if peer.firstExchangeDone.Load() {
+		t.Error("client initiated a Profile 0 handshake in passive mode; the peer uses this " +
+			"connection for messages to us and will not answer requests on it")
 	}
 }

@@ -1556,3 +1556,87 @@ does not lose queued messages; they wait.
 The MOS table in System Maintenance holds the `Passive` flag, the URL of the MOS endpoint, and
 the credentials for `wss://`. The device row exposed through the global tables endpoint
 confirms it as a boolean field alongside `PreserveExternalMetadata`, both `false` by default.
+
+## 25. Passive mode: three of our bugs fixed, and an NCS-side wall
+
+§24 established from vendor documentation what passive mode means. This is what happened when
+it was actually tried, with **no reverse tunnel** — only a forward tunnel, so the NCS could not
+reach this machine at all. Anything arriving had to come down the connection we opened.
+
+The honest summary: **passive mode is still not proven live.** But the attempt found three
+defects in our own implementation, and the remaining obstacle is on the NCS side with its own
+stack traces.
+
+### Our bug 1: the client drove a handshake the peer will never answer
+
+The client always performed Profile 0 — `reqMachInfo` then `heartbeat` — before entering its
+read loop. On a passive connection ENPS answers neither, because it treats the link as an
+output channel. Observed exactly:
+
+```
+out: <mos>...<messageID>1</messageID><reqMachInfo></reqMachInfo></mos>
+in:  (nothing, ever)
+```
+
+Passive mode now connects and listens. The peer initiates; we answer.
+
+### Our bug 2: the handshake had no timeout, so the client wedged
+
+Thirty-three seconds in: one frame out, zero in, no reconnect, no error. The client was blocked
+in `readMessage` on the long-lived context with nothing to bound it. A peer that accepts a
+connection and then says nothing could hang the client indefinitely.
+
+The client-driven handshake is now bounded, and reconnects rather than waiting forever.
+
+### Our bug 3: we never sent keepAlive at all
+
+The client held connections with periodic `heartbeat`, which is a liveness *question* the peer
+is expected to answer. On a passive connection nobody answers it.
+
+`keepAlive` is the correct mechanism and we had never implemented sending it. MOS 4.0 §2.1 is
+explicit: "Firewalls often close connections after short periods without traffic. The keepAlive
+message is utilized as a mechanism to keep the connection active, **especially when MOS passive
+mode is in use**." It expects no reply and carries no `messageID`, being unsequenced.
+
+Passive connections are now held with `keepAlive`, active ones still with `heartbeat`. Confirmed
+on the wire.
+
+### A test that encoded the wrong assumption
+
+The existing client tests set `Passive: true` and asserted a completed Profile 0 handshake —
+which only made sense while passive was a cosmetic URL parameter. That is precisely the
+assumption the live run disproved. The default is now active mode, with a separate test
+asserting that passive mode does **not** initiate.
+
+### The NCS-side wall
+
+With the device row's `Passive` and `PreserveExternalMetadata` flags both set, NOM restarted,
+and the client connected and holding with `keepAlive`, **nothing was delivered**. The NCS has
+work to deliver and cannot:
+
+- `H:\NOM\MOS\OUT\<mosID>` holds **10 queued messages**, unchanged throughout.
+- `MOSOutput.RemoveQueueOut` throws **24 times** in a 300-line window:
+  `System.ArgumentOutOfRangeException: InvalidArgument=Value of '0' is not valid for 'index'`,
+  raised from `System.Windows.Forms.ListBox.ObjectCollection.get_Item`. The output queue is
+  backed by a WinForms list control, and the drain path is indexing a row that is not there.
+- `MOS4WebSockets.MOSWebSocket.ReceiveMessages` throws a `WebSocketException`.
+- NOM continues to DNS-resolve the mosID as a hostname every 30 seconds
+  (`Host not found [11001]`), which is what it does when it has queued output and no endpoint
+  to dial.
+
+So on this NOM 9.6 build the passive inbound path does not drain the output queue. That is
+consistent with the vendor documentation hedging on this exact variant — it calls the
+device-does-not-accept-connections arrangement "less likely but can work".
+
+None of it was repaired: those are stack traces in the NCS's own code, on a host this project
+only borrows.
+
+### What would settle it
+
+The NAB estate runs **NOM 9.7.0.65**, a release ahead of this one, reachable read-only over
+SSM (§21). If 9.7 drains a passive queue where 9.6 does not, that is the answer — and it needs
+a device row on a shared demonstration rig, which is a change to someone else's environment
+and has not been made.
+
+Until then the README records passive mode as implemented, loopback-tested, and **not** proven
+live, with the reason stated rather than left as "untested".

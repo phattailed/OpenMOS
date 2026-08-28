@@ -59,7 +59,7 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | MongoDB backing | Yes | Not covered in CI | **Yes** | No MongoDB in CI; in-memory used for tests |
 | MOS 4 channels `mom`, `ro`, `aux` | Yes | Unit + loopback tests | No | Object and search messages route correctly but are not implemented |
 | MOS 4 outbound client, standard mode | Yes | Loopback tests | **Yes** | Profile 0 completed against a live NCS |
-| MOS 4 outbound client, passive mode | Yes | Loopback tests | No | Live NCS has no passive device configured |
+| MOS 4 outbound client, passive mode | Yes | Loopback tests | No | Tried live: NCS fails to drain its own output queue (`doc/interop` §25) |
 | MOS booleans as `YES`/`NO` | Yes | Unit + live-frame tests | **Yes** | — |
 | MOS timestamps with comma fractions | Yes | Unit tests (spec examples) | **Yes** | `ParseMOSTime`; Go's stdlib cannot read them |
 | Story and item order preserved | Yes | Unit tests, both backends | No | In-memory backend previously returned map order |
@@ -290,11 +290,10 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Passive mode against a real NCS.** Now known to be the mechanism by which an
-   outbound-dialling device receives NCS-initiated traffic at all, not merely a firewall
-   convenience: ENPS treats a non-passive inbound connection as input-only and will never
-   push a running order down it (`doc/interop/README.md` §24). The device row carries a
-   `Passive` boolean, so this is testable.
+1. **Passive mode on a newer NOM.** Attempted against NOM 9.6 with the device's `Passive`
+   flag set: our end is correct and holds the connection with `keepAlive`, but the NCS fails
+   to drain its own output queue, throwing from `MOSOutput.RemoveQueueOut` (`doc/interop`
+   §25). A second estate runs NOM 9.7, which would settle whether this is version-specific.
 2. **Enforce `mosScope` propagation.** The payload is now preserved verbatim, but scope
    is carried rather than acted on: `STORY`-scoped blocks should be stripped from
    running-order construction messages and `PLAYLIST`-scoped ones kept.
