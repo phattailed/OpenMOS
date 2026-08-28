@@ -1722,3 +1722,100 @@ copied.
 The central warning in that section is the one to keep: a connector can parse or send a message
 its consuming application does not meaningfully handle. Handler wiring, state effects,
 acknowledgements and end-to-end tests remain the authority for what this repository claims.
+
+## 27. The discovery walk, and durability kept narrow
+
+Two related gaps, both about state that cannot be rebuilt by asking.
+
+### The walk: roListAll was a summary nobody followed up
+
+§26 recorded that `roListAll` had a handler which only logged, and that the message inventory
+test classified it parsed-only for that reason. That is now implemented, and the classification
+changed with it -- which is the inventory mechanism working rather than a coincidence.
+
+Recovery is two-stage by design. `roReqAll` returns a `roListAll`: identifiers, slugs and
+timings, with no stories or items. MOS 4.0 §2.5 is explicit that it does not end there -- "for a
+full listing of the contents of the RO the MOS device must issue a subsequent roReq". Until now
+OpenMOS stopped at the summary, so startup and reconnect recovery was half a mechanism.
+
+The walk is **sequential, not a burst**, and that is the part worth defending. Sending one
+`roReq` per advertised running order at once would be simpler and is wrong twice: MOS 4.0 §4.1
+requires that a sender "must not send another message on the same port until the previous message
+is acknowledged", and a real NCS can advertise far more running orders than it is reasonable to
+demand at once. So one request is outstanding at a time and the next is sent when the previous
+`roList` is applied. A deliberately reverted burst implementation is caught by three tests,
+including one whose failure message quotes the rule.
+
+Three details that are not obvious:
+
+- **A deadline is required, not optional.** `roReq` is not guaranteed a `roList`; the
+  specification allows a NACK-bearing `roAck` instead, and a real ENPS buddy server NACKs
+  everything (§16). Without a timeout one refusal would stall the walk permanently, leaving every
+  later running order unrequested and the divergence silent -- worse than the gap being closed.
+- **The walk bypasses `resyncGuard` deliberately.** That guard is a loop-breaker, keyed per
+  running order with a thirty-second interval, and it exists because a live ENPS sent ten
+  `roStorySend` in a row for a running order we did not hold. A discovery walk is the opposite
+  situation: each identifier is requested once, in sequence, because the NCS has just said it
+  holds them. Passing the walk through the loop-breaker would make a legitimate first-time walk
+  suppress itself whenever it followed a recent divergence on the same running order.
+- **An unsolicited `roList` must not advance the walk.** Unsolicited lists are legal, and
+  treating one as an answer would skip a running order without ever requesting it.
+
+Advancement is opportunistic rather than timer-driven: any inbound message is a chance to unstick
+a walk whose answer never came. The honest consequence is that a peer falling completely silent
+mid-walk pauses it until traffic resumes. In practice Profile 0 flows at least every thirty
+seconds, so this is a pause and not a deadlock, and a peer sending nothing at all has a larger
+problem than an unfinished walk.
+
+### Durability, and what was deliberately left out
+
+Three pieces of protocol state cannot be rebuilt by asking the NCS, and only those three now
+persist:
+
+1. **The outbound `messageID`** (§22). Reserved in blocks, so a crash skips rather than repeats.
+2. **Deduplication receipts.** The retry rule is that a sender repeats a message with the same
+   `messageID` until answered, and the receiver must replay its original response rather than
+   apply the message twice. In memory that works; across a restart the history was lost, the
+   retry looked new, and the message was applied again. For a `roStorySend` that is a duplicated
+   story; for a `roElementAction`, an operation performed twice.
+3. **Unfinished discovery work.** The NCS states what it holds once. If the process stops halfway
+   through fetching it, nothing repeats that statement, so the remainder stays divergent --
+   present on the NCS, absent locally, with no error anywhere.
+
+Everything else is recoverable by asking, so it is not persisted.
+
+**No pluggable storage abstraction was added.** An earlier plan was a `StateStore` interface with
+room to bolt on S3 or Cassandra; that was dropped as premature. `DedupStore` was already an
+interface for a real reason -- bounded memory versus durable -- so `FileDedupStore` is a second
+implementation of something that existed, not a new layer. A single-process deployment does not
+need more, and inventing the seam before a second backend exists means guessing at its shape.
+
+Implementation choices worth recording:
+
+- **Dedup uses an append-only log, not a rewritten snapshot**, because it is written on every
+  inbound message and rewriting the whole set each time would make the hot path proportional to
+  history. The log is compacted from live state once it passes a multiple of the capacity, so it
+  stays proportional to the bounded entry set. `FileDedupStore` composes `MemoryDedupStore`
+  rather than reimplementing eviction, so the LRU bound and the conflict rules stay in one place.
+- **The walk uses a snapshot**, because its state changes once per running order rather than once
+  per message. Temp-file-and-rename, as with the `messageID` mark.
+- **The in-flight identifier is persisted as part of the pending queue.** After a restart no
+  answer is coming for it, so it must be requested again rather than waited on.
+- **Each transport gets its own state subdirectory.** Dedup scopes are already separate -- the
+  transports run concurrently and MOS 4 multiplexes three channels with independent `messageID`
+  sequences -- so mixing their durable state would invite exactly the cross-talk the scoping
+  prevents.
+- **There is no fsync per record.** A hard power loss can lose the last few appends, and those
+  messages would be re-applied on retry. That is the same failure this removes, reduced from
+  "every message since startup" to "the last few before the crash". Buying the remainder costs an
+  fsync per message and is not worth it here. The README says so rather than implying the
+  guarantee is total.
+- **Unusable storage degrades loudly to memory rather than refusing to start.** A storage problem
+  should cost durability, not availability; non-durable dedup is precisely what shipped before.
+  The same choice as the `messageID` sequence, for the same reason.
+
+Every one of these was verified by removing the persistence and watching the tests fail: dropping
+the dedup append fails three tests, dropping the walk snapshot fails the resume test.
+
+An empty `state.dir` still disables all of it, and a test pins that `""` means disabled rather
+than the current directory -- the config-zero-value trap that has caught this project three times.

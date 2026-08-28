@@ -46,6 +46,9 @@ type roDeps struct {
 	resync *resyncGuard
 	// mosID is this device's configured identity, needed when applying a roList.
 	mosID string
+	// walk sequences roListAll -> roReq-per-running-order discovery. May be nil, in which
+	// case an inbound roListAll is reported and no follow-up is made.
+	walk *discoveryWalk
 }
 
 // dispatchRunningOrder handles the Profile 2 running-order family and the Profile 4
@@ -55,6 +58,10 @@ type roDeps struct {
 // caller, which knows what its transport should say about it -- the socket transport
 // tolerates silence in places where MOS 4.0 requires a NACK.
 func dispatchRunningOrder(ctx context.Context, deps roDeps, r peerResponder, msg mosxml.MOSMessage) (handled bool, err error) {
+	// Any inbound traffic is an opportunity to unstick a discovery walk whose answer never
+	// arrived. See discoveryWalk.nudge for why this is opportunistic rather than timer-driven.
+	advanceWalk(ctx, deps, r)
+
 	switch m := msg.(type) {
 	case mosxml.ROReplace:
 		return true, handleReplace(ctx, deps, r, m)
@@ -76,6 +83,8 @@ func dispatchRunningOrder(ctx context.Context, deps roDeps, r peerResponder, msg
 		return true, handleReqAll(ctx, deps, r)
 	case mosxml.ROList:
 		return true, handleList(ctx, deps, r, m)
+	case mosxml.ROListAll:
+		return true, handleListAll(ctx, deps, r, m)
 	default:
 		return false, nil
 	}
@@ -257,7 +266,82 @@ func handleList(ctx context.Context, deps roDeps, r peerResponder, m mosxml.ROLi
 	// repeat, and should be actionable immediately.
 	deps.resync.forget(m.ID)
 	logger.Infof("Applied roList for RO %s; local state rebuilt", m.ID)
+
+	// If this roList answered a discovery request, the walk moves on. This is what makes the
+	// walk sequential: the next roReq is sent here, on the previous one completing, rather
+	// than all of them being fired at once.
+	if next, ok := deps.walk.resolved(m.ID); ok {
+		sendDiscoveryReq(ctx, deps, r, next)
+	}
 	return nil
+}
+
+// handleListAll begins the second stage of discovery.
+//
+// roListAll is a summary and nothing more: identifiers, slugs and timings, with no stories or
+// items. Applying it as though it were state would be wrong, and ignoring it -- which is what
+// OpenMOS did until now -- leaves startup and reconnect recovery unfinished. MOS 4.0 §2.5: "for
+// a full listing of the contents of the RO the MOS device must issue a subsequent roReq".
+func handleListAll(ctx context.Context, deps roDeps, r peerResponder, m mosxml.ROListAll) error {
+	roIDs := make([]string, 0, len(m.ROs))
+	for _, ro := range m.ROs {
+		roIDs = append(roIDs, ro.ID)
+	}
+
+	// An empty roListAll is a legitimate answer -- a real NCS sends self-closing ones -- and
+	// means there is nothing to walk.
+	if len(roIDs) == 0 {
+		logger.Infof("Received empty roListAll from %s; no running orders to discover",
+			r.peerLabel())
+		return nil
+	}
+
+	next, ok, dropped := deps.walk.begin(roIDs)
+	if dropped > 0 {
+		logger.Warningf("roListAll from %s advertised %d running orders, which exceeds the %d the "+
+			"discovery walk will queue; %d were not requested and local state for them stays "+
+			"divergent until the next roListAll",
+			r.peerLabel(), len(roIDs), defaultWalkMax, dropped)
+	}
+	if !ok {
+		// A request is already outstanding; this list is queued behind it.
+		logger.Infof("Received roListAll from %s with %d running orders; queued behind the "+
+			"request already in flight", r.peerLabel(), len(roIDs))
+		return nil
+	}
+
+	logger.Infof("Received roListAll from %s with %d running orders; beginning discovery walk",
+		r.peerLabel(), len(roIDs))
+	sendDiscoveryReq(ctx, deps, r, next)
+	return nil
+}
+
+// advanceWalk sends the next roReq if the walk has work and nothing outstanding, including
+// after an in-flight request has timed out.
+func advanceWalk(ctx context.Context, deps roDeps, r peerResponder) {
+	if abandoned, yes := deps.walk.timedOut(); yes {
+		logger.Warningf("No roList arrived for RO %s within the discovery walk timeout; "+
+			"continuing with the next running order. A roReq may be answered with a NACK "+
+			"rather than a roList, so this is expected rather than exceptional.", abandoned)
+	}
+	if next, ok := deps.walk.nudge(); ok {
+		sendDiscoveryReq(ctx, deps, r, next)
+	}
+}
+
+// sendDiscoveryReq issues one roReq as part of the walk.
+//
+// It deliberately bypasses resyncGuard. That guard exists to stop a divergence turning into a
+// request loop, keyed per running order with a thirty-second interval. A discovery walk is the
+// opposite situation: each identifier is requested once, in sequence, because the NCS has just
+// told us it holds them. Passing the walk through the loop-breaker would make a legitimate
+// first-time walk suppress itself whenever it followed a recent divergence on the same RO.
+func sendDiscoveryReq(ctx context.Context, deps roDeps, r peerResponder, roID string) {
+	logger.Infof("Discovery walk: sending roReq for RO %s (%d remaining)",
+		roID, deps.walk.remaining())
+	if err := r.respond(ctx, mosxml.ROReq{ROID: roID}); err != nil {
+		logger.Errorf("Discovery walk: failed to send roReq for RO %s: %v", roID, err)
+	}
 }
 
 // requestResync sends a roReq for a running order we should hold but do not.
@@ -349,6 +433,7 @@ func (c *ClientConnection) roDeps() roDeps {
 	return roDeps{
 		service: c.server.service,
 		resync:  c.server.resync,
+		walk:    c.server.walk,
 		mosID:   c.config.MOS.ID,
 	}
 }
@@ -383,6 +468,7 @@ func (s *WSServer) roDeps() roDeps {
 	return roDeps{
 		service: s.service,
 		resync:  s.resync,
+		walk:    s.walk,
 		mosID:   s.config.MOS.ID,
 	}
 }

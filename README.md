@@ -49,11 +49,13 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
 | `roReq` answered with `roList` for one running order | Yes | Integration tests | No | Was inverted with `roReqAll`; see `doc/interop` §17 |
 | `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | No | Discovery only, as the spec requires |
-| Inbound `roListAll` drives `roReq` per running order | **No** | — | — | Logged only; the two-stage discovery walk is not implemented |
+| Inbound `roListAll` drives `roReq` per running order | Yes | Unit tests, both transports | No | Sequential: one request outstanding at a time, per MOS 4.0 §4.1 |
 | Every parseable message classified as handled or not | Yes | Inventory test reads the parser | — | Adding a message type fails the build until classified |
 | Frame splits, coalescing, misaligned terminators, junk | Yes | Unit tests, incl. odd-offset decoy | **Yes** | Bounded at 4 MiB; non-MOS roots refused, not discarded |
 | `roElementStat` parses, routes and acks on both | Yes | Real-traffic + loopback tests | Partly | `element` attribute now preserved; not yet acted on |
-| Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | Not durable across restart |
+| Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | — |
+| Dedup receipts persist across restart | Yes | Unit tests | No | Append log, compacted; no fsync per record, so a crash can lose the tail |
+| Unfinished discovery work persists across restart | Yes | Unit tests | No | An interrupted walk resumes rather than leaving state divergent |
 | `messageID` conflict detection | Yes | Unit tests | **Yes** | — |
 | `messageID` counter persists across restart | Yes | Unit tests | No | Reserved in blocks, so a crash skips rather than repeats |
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
@@ -180,7 +182,8 @@ storage:
 capture:
     dir: ""                # set to record raw MOS frames; off when empty
 state:
-    dir: state             # durable messageID counter; empty disables persistence
+    dir: state             # messageID counter, dedup receipts, unfinished discovery
+                           # work; empty disables persistence
 mongo:
     uri: "mongodb://localhost:27017"
     database: openmos
@@ -300,10 +303,12 @@ The next interoperability steps, in order of value:
 2. **Enforce `mosScope` propagation.** The payload is now preserved verbatim, but scope
    is carried rather than acted on: `STORY`-scoped blocks should be stripped from
    running-order construction messages and `PLAYLIST`-scoped ones kept.
-3. **Durable storage by default for interop work.** In-memory storage means a
-   restart silently desynchronises us from the NCS, which is what exposed the
-   `roStorySend` defect in `doc/interop/README.md` §13. MongoDB is supported but
-   not the default.
+3. **Durable storage by default for interop work.** The three pieces of protocol state
+   that cannot be rebuilt by asking the NCS -- the outbound `messageID`, deduplication
+   receipts and unfinished discovery work -- now persist (`doc/interop` §27). Running
+   orders themselves still default to memory, so a restart silently desynchronises the
+   rundown, which is what exposed the `roStorySend` defect in §13. MongoDB is supported
+   but not the default.
 4. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License

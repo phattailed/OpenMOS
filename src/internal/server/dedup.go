@@ -199,3 +199,64 @@ func contentHash(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+// The three helpers below exist for FileDedupStore, which needs to persist what the in-memory
+// store derives internally and to rebuild that state on startup. They are deliberately narrow:
+// the durable store composes the memory store rather than reimplementing eviction, so the LRU
+// bound and the conflict rules stay in one place.
+
+// keyAndHash exposes the derived key and content hash so a durable store can record them
+// without recomputing the hashing convention and risking divergence.
+func (d *MemoryDedupStore) keyAndHash(scope, ncsID, messageID string, content []byte) (string, string) {
+	return dedupKey(scope, ncsID, messageID), contentHash(content)
+}
+
+// hashFor returns the recorded hash for a key, so a response can be persisted alongside the
+// hash that Check already established.
+func (d *MemoryDedupStore) hashFor(key string) (string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	element, exists := d.entries[key]
+	if !exists {
+		return "", false
+	}
+	return element.Value.(*dedupEntry).hash, true
+}
+
+// restore reinstates an entry read back from durable storage. It goes through insertLocked so a
+// recovered log longer than the capacity is bounded exactly as live traffic would be, keeping the
+// most recent entries.
+func (d *MemoryDedupStore) restore(key, hash string, response []byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if element, exists := d.entries[key]; exists {
+		entry := element.Value.(*dedupEntry)
+		if hash != "" {
+			entry.hash = hash
+		}
+		if len(response) > 0 {
+			entry.response = response
+		}
+		return
+	}
+	d.insertLocked(&dedupEntry{key: key, hash: hash, response: response})
+}
+
+// snapshot copies live entries in eviction order, oldest first, for log compaction.
+func (d *MemoryDedupStore) snapshot() []dedupEntry {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	out := make([]dedupEntry, 0, len(d.entries))
+	for element := d.order.Front(); element != nil; element = element.Next() {
+		entry := element.Value.(*dedupEntry)
+		copied := dedupEntry{key: entry.key, hash: entry.hash}
+		if entry.response != nil {
+			copied.response = make([]byte, len(entry.response))
+			copy(copied.response, entry.response)
+		}
+		out = append(out, copied)
+	}
+	return out
+}
