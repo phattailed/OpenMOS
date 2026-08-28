@@ -55,6 +55,7 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `messageID` counter persists across restart | Yes | Unit tests | No | Reserved in blocks, so a crash skips rather than repeats |
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
 | `mosID` persisted on running orders and items | Yes | Integration test | **Yes** | — |
+| `mosExternalMetadata` preserved verbatim | Yes | Unit + integration tests | No | Opaque payload kept as raw XML at RO, story and item level |
 | MongoDB backing | Yes | Not covered in CI | **Yes** | No MongoDB in CI; in-memory used for tests |
 | MOS 4 channels `mom`, `ro`, `aux` | Yes | Unit + loopback tests | No | Object and search messages route correctly but are not implemented |
 | MOS 4 outbound client, standard mode | Yes | Loopback tests | **Yes** | Profile 0 completed against a live NCS |
@@ -289,12 +290,14 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Passive mode against a real NCS.** Standard mode is proven live; passive mode is
-   implemented and loopback-tested but no NCS available to us has a passive device
-   configured.
-2. **Preserve `mosExternalMetadata`.** The payload is opaque and must be carried, but
-   the model holds `map[string]string`, which cannot represent the nested vendor XML
-   real traffic sends in `<mosPayload>`.
+1. **Passive mode against a real NCS.** Now known to be the mechanism by which an
+   outbound-dialling device receives NCS-initiated traffic at all, not merely a firewall
+   convenience: ENPS treats a non-passive inbound connection as input-only and will never
+   push a running order down it (`doc/interop/README.md` §24). The device row carries a
+   `Passive` boolean, so this is testable.
+2. **Enforce `mosScope` propagation.** The payload is now preserved verbatim, but scope
+   is carried rather than acted on: `STORY`-scoped blocks should be stripped from
+   running-order construction messages and `PLAYLIST`-scoped ones kept.
 3. **Durable storage by default for interop work.** In-memory storage means a
    restart silently desynchronises us from the NCS, which is what exposed the
    `roStorySend` defect in `doc/interop/README.md` §13. MongoDB is supported but

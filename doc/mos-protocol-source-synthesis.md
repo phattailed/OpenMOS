@@ -1,6 +1,6 @@
 # MOS protocol source synthesis for Kiro CLI
 
-**Reviewed:** 2026-08-26
+**Reviewed:** 2026-08-28
 
 Use this note as a source map, not as a replacement for the protocol documents
 or OpenMOS's live interoperability evidence. The sources describe three
@@ -143,6 +143,32 @@ running order downstream. Template forms, login, save/drag controls, green UI
 status, and ready-to-air presentation are Zero Density/Octopus behavior, not MOS
 wire semantics.
 
+### Sofie TV Automation System
+
+The referenced project is **Sofie** (not Sophie). Its reusable
+[`sofie-mos-connection` packages](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/README.md#L31-L40)
+handle classic MOS, while [Sofie Core's separate MOS
+gateway](https://github.com/Sofie-Automation/sofie-core/blob/8e31d3469adab54e43ccae6b38d964a770ddca3f/packages/mos-gateway/README.md#L1-L22)
+adapts it to the automation application. The following are implementation
+lessons, not normative MOS rules.
+
+| Lesson | Pinned Sofie breadcrumb and demonstration | Closest OpenMOS seam | Guidance |
+|---|---|---|---|
+| Architecture boundary | [`README.md` packages](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/README.md#L31-L40) separate connector, XML/model helpers, and test peer; the [gateway README](https://github.com/Sofie-Automation/sofie-core/blob/8e31d3469adab54e43ccae6b38d964a770ddca3f/packages/mos-gateway/README.md#L1-L22) identifies a distinct Core adapter. | `internal/server/` transport/dispatch → `internal/service/` semantics → repositories | **Adapt:** keep the existing Go package seams and shared core. Do not recreate Sofie's npm/package topology. |
+| Ports and roles | [`MosConnection` constants and client creation](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/MosConnection.ts#L22-L25) use lower `10540`, upper `10541`, query `10542`; [`NCSServerConnection.executeCommand`](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/connection/NCSServerConnection.ts#L161-L190) routes by message port. | `internal/server/channel.go`, `internal/server/server.go`, `internal/server/wsserver.go`, and config | **Adapt by generation:** keep MOS 2.x upper/RO ownership and MOS 4 channel routing explicit. Do not infer MOS 4 ports from Sofie's classic sockets. |
+| Stream framing | [`MosMessageParser.parseMessage`](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/connection/mosMessageParser.ts#L17-L127) accumulates chunks and extracts every complete `<mos>…</mos>` envelope; [tests split frames and fields](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/__tests__/MessageChunking.spec.ts#L124-L255). | `internal/xml/wire.go`, `internal/xml/parser.go`, `internal/server/mos28_integration_test.go` | **Adopt the cases, not the parser:** retain OpenMOS's UCS-2BE byte discipline and 4 MiB bound; test arbitrary splits, coalesced frames, junk, and partial tags. Do not copy Sofie's unbounded string buffer or automatic junk discard. |
+| Serialization, correlation, retry | [`MosSocketClient.queueCommand/processQueue`](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/connection/mosSocketClient.ts#L144-L227) permits one outstanding command and indexes callbacks by `messageID`; [`executeCommand`](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/connection/mosSocketClient.ts#L320-L355) retries the same prepared message once on timeout. | `internal/messageid/sequence.go`, `internal/server/dedup.go`, `internal/server/resync.go`, `internal/server/wsclient.go` | **Adapt:** preserve one in-flight request per ordered lane, exact response correlation, and the same ID/body on retry. Do not copy the one-retry/process-memory ceiling; OpenMOS must retain conflict detection and durable-ID safety. |
+| Profile/callback validation | [`MosDevice._checkProfileValidness`](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/MosDevice.ts#L1716-L1764) checks dependencies and required callbacks for enabled profiles. The [library support table](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/README.md#L92-L109) is broader than the gateway behavior below. | `internal/xml/parser.go` plus handlers in `internal/server/client_profile*_handler.go` and `dispatch_ro.go` | **Adopt the invariant:** a parsed type is not an implemented workflow. Add a startup/test assertion tying every advertised profile/message to a real handler and response path; do not inherit dependency claims. |
+| ACK after application work | Gateway callbacks pass Core promises into [`_getROAck`](https://github.com/Sofie-Automation/sofie-core/blob/8e31d3469adab54e43ccae6b38d964a770ddca3f/packages/mos-gateway/src/mosHandler.ts#L630-L648), which returns `OK` only after Core resolves; [`_coreMosManipulate`](https://github.com/Sofie-Automation/sofie-core/blob/8e31d3469adab54e43ccae6b38d964a770ddca3f/packages/mos-gateway/src/CoreMosDeviceHandler.ts#L470-L508) serializes those operations. | `internal/server/dispatch_ro.go`, `internal/service/`, repository writes, `internal/server/persistence_test.go` | **Adopt:** keep ACK creation downstream of successful persistence and ordered application. Preserve useful NACK context on failure; do not copy Sofie's generic `Error: …` status format blindly. |
+| `roReq`/`roReqAll` boundary | The connector implements outbound [`sendRequestAllRunningOrders`](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/MosDevice.ts#L1503-L1519), but the application gateway's incoming [`onRequestAllRunningOrders`](https://github.com/Sofie-Automation/sofie-core/blob/8e31d3469adab54e43ccae6b38d964a770ddca3f/packages/mos-gateway/src/mosHandler.ts#L431-L441) returns an empty list as unsupported. | `internal/server/resync.go`, `internal/service/resync.go`, `internal/server/dispatch_ro.go`, `internal/server/roreq_integration_test.go` | **Adopt the honesty, not the empty response:** test outbound recovery and inbound list service separately. Advertise only the direction/workflow OpenMOS actually completes. |
+| Fixture-driven peer | [Quick-MOS](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/quick-mos/README.md#L1-L22) watches fixture files and behaves as an NRCS; connector tests use socket mocks for exact frames. | `internal/xml/live_*_fixtures_test.go`, `internal/xml/real_vendor_frames_test.go`, `internal/server/wsclient_test.go`, `internal/capture/` | **Adapt:** keep tiny in-process peers and sanitized captured fixtures for deterministic failures. They complement but never replace `doc/interop/` live-NCS evidence. |
+| Primary/secondary failover | [`MosDevice.executeCommand/switchConnections`](https://github.com/Sofie-Automation/sofie-mos-connection/blob/6348a5303dc0ff154eb162d4978287a69bed6a6a/packages/connector/src/MosDevice.ts#L1573-L1635) switches to a connected buddy and hands over the queue; `MosConnection` also has an OpenMedia-specific heartbeat policy. | No equivalent: OpenMOS documents a single process per identity | **Do not copy yet:** failover changes ordering, dedup scope, ownership, and recovery. Add only with an explicit HA design and cross-node durable state. |
+
+The central warning is the capability boundary: a connector can parse or send a
+message that its consuming application does not meaningfully handle. For
+OpenMOS, handler wiring, state effects, acknowledgements, and end-to-end tests
+remain the authority for support claims.
+
 ## Kiro implementation checklist
 
 Before changing protocol code:
@@ -164,3 +190,8 @@ Before changing protocol code:
 7. Add the smallest automated check that fails without the behavior. Do not
    broaden a support or conformance claim until the whole claimed workflow is
    implemented and verified.
+8. Keep transport capability, message parsing, and application workflow support
+   separately visible. A capable dependency does not make an unhandled callback
+   or empty response conformant.
+9. For each new recovery or framing behavior, add a fixture-driven peer test for
+   chunking, retries, and ordering, then retain live-NCS proof as a separate gate.
