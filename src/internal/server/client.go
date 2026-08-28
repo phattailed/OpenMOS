@@ -253,8 +253,6 @@ func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMes
 
 	// Profile 2 and the Profile 4 messages that accompany it are handled by the
 	// shared running-order dispatcher above, so they do not appear here.
-	case xml.ROListAll:
-		err = c.handleROListAll(ctx, msg)
 	case xml.ROAck:
 		err = c.handleROAck(ctx, msg)
 

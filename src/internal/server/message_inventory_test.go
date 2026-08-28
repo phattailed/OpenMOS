@@ -62,14 +62,12 @@ var inventory = map[string]struct {
 	"roReqAll":          {sharedDispatcher, "answered with roListAll summaries"},
 	"roList":            {sharedDispatcher, "applied, completing pull recovery"},
 
-	// roListAll has a handler, but the handler only logs -- which is exactly the trap this
-	// file exists to make visible. It is the discovery ANSWER, and its only real use is to
-	// drive a follow-up roReq per running order (MOS 4.0 §2.5: "For a full listing of the
-	// contents of the RO the MOS device must issue a subsequent roReq"). That two-stage walk
-	// is not implemented, so an inbound roListAll changes nothing. Classified by effect
-	// rather than by whether a function exists.
-	"roListAll": {parsedOnly,
-		"logged only; the roReqAll -> roListAll -> roReq-per-RO discovery walk is not implemented"},
+	// roListAll was classified parsedOnly when this file was written, because it had a handler
+	// that only logged. It is the discovery ANSWER, and its only real use is driving a
+	// follow-up roReq per running order (MOS 4.0 §2.5: "For a full listing of the contents of
+	// the RO the MOS device must issue a subsequent roReq"). That walk now exists, so the
+	// classification changes with it -- which is the mechanism working as intended.
+	"roListAll": {sharedDispatcher, "seeds the sequential roReq-per-running-order discovery walk"},
 
 	// roCreate is deliberately per-transport: both do dedup with ack-after-persist, but the
 	// dedup scoping differs because MOS 4.0 gives each channel its own messageID sequence.
@@ -153,6 +151,9 @@ func TestClaimedSharedMessagesReallyAreShared(t *testing.T) {
 		"roReq":             mosxml.ROReq{ROID: "RO-1"},
 		"roReqAll":          mosxml.ROReqAll{},
 		"roList":            mosxml.ROList{ID: "RO-1", Slug: "S"},
+		"roListAll": mosxml.ROListAll{
+			ROs: []mosxml.ROListAllItem{{ID: "RO-1", Slug: "S"}},
+		},
 		// Representative non-shared types, to prove the seam does not over-claim.
 		"heartbeat": mosxml.Heartbeat{},
 		"keepAlive": mosxml.KeepAlive{},

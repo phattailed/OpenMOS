@@ -12,12 +12,6 @@ import (
 
 // handleROListAll processes a received roListAll message (Profile 2)
 // This is received when the NCS sends us the list, or we respond to a request
-func (c *ClientConnection) handleROListAll(ctx context.Context, roListAll xml.ROListAll) error {
-	logger.Infof("Received roListAll from client %s: %d running orders", c.id, len(roListAll.ROs))
-	// Log receipt - the NCS is sending us the full list
-	return nil
-}
-
 // handleROAck processes a received roAck message (Profile 2)
 // This is typically received in response to roCreate/roReplace/roDelete
 func (c *ClientConnection) handleROAck(ctx context.Context, roAck xml.ROAck) error {

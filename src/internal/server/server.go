@@ -36,6 +36,7 @@ type TCPServer struct {
 	// connections, because the NCS may reconnect between the divergence and our
 	// request and the disagreement is about state, not about a socket.
 	resync *resyncGuard
+	walk   *discoveryWalk
 }
 
 // NewTCPServer creates a new TCP server instance
@@ -48,9 +49,10 @@ func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *
 
 	server := &TCPServer{
 		listener:   listener,
-		dedup:      NewMemoryDedupStore(),
+		dedup:      OpenFileDedupStore(stateSubdir(cfg.State.Dir, "mos2"), 0),
 		capture:    frames,
 		resync:     newResyncGuard(),
+		walk:       openDiscoveryWalk(stateSubdir(cfg.State.Dir, "mos2")),
 		clients:    make(map[string]*ClientConnection),
 		service:    mosService,
 		config:     cfg,

@@ -83,7 +83,12 @@ func NewWSClient(cfg *config.Config, frames *capture.Recorder, svc *service.MOSS
 		messageIDs: seq,
 	}
 	if svc != nil {
-		client.deps = &roDeps{service: svc, resync: newResyncGuard(), mosID: cfg.MOS.ID}
+		client.deps = &roDeps{
+			service: svc,
+			resync:  newResyncGuard(),
+			walk:    openDiscoveryWalk(stateSubdir(cfg.State.Dir, "mos4-client")),
+			mosID:   cfg.MOS.ID,
+		}
 	}
 	return client
 }

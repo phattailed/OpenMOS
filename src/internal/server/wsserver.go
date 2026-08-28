@@ -38,6 +38,7 @@ type WSServer struct {
 	// socket transport. Separate from the TCP server's guard because the two transports
 	// hold independent conversations with independent state.
 	resync     *resyncGuard
+	walk       *discoveryWalk
 	httpServer *http.Server
 	listener   net.Listener
 	ready      chan struct{} // closed once the listener is bound
@@ -68,6 +69,7 @@ func NewWSServer(cfg *config.Config, mosService *service.MOSService, eventBus *e
 		eventBus:   eventBus,
 		dedup:      dedup,
 		resync:     newResyncGuard(),
+		walk:       openDiscoveryWalk(stateSubdir(cfg.State.Dir, "mos4")),
 		sessions:   make(map[string]*WSSession),
 		shutdownCh: make(chan struct{}),
 		ready:      make(chan struct{}),

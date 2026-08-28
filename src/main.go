@@ -205,7 +205,12 @@ func main() {
 	var wsServer *server.WSServer
 	if cfg.WebSocket.Enabled {
 		log.Info("Starting MOS 4 WebSocket server...")
-		dedupStore := server.NewMemoryDedupStore()
+		dedupStore := server.OpenFileDedupStore(server.StateSubdir(cfg.State.Dir, "mos4"), 0)
+		defer func() {
+			if closeErr := dedupStore.Close(); closeErr != nil {
+				log.Warningf("Failed to flush deduplication receipts on shutdown: %v", closeErr)
+			}
+		}()
 		wsServer = server.NewWSServer(cfg, mosService, eventBus, dedupStore, frames)
 		go func() {
 			if startErr := wsServer.Start(ctx); startErr != nil {
