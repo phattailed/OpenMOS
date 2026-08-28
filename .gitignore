@@ -7,3 +7,7 @@ res/desktop.ini
 .agents
 .kiro/
 tmp/
+
+# Durable protocol state: the messageID counter. Runtime data, never source.
+src/state/
+state/
