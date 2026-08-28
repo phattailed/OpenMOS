@@ -224,7 +224,7 @@ func main() {
 	// on any drop, per the spec's "as quickly as possible".
 	if cfg.WSClient.Enabled {
 		log.Info("Starting MOS 4 WebSocket client...")
-		wsClient := server.NewWSClient(cfg, frames)
+		wsClient := server.NewWSClient(cfg, frames, mosService)
 		go func() {
 			if startErr := wsClient.Start(ctx); startErr != nil && startErr != context.Canceled {
 				log.Errorf("WebSocket client error: %v", startErr)

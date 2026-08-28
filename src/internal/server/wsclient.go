@@ -3,6 +3,7 @@ package server
 import (
 	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/messageid"
+	"airshift/openmos/internal/service"
 	"context"
 	"crypto/tls"
 	stdxml "encoding/xml"
@@ -18,6 +19,11 @@ import (
 
 	"nhooyr.io/websocket"
 )
+
+// profile0Timeout bounds the client-driven Profile 0 exchange. A peer that accepts the
+// connection and then stays silent must not wedge the client; reconnecting and trying again
+// is always better than waiting forever.
+const profile0Timeout = 20 * time.Second
 
 // WSClient is a MOS 4 WebSocket client. Unlike WSServer, which waits for an NCS
 // to connect inbound, WSClient initiates the connection outbound to a configured
@@ -36,6 +42,11 @@ type WSClient struct {
 	// method tolerates a nil receiver.
 	frames *capture.Recorder
 
+	// deps carries the service and resync guard so pushed running-order messages can be
+	// applied. Nil when the client is constructed without them, in which case such messages
+	// are reported rather than silently dropped.
+	deps *roDeps
+
 	// messageIDs is the outbound messageID sequence, durable across restarts.
 	//
 	// MOS 4.0 §4.1.7 requires that "the last used messageID must be persistent", because
@@ -46,7 +57,12 @@ type WSClient struct {
 }
 
 // NewWSClient creates a new MOS 4 WebSocket client.
-func NewWSClient(cfg *config.Config, frames *capture.Recorder) *WSClient {
+// NewWSClient creates a MOS 4 WebSocket client.
+//
+// svc may be nil, in which case running-order messages pushed to us are reported rather than
+// applied. It is supplied in normal operation so that passive mode -- where the peer sends us
+// running orders on the connection we opened -- actually works.
+func NewWSClient(cfg *config.Config, frames *capture.Recorder, svc *service.MOSService) *WSClient {
 	// A failure here is not fatal: the sequence falls back to memory and reports itself
 	// degraded, which is logged once. Refusing to start because a counter file cannot be
 	// written would be a worse trade than risking a repeated identifier after a crash.
@@ -61,11 +77,15 @@ func NewWSClient(cfg *config.Config, frames *capture.Recorder) *WSClient {
 		logger.Warningf("MOS 4 client messageID sequence is in memory only; set state.dir " +
 			"to persist it, as MOS 4.0 §4.1.7 requires")
 	}
-	return &WSClient{
+	client := &WSClient{
 		config:     cfg,
 		frames:     frames,
 		messageIDs: seq,
 	}
+	if svc != nil {
+		client.deps = &roDeps{service: svc, resync: newResyncGuard(), mosID: cfg.MOS.ID}
+	}
+	return client
 }
 
 // messageID returns the next outbound messageID.
@@ -241,8 +261,27 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string) (bool, error)
 	// Give binary frames room; MOS envelopes can exceed the small default.
 	conn.SetReadLimit(4 << 20)
 
-	// Complete the Profile 0 handshake before entering the steady-state loop.
-	if err := c.doProfile0(ctx, conn); err != nil {
+	// In passive mode the client must NOT drive a handshake, because the peer will not
+	// answer one.
+	//
+	// ENPS treats a passive inbound connection as an output channel: it creates a
+	// MOSOutput for it and uses it for messages TO the device (doc/interop §24). It does
+	// not read our requests as requests. Verified live -- a reqMachInfo sent on a passive
+	// connection received no reply at all, and the client sat wedged awaiting listMachInfo.
+	//
+	// So passive mode connects and then listens. The peer initiates; we answer.
+	if c.config.WSClient.Passive {
+		logger.Infof("MOS 4 client connected in passive mode; not initiating a handshake, " +
+			"because the peer uses this connection for messages to us")
+		return true, c.readLoop(ctx, conn)
+	}
+
+	// Active mode: we drive Profile 0. Bounded, because a peer that accepts the connection
+	// and then says nothing would otherwise wedge the client indefinitely -- which is
+	// exactly what happened when passive mode was first tried against a live NCS.
+	handshakeCtx, cancel := context.WithTimeout(ctx, profile0Timeout)
+	defer cancel()
+	if err := c.doProfile0(handshakeCtx, conn); err != nil {
 		return true, fmt.Errorf("profile 0 handshake failed: %w", err)
 	}
 
@@ -336,15 +375,35 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-heartbeatTimer.C:
-			// Send a periodic heartbeat to keep the connection healthy.
-			hbID := c.messageID()
-			hb := mosxml.CreateHeartbeat()
-			hbEnv, err := mosxml.GenerateEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, hbID, hb)
-			if err != nil {
-				return fmt.Errorf("build periodic heartbeat: %w", err)
+			// What holds the connection open depends on the mode, because the two messages
+			// mean different things.
+			//
+			// heartbeat is a liveness CHECK: the peer is expected to answer with a
+			// heartbeat. On a passive connection the peer treats the link as an output
+			// channel and does not answer our requests at all, so a heartbeat there is a
+			// question nobody replies to.
+			//
+			// keepAlive is the right tool. MOS 4.0 §2.1: "Firewalls often close connections
+			// after short periods without traffic. The keepAlive message is utilized as a
+			// mechanism to keep the connection active, especially when MOS passive mode is
+			// in use." It requires no reply and carries no messageID, being unsequenced.
+			var (
+				payload mosxml.MOSMessage
+				label   string
+				msgID   string
+			)
+			if c.config.WSClient.Passive {
+				payload, label, msgID = mosxml.KeepAlive{}, "keepAlive", ""
+			} else {
+				payload, label, msgID = mosxml.CreateHeartbeat(), "heartbeat", c.messageID()
 			}
-			if err := c.writeFrame(ctx, conn, hbEnv); err != nil {
-				return fmt.Errorf("send periodic heartbeat: %w", err)
+
+			env, err := mosxml.GenerateEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, msgID, payload)
+			if err != nil {
+				return fmt.Errorf("build periodic %s: %w", label, err)
+			}
+			if err := c.writeFrame(ctx, conn, env); err != nil {
+				return fmt.Errorf("send periodic %s: %w", label, err)
 			}
 			heartbeatTimer.Reset(interval)
 		case msg := <-msgCh:
@@ -403,9 +462,49 @@ func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8
 	case mosxml.KeepAlive:
 		// Profile 0: keepAlive produces no response.
 	default:
+		// Running-order messages pushed to us go through the same shared dispatcher both
+		// servers use, so a roCreate arriving on a passive connection is applied rather
+		// than logged and dropped.
+		//
+		// This is the entire point of passive mode: ENPS uses the connection it accepted to
+		// send us running orders. Before this, the client recognised only heartbeat and
+		// keepAlive, so anything actually pushed was discarded with a log line.
+		if c.deps == nil {
+			logger.Warningf("MOS 4 client received %s but has no service wired, so it cannot "+
+				"be applied", msg.GetMessageType())
+			return
+		}
+		responder := wsClientResponder{client: c, conn: conn, messageID: env.MessageID}
+		if handled, err := dispatchRunningOrder(ctx, *c.deps, responder, msg); handled {
+			if err != nil {
+				logger.Errorf("MOS 4 client failed to handle %s: %v", msg.GetMessageType(), err)
+			}
+			return
+		}
 		logger.Infof("MOS 4 client received unhandled message type %s from ncsID=%s",
 			msg.GetMessageType(), c.config.MOS.NCSID)
 	}
+}
+
+// wsClientResponder lets the shared running-order handlers answer on the client's outbound
+// connection. The MOS 4.0 envelope echoes the request's messageID (§4.1.7), so it is carried.
+type wsClientResponder struct {
+	client    *WSClient
+	conn      *websocket.Conn
+	messageID string
+}
+
+func (w wsClientResponder) peerLabel() string {
+	return "ncsID=" + w.client.config.MOS.NCSID + " (passive client)"
+}
+
+func (w wsClientResponder) respond(ctx context.Context, msg mosxml.MOSMessage) error {
+	inner, err := stdxml.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal %s: %w", msg.GetMessageType(), err)
+	}
+	env := mosxml.WrapEnvelope(w.client.config.MOS.ID, w.client.config.MOS.NCSID, w.messageID, inner)
+	return w.client.writeFrame(ctx, w.conn, env)
 }
 
 // readMessage reads one frame, decodes it, and returns the validated payload.

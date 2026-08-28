@@ -35,7 +35,7 @@ func newClientCfg(stateDir string) *config.Config {
 func TestClientMessageIDsSurviveRestart(t *testing.T) {
 	dir := t.TempDir()
 
-	first := NewWSClient(newClientCfg(dir), nil)
+	first := NewWSClient(newClientCfg(dir), nil, nil)
 	issued := map[string]bool{}
 	for i := 0; i < 6; i++ {
 		issued[first.messageID()] = true
@@ -45,7 +45,7 @@ func TestClientMessageIDsSurviveRestart(t *testing.T) {
 	}
 
 	// Restart with the same state directory.
-	second := NewWSClient(newClientCfg(dir), nil)
+	second := NewWSClient(newClientCfg(dir), nil, nil)
 	for i := 0; i < 6; i++ {
 		id := second.messageID()
 		if issued[id] {
@@ -59,7 +59,7 @@ func TestClientMessageIDsSurviveRestart(t *testing.T) {
 // means no persistence, which is not conformant, but a client that refuses to talk is worse
 // than one that risks a repeated identifier after a crash. The condition is logged.
 func TestClientWithoutStateDirStillWorks(t *testing.T) {
-	client := NewWSClient(newClientCfg(""), nil)
+	client := NewWSClient(newClientCfg(""), nil, nil)
 
 	first := client.messageID()
 	if first != "1" {
@@ -73,7 +73,7 @@ func TestClientWithoutStateDirStillWorks(t *testing.T) {
 // TestClientMessageIDsAreSpecValid guards the format at the wiring level, since the
 // sequence and FormatMessageID are separate definitions that must agree.
 func TestClientMessageIDsAreSpecValid(t *testing.T) {
-	client := NewWSClient(newClientCfg(t.TempDir()), nil)
+	client := NewWSClient(newClientCfg(t.TempDir()), nil, nil)
 	for i := 0; i < 150; i++ {
 		id := client.messageID()
 		if err := mosxmlValidateOutbound(id); err != nil {
