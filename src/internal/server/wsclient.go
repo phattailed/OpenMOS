@@ -2,13 +2,14 @@ package server
 
 import (
 	"airshift/openmos/internal/capture"
+	"airshift/openmos/internal/messageid"
 	"context"
 	"crypto/tls"
 	stdxml "encoding/xml"
 	"fmt"
 	"net/http"
 	"net/url"
-	"sync/atomic"
+	"strconv"
 	"time"
 
 	"airshift/openmos/internal/config"
@@ -35,28 +36,63 @@ type WSClient struct {
 	// method tolerates a nil receiver.
 	frames *capture.Recorder
 
-	// nextMessageID is the outbound messageID sequence. MOS 4.0 §4.1.6 requires a
-	// 32-bit signed integer >= 1, so it starts at 1 and increments per send.
-	nextMessageID int64
+	// messageIDs is the outbound messageID sequence, durable across restarts.
+	//
+	// MOS 4.0 §4.1.7 requires that "the last used messageID must be persistent", because
+	// the field exists so a receiver can tell a retry from a new request. A restarted
+	// process reissuing 1, 2, 3 risks having them answered from a peer's deduplication
+	// cache rather than processed.
+	messageIDs *messageid.Sequence
 }
 
 // NewWSClient creates a new MOS 4 WebSocket client.
 func NewWSClient(cfg *config.Config, frames *capture.Recorder) *WSClient {
+	// A failure here is not fatal: the sequence falls back to memory and reports itself
+	// degraded, which is logged once. Refusing to start because a counter file cannot be
+	// written would be a worse trade than risking a repeated identifier after a crash.
+	seq, err := messageid.Open(cfg.State.Dir, cfg.MOS.ID)
+	if err != nil {
+		logger.Warningf("MOS 4 client messageID sequence is not durable, so a restart may "+
+			"reissue identifiers a peer could mistake for retries: %v", err)
+	} else if seq.Degraded() {
+		// Reached when no state directory is configured. Saying so is the point: MOS 4.0
+		// §4.1.7 makes persistence a requirement, and silently not meeting it is exactly
+		// the kind of gap this project documents rather than hides.
+		logger.Warningf("MOS 4 client messageID sequence is in memory only; set state.dir " +
+			"to persist it, as MOS 4.0 §4.1.7 requires")
+	}
 	return &WSClient{
-		config:        cfg,
-		frames:        frames,
-		nextMessageID: 0, // first messageID() call returns 1
+		config:     cfg,
+		frames:     frames,
+		messageIDs: seq,
 	}
 }
 
 // messageID returns the next outbound messageID.
 //
-// Origination goes through xml.FormatMessageID so the §4.1.6 rule lives in one
-// place rather than being restated at each emit site. The counter starts at 0 and
-// is incremented before use, so the first identifier is 1, which is the spec's
-// floor.
+// The sequence guarantees the §4.1.6 format and the §4.1.7 wrap, and persists its
+// high-water mark so a restart cannot reissue identifiers a peer might mistake for
+// retries. FormatMessageID is still applied so origination has exactly one definition of
+// the rule regardless of where the value came from.
 func (c *WSClient) messageID() string {
-	return mosxml.FormatMessageID(atomic.AddInt64(&c.nextMessageID, 1))
+	if c.messageIDs == nil {
+		// Defensive: a client constructed without a sequence would otherwise panic.
+		// Emitting a valid-but-repeating identifier is the lesser fault.
+		return mosxml.FormatMessageID(1)
+	}
+	return mosxml.FormatMessageID(parseSeq(c.messageIDs.Next()))
+}
+
+// parseSeq converts the sequence's decimal string back to an integer so that
+// FormatMessageID remains the single definition of the outbound rule. The sequence only
+// ever emits values that parse, so a failure here means the two disagree and 1 is the safe
+// answer.
+func parseSeq(value string) int64 {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
 }
 
 // dialURL builds the outbound connect URL with the mosID, ncsID and channel

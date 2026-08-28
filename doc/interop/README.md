@@ -1317,3 +1317,123 @@ have mixed two arguments.
 
 Profile 0 also stays per-transport, correctly: `messageID` requirements and frame encoding
 are exactly the things that legitimately differ between generations.
+
+## 21. A second NCS estate, reached over AWS SSM
+
+Everything above came from one ENPS host. A second estate turned out to be reachable
+without SSH at all, through AWS Systems Manager Run Command, which matters because it
+needs no inbound access and no tunnel.
+
+Access is per-profile and narrow: of four local AWS profiles only one could call
+`ssm:DescribeInstanceInformation`, and only in one region. The others were denied in all
+nineteen. Worth checking every profile before concluding a path is unavailable.
+
+The estate holds several NOM pairs, distinguishable by customer tag rather than hostname:
+one is the host used throughout this artifact, another is a **multi-vendor demonstration
+rig** carrying a prompter-style spread of real integrations — a graphics/asset system, a
+cloud media service, an automation product and several in-house devices.
+
+### The endpoint field takes a URL, which corrects an earlier note
+
+§10 recorded that the MOS device endpoint field is "hostname-or-IP only", because NOM
+DNS-resolved the whole string and `127.0.0.1:20541` failed with `Host not found [11001]`.
+
+That is true for a **MOS 2.x socket device**, and it is not the whole rule. The
+demonstration rig has a device configured with a full HTTPS URL in the same field:
+
+```
+id=[<vendor>.mos]  endpoint=[https://<cloud-host>/]  mosver=[2.8]
+```
+
+So the field is interpreted according to the device's transport: dialled as a hostname for a
+socket device, used as a URL for a web/cloud one. The earlier note was a correct observation
+generalised too far.
+
+**Several devices have an entirely empty endpoint** and are perfectly normal — they are
+inbound-only or plugin-based, and NOM never dials them. That is worth knowing because
+blanking the endpoint is how this project disables its own test device: it stops NOM dialling
+out, which is the intent, but "blank" is a legitimate steady state rather than a disabled
+marker.
+
+### NOM 9.7 exists, and registers MOS 4.0 the same way
+
+The demonstration rig runs **NOM 9.7.0.65**, a version ahead of the 9.6 all the MOS 4.0
+evidence in §12 came from. Its `MOS4STARTUP.LOG` registers the same prefixes:
+
+```
+http://*/MOS4NCS/
+https://*/MOS4NCS/
+```
+
+and `netsh http show servicestate` confirms `HTTP://*:80/MOS4NCS/`, `HTTPS://*:443/MOS4NCS/`
+and the separate MOS 3.8.4 WebService on `:10543/MOS384/`. So the MOS 4.0 endpoint shape is
+stable across at least two NOM releases, which is worth knowing before treating it as a
+9.6 quirk.
+
+The process is `NomService` rather than `nom.exe` on this build — a detail that made a
+naive "is NOM running" check report false while the service was plainly running and writing
+logs.
+
+### An observation, not a diagnosis
+
+The rig's `EXCEP.LOG` was being written continuously, and of the last 400 entries **398 were
+the same line**:
+
+```
+[10054] An existing connection was forcibly closed by the remote host. [ReadCallback]
+```
+
+with no `ESTABLISHED` connections on either MOS socket port at the time — so something is
+connecting and being reset repeatedly rather than holding a session. That is somebody else's
+rig and not diagnosed here; it is recorded because a MOS implementation should expect to see
+this pattern and because it is a reminder that `ReadCallback` resets are what a half-open
+peer looks like from the NCS side.
+
+### Not done: testing OpenMOS against this NCS
+
+Reaching it read-only needed no permission. Actually exercising it would need a device row
+added to a shared demonstration rig, which is a change to someone else's environment, so it
+has not been made. It is the obvious next piece of live evidence: a second NOM release, and
+a device list that includes transports we have never spoken to.
+
+## 22. The messageID counter is now durable
+
+§19 recorded persistence as an outstanding MUST. MOS 4.0 §4.1.7: "the last used messageID
+must be persistent."
+
+The reason is in the same section, and it is not tidiness. The field exists so a receiver can
+tell a retry from a new request — "it can see from the messageID whether or not it processed
+this message already". A process that restarts and reissues 1, 2, 3 may therefore have those
+messages answered from a peer's deduplication cache rather than processed, and **the sender
+cannot tell the difference between "done" and "mistaken for a retry"**.
+
+The reference NCS solves this with a file per mosID under `MOS\MESSAGEID\`, which is both a
+precedent and a hint that a file is sufficient.
+
+### Reserved in blocks, because the failure modes are not symmetric
+
+The sequence records a high-water mark rather than every value, handing out identifiers from
+memory until the block is exhausted. A crash therefore loses the unused remainder.
+
+That direction is deliberate. **Skipping identifiers is harmless** — a peer only cares whether
+it has seen a value before. **Reusing one is the exact hazard the field exists to prevent.**
+So the design is biased towards skipping, and there is a test asserting that a restarted
+sequence resumes *above* the previous block rather than inside it.
+
+Writes are temp-file-and-rename, so a crash mid-write leaves the previous mark rather than a
+truncated one. A truncated mark would read low and reissue, which is the single outcome worth
+engineering against.
+
+### Availability over strictness, said out loud
+
+If the counter cannot be written — no directory configured, or an unwritable path — the
+sequence keeps working from memory and reports itself degraded, which is logged once at
+startup. A device that will not talk is worse than one that risks a repeated identifier after
+a crash.
+
+But it is logged, because silently not meeting a MUST is the kind of gap this artifact exists
+to prevent. `state.dir` defaults to `state` and is honoured from `STATE_DIR`; empty disables
+persistence explicitly rather than by accident.
+
+Still outstanding: the socket transport does not originate requests, so it has no counter to
+persist. If it ever does, it should share this sequence rather than grow its own.

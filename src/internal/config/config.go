@@ -72,6 +72,16 @@ type Config struct {
 		Dir string
 	}
 
+	// State holds small pieces of protocol state that must survive a restart.
+	//
+	// MOS 4.0 §4.1.7: "the last used messageID must be persistent". A restarted sender
+	// that reissues 1, 2, 3 risks having them answered from a peer's retry-deduplication
+	// cache instead of processed. The reference NCS keeps exactly this as a file per
+	// mosID, so a directory is sufficient and precedented.
+	State struct {
+		Dir string
+	}
+
 	// MongoDB configuration
 	Mongo struct {
 		URI      string
@@ -128,6 +138,7 @@ func LoadConfig() (*Config, error) {
 	config.WebSocket.Port = 8080
 	config.WebSocket.Path = "/mos"
 	config.Storage.Backend = "memory"
+	config.State.Dir = "state"
 
 	// First, try to load from YAML file
 	yamlLoaded := false
@@ -248,6 +259,12 @@ func LoadConfig() (*Config, error) {
 	// Frame capture (off unless a directory is given)
 	if envVal := getEnv("CAPTURE_DIR", ""); envVal != "" {
 		config.Capture.Dir = envVal
+	}
+
+	// Durable protocol state. Empty disables persistence, which is legal but not
+	// conformant; the server says so loudly at startup rather than quietly.
+	if envVal := getEnv("STATE_DIR", ""); envVal != "" || !yamlLoaded {
+		config.State.Dir = getEnv("STATE_DIR", getDefaultString(config.State.Dir, "state"))
 	}
 
 	// Storage backend
@@ -402,6 +419,10 @@ func GenerateDefaultConfig(filePath string) error {
 
 	// Storage backend: "memory" or "mongo"
 	config.Storage.Backend = "memory"
+
+	// Durable protocol state: the messageID counter MOS 4.0 §4.1.7 requires to survive a
+	// restart. Empty disables persistence.
+	config.State.Dir = "state"
 
 	// MongoDB config
 	config.Mongo.URI = "mongodb://localhost:27017"
