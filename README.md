@@ -292,14 +292,14 @@ The next interoperability steps, in order of value:
 1. **Passive mode against a real NCS.** Standard mode is proven live; passive mode is
    implemented and loopback-tested but no NCS available to us has a passive device
    configured.
-3. **Preserve `mosExternalMetadata`.** The payload is opaque and must be carried, but
+2. **Preserve `mosExternalMetadata`.** The payload is opaque and must be carried, but
    the model holds `map[string]string`, which cannot represent the nested vendor XML
    real traffic sends in `<mosPayload>`.
-5. **Durable storage by default for interop work.** In-memory storage means a
+3. **Durable storage by default for interop work.** In-memory storage means a
    restart silently desynchronises us from the NCS, which is what exposed the
    `roStorySend` defect in `doc/interop/README.md` §13. MongoDB is supported but
    not the default.
-6. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
+4. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License
 
