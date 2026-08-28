@@ -1342,7 +1342,7 @@ That is true for a **MOS 2.x socket device**, and it is not the whole rule. The
 demonstration rig has a device configured with a full HTTPS URL in the same field:
 
 ```
-id=[<vendor>.mos]  endpoint=[https://<host>.amplifyapp.com/]  mosver=[2.8]
+id=[<vendor>.mos]  endpoint=[https://<cloud-host>/]  mosver=[2.8]
 ```
 
 So the field is interpreted according to the device's transport: dialled as a hostname for a
