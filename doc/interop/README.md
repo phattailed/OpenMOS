@@ -2242,3 +2242,41 @@ The config default was changed in **both** places it is set, before the YAML loa
 environment fallback. Setting only the fallback would leave "YAML loaded but key missing" resolving
 to the zero value -- the trap recorded in this project's steering that has caused three separate
 failures.
+
+## 34. One `roReq` outstanding per lane
+
+MOS 4.0 §4.1: a sender "must not send another message on the same port until the previous message
+is acknowledged; the two ports are independent". The discovery walk in §27 honours this within
+itself, but there were two independent senders of `roReq`:
+
+- `sendDiscoveryReq`, serialised by the walk
+- `requestResync`, rate-limited by `resyncGuard` but not serialised against the walk
+
+So a divergence arriving mid-walk produced **two concurrent requests on the same lane**. Both were
+individually well behaved; together they broke the rule.
+
+The walk is now the sole owner of outbound `roReq`. Recovery enqueues instead of sending, so there
+is exactly one outstanding by construction rather than by discipline.
+
+**Recovery jumps the queue.** It goes to the front, not the back: the peer is actively sending us
+messages about a running order we do not hold, while the walk is catching up on state nobody is
+asking for yet. Tested — after the in-flight request completes, the recovery identifier is next,
+ahead of the remaining discovery work.
+
+**Why serialising is safe here:** the walk already has a deadline (§27). A gate with no timeout
+would turn one lost acknowledgement into a permanently stuck lane, which is worse than the overlap
+it prevents — the same failure shape as the wedged client in §25 and the stalled walk in §27. The
+in-flight request either completes, which drains the queue, or times out, which also drains it.
+
+Verified by reverting: sending recovery directly again fails the test with
+`recovery sent a second concurrent roReq: [RO-1 RO-DIVERGED]`.
+
+### What is deliberately not gated
+
+`resyncGuard` still applies first, as a loop-breaker. It answers "should we ask at all", the walk
+answers "may we ask now"; they are different questions and both are needed.
+
+Periodic `heartbeat` still fires on its timer regardless of an outstanding `roReq`. Heartbeat is
+Profile 0 liveness machinery, and gating it behind running-order work would defeat its purpose:
+a peer that stopped answering `roReq` is exactly when liveness detection matters most. The README
+claims the rule for the request family OpenMOS originates in volume, not universally.

@@ -50,6 +50,7 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `roReq` answered with `roList` for one running order | Yes | Integration tests | No | Was inverted with `roReqAll`; see `doc/interop` §17 |
 | `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | No | Discovery only, as the spec requires |
 | Inbound `roListAll` drives `roReq` per running order | Yes | Unit tests, both transports | No | Sequential: one request outstanding at a time, per MOS 4.0 §4.1 |
+| One `roReq` outstanding per lane, recovery included | Yes | Unit tests | No | Recovery enqueues ahead of discovery rather than sending concurrently (`doc/interop` §34) |
 | Every parseable message classified as handled or not | Yes | Inventory test reads the parser | — | Adding a message type fails the build until classified |
 | Frame splits, coalescing, misaligned terminators, junk | Yes | Unit tests, incl. odd-offset decoy | **Yes** | Bounded at 4 MiB; non-MOS roots refused, not discarded |
 | `roElementStat` parses, routes and acks on both | Yes | Real-traffic + loopback tests | Partly | `element` attribute now preserved; not yet acted on |
@@ -311,9 +312,9 @@ The next interoperability steps, in order of value:
    main/buddy pair: OpenMOS connected, but NOM generated no outbound work at all, so the
    defect was not reproduced and not shown fixed either (§29). The likeliest cause is the
    device row's `StorySend` flag, which gates running-order content and defaults to `0`.
-2. **One in-flight request per ordered lane.** MOS 4.0 §4.1 requires a sender not to send
-   another message on the same port until the previous is acknowledged. The discovery walk
-   honours this; OpenMOS does not yet enforce it across all its own outbound traffic.
+2. **Passive mode against NCS-originated output.** Every attempt so far has exercised replies
+   rather than output ENPS generates itself (`doc/interop` §31). The discriminating test needs a
+   rundown edit in the ENPS client while only a passive connection is held.
 3. **Durable storage by default for interop work.** The three pieces of protocol state
    that cannot be rebuilt by asking the NCS -- the outbound `messageID`, deduplication
    receipts and unfinished discovery work -- now persist (`doc/interop` §27). Running

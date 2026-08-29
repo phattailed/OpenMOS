@@ -359,9 +359,22 @@ func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID strin
 		// loop starts.
 		return
 	}
+
+	// Route through the discovery walk rather than sending directly, so there is exactly one
+	// roReq outstanding on this lane. MOS 4.0 §4.1: a sender "must not send another message on
+	// the same port until the previous message is acknowledged". Sending here directly meant a
+	// divergence arriving mid-walk produced two concurrent requests.
+	//
+	// Recovery jumps the queue: the peer is actively sending us messages about a running order we
+	// do not hold, while the walk is catching up on state nobody is asking for yet.
+	next, ok := deps.walk.enqueueUrgent(roID)
+	if !ok {
+		logger.Infof("Queued roReq for RO %s behind the request already in flight", roID)
+		return
+	}
 	logger.Infof("Sending roReq for RO %s to recover local state", roID)
-	if err := r.respond(ctx, mosxml.ROReq{ROID: roID}); err != nil {
-		logger.Errorf("Failed to send roReq for RO %s: %v", roID, err)
+	if err := r.respond(ctx, mosxml.ROReq{ROID: next}); err != nil {
+		logger.Errorf("Failed to send roReq for RO %s: %v", next, err)
 	}
 }
 

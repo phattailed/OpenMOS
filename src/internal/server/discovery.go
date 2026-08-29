@@ -194,6 +194,49 @@ func (w *discoveryWalk) begin(roIDs []string) (next string, ok bool, dropped int
 	return next, ok, dropped
 }
 
+// enqueueUrgent puts a running order at the FRONT of the queue and returns it if it can be
+// requested immediately.
+//
+// This exists so that pull recovery and the discovery walk cannot both have a roReq outstanding on
+// the same lane. MOS 4.0 §4.1: a sender "must not send another message on the same port until the
+// previous message is acknowledged". Recovery used to send directly, so a divergence arriving
+// mid-walk produced two concurrent requests.
+//
+// Front rather than back because recovery is the more urgent of the two: the peer is actively
+// sending us messages about a running order we do not hold, whereas the walk is catching up on
+// state nobody is asking for yet.
+//
+// If a request is already in flight this returns false and the identifier waits. Nothing is lost:
+// the in-flight request either completes, which drains the queue, or times out, which also drains
+// it. That deadline is what makes serialising safe -- a gate with no timeout would turn one lost
+// acknowledgement into a permanently stuck lane, which is worse than the overlap it prevents.
+func (w *discoveryWalk) enqueueUrgent(roID string) (next string, ok bool) {
+	if w == nil || roID == "" {
+		return "", false
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.inFlight == roID {
+		return "", false // already asked, still waiting
+	}
+	for _, id := range w.pending {
+		if id == roID {
+			return "", false // already queued
+		}
+	}
+
+	if len(w.pending) >= w.max {
+		// Bounded, as elsewhere. Dropping a recovery request is acceptable because recovery is
+		// best-effort and the peer will keep telling us about the divergence.
+		return "", false
+	}
+	w.pending = append([]string{roID}, w.pending...)
+
+	return w.takeLocked()
+}
+
 // resolved records that the in-flight running order is settled -- its roList arrived and was
 // applied -- and returns the next one to request.
 //

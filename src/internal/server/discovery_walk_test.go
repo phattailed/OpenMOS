@@ -256,3 +256,54 @@ func TestDiscoveryWalkIsSharedByBothTransports(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyOneROReqOutstandingPerLane pins MOS 4.0 §4.1 for the request family OpenMOS actually
+// originates in volume: "a sender must not send another message on the same port until the previous
+// message is acknowledged".
+//
+// Recovery used to send roReq directly while the discovery walk could have one outstanding, so a
+// divergence arriving mid-walk produced two concurrent requests on the same lane. Recovery now
+// routes through the walk.
+func TestOnlyOneROReqOutstandingPerLane(t *testing.T) {
+	deps, walk := walkDeps(t)
+	ctx := context.Background()
+	r := &recordingResponder{label: "peer"}
+
+	// A walk is under way, so RO-1 is in flight and RO-2 and RO-3 are queued.
+	if _, err := dispatchRunningOrder(ctx, deps, r, listAllOf("RO-1", "RO-2", "RO-3")); err != nil {
+		t.Fatalf("dispatch roListAll: %v", err)
+	}
+	if got := roIDsRequested(r); len(got) != 1 {
+		t.Fatalf("expected one request after roListAll, got %v", got)
+	}
+
+	// Now a peer sends content for a running order we do not hold, which triggers recovery.
+	if _, err := dispatchRunningOrder(ctx, deps, r, mosxml.ROStorySend{
+		ROID: "RO-DIVERGED", StoryID: "S-1",
+	}); err != nil {
+		t.Fatalf("dispatch roStorySend: %v", err)
+	}
+
+	// Still exactly one roReq outstanding. The recovery request must have been queued, not sent.
+	if got := roIDsRequested(r); len(got) != 1 {
+		t.Errorf("recovery sent a second concurrent roReq: %v. MOS 4.0 §4.1 forbids another "+
+			"message on the same port before the previous is acknowledged.", got)
+	}
+
+	// And it must be next, ahead of the remaining discovery work, because recovery is the more
+	// urgent of the two.
+	if _, err := dispatchRunningOrder(ctx, deps, r, mosxml.ROList{ID: "RO-1", Slug: "First"}); err != nil {
+		t.Fatalf("dispatch roList: %v", err)
+	}
+	got := roIDsRequested(r)
+	if len(got) != 2 {
+		t.Fatalf("expected a second request once the first completed, got %v", got)
+	}
+	if got[1] != "RO-DIVERGED" {
+		t.Errorf("next request was %s, want RO-DIVERGED: recovery should jump the discovery queue",
+			got[1])
+	}
+	if walk.remaining() != 2 {
+		t.Errorf("walk has %d queued, want 2 (RO-2 and RO-3)", walk.remaining())
+	}
+}
