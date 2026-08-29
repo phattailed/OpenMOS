@@ -2049,3 +2049,69 @@ Both faults were confirmed by reverting the fixes: the unguarded close reproduce
 `panic: close of closed channel`, and the select-and-default guard reproduces `WARNING: DATA RACE`
 under `-race`. The suite is now race-clean across three consecutive runs, where a single run had
 been passing before.
+
+## 31. MOS 4.0 admission requires a 2.x version string, and a distinction that changed a result
+
+Two findings from a two-connection live test on NOM 9.7, run on the demonstration estate by
+another agent with the operator's authorisation. The harness is reusable and stays untracked.
+
+### `MOSVersion=4.0` is refused at admission
+
+Setting the device row's `MOSVersion` (field 6) to `4.0` makes the MOS 4.0 WebSocket upgrade
+return **HTTP 403**. `2.8.4` is required for admission on this build.
+
+That is worth stating plainly because it is counterintuitive and because this document
+previously suggested the opposite. §29 offered, as a hypothesis for why the rig produced no
+outbound work, that a device declared `2.8.4` might be treated as a socket device and therefore
+dialled rather than reached over the held WebSocket. The reverse is true: `4.0` is rejected
+outright, and the version string that *works* for MOS 4.0 traffic is a 2.x one. The hypothesis
+is withdrawn.
+
+It also means the `MOSVersion` column does not select the transport generation in the way the
+field name suggests, at least not on this build. Transport is determined by how the device
+connects; this field gates something else.
+
+### A `roList` is a response, not NCS-originated output
+
+The test held a passive connection, opened a second standard connection for the same device,
+completed Profile 0, sent `roReqAll`, received `roListAll` (1296 bytes) proving one running order
+existed, sent `roReq` for it, **dropped the standard connection immediately**, then waited twenty
+seconds for the running order on the passive connection. It did not arrive.
+
+That is a clean, deterministic, reproducible observation. It is probably not a defect.
+
+Responses in MOS return on the connection the request arrived on. Two pieces of evidence, one
+from each version:
+
+- On 9.7, in this very run, `roListAll` came back on the **standard** connection, not the passive
+  one — the same request-response pattern.
+- On 9.6 (§25), a `roReq` sent on a non-passive connection while a passive connection was held
+  produced a `roList` of 5,320 bytes **on the requesting connection**. The passive capture
+  directory contained only our own outbound frame.
+
+So dropping the requesting connection immediately after `roReq` most likely means NOM built a
+reply for a socket that had gone, and the reply died with it. Nothing in the specification or the
+vendor documentation claims a reply is re-routed to a different connection.
+
+**The distinction that matters:** passive mode is about `MOSOutput`, and `MOSOutput` carries
+NCS-**originated** traffic — the `roCreate`, `roStorySend` and `roElementAction` generated when a
+rundown changes. The vendor documentation says ENPS "creates a MOSOutput and will use this
+connection for messages to the MOS device". A `roList` answering our own `roReq` is not
+originated output; it is a reply within an exchange we started.
+
+That is also what 9.6 demonstrated. The ten items in `H:\NOM\MOS\OUT\<device>` were originated
+running-order content, and `RemoveQueueOut` was failing to **drain** them. The 9.6 defect lives in
+the originated-output path, which this test never reaches — which explains the zero
+`RemoveQueueOut` occurrences without implying a fix.
+
+### What would actually settle it
+
+Hold **only** the passive connection, with no second connection at all, and then cause ENPS to
+originate work by modifying an approved MOS-controlled rundown in the client.
+
+- Originated `roStorySend`/`roElementAction` arrives: passive mode works on 9.7, and 9.6's
+  problem is purely the drain crash.
+- It does not arrive: a genuine passive-output failure, no longer explicable as reply routing.
+
+That requires a rundown edit in the ENPS client, which is a human action. Until it is run, passive
+mode remains unproven on both versions and the README says so.

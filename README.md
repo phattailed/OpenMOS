@@ -67,7 +67,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | OpenMOS runnable as a purely outbound client | Yes | — | **Yes** | Previously refused to start without a listener, contradicting passive mode |
 | Peer refusals (`mosAck`) parsed and reported | Yes | Unit tests | **Yes** | Accepted without a `messageID`, as real servers send them |
 | One message vocabulary across both transports | Yes | Envelope-reachability test | **Yes** | Sixteen messages were socket-unreachable; see `doc/interop` §28 |
-| MOS 4 outbound client, passive mode | Yes | Loopback tests | Connects, receives nothing | Tried on two NOM versions; neither delivered (`doc/interop` §25, §29) |
+| MOS 4 outbound client, passive mode | Yes | Loopback tests | Connects, receives nothing | Untested against NCS-*originated* output; prior attempts exercised replies (`doc/interop` §25, §29, §31) |
+| MOS 4 admission vs device `MOSVersion` | — | — | **Yes** | `4.0` is refused with HTTP 403; a 2.x string is required (`doc/interop` §31) |
 | Graceful shutdown, idempotent and race-free | Yes | Unit tests, incl. concurrent | **Yes** | Panicked on every run; `Shutdown` is called twice by design |
 | MOS booleans as `YES`/`NO` | Yes | Unit + live-frame tests | **Yes** | — |
 | MOS timestamps with comma fractions | Yes | Unit tests (spec examples) | **Yes** | `ParseMOSTime`; Go's stdlib cannot read them |
