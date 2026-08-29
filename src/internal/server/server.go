@@ -24,6 +24,11 @@ type TCPServer struct {
 	eventBus   *events.EventBus
 	wg         sync.WaitGroup
 	shutdownCh chan struct{}
+	// shutdownOnce guards shutdownCh, which is closed from two places on every ordinary
+	// shutdown: Start returns through Shutdown when the context is cancelled, and main calls
+	// Shutdown explicitly after cancelling. Whichever arrived second panicked with "close of
+	// closed channel". Shutdown must therefore be idempotent and safe to call concurrently.
+	shutdownOnce sync.Once
 	// dedup makes retried messageIDs idempotent. Shared across all connections
 	// so a retry that arrives on a reconnected socket is still recognised --
 	// which is the usual case, since the spec has the NCS reset the connection
@@ -116,12 +121,17 @@ func (s *TCPServer) Start(ctx context.Context) error {
 	return s.Shutdown(context.Background())
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down the server.
+//
+// Safe to call more than once and from several goroutines at once. That is not defensive
+// programming: Start returns through Shutdown when its context is cancelled, and main calls
+// Shutdown after cancelling that same context, so two calls are the normal case rather than an
+// error path.
 func (s *TCPServer) Shutdown(ctx context.Context) error {
 	logger.Info("Shutting down server...")
 
-	// Signal all goroutines to stop
-	close(s.shutdownCh)
+	// Signal all goroutines to stop, exactly once.
+	s.shutdownOnce.Do(func() { close(s.shutdownCh) })
 
 	// Close listener
 	if s.listener != nil {

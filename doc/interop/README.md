@@ -1959,3 +1959,93 @@ is the reason defect 4 is recorded as the most serious of the four. Subsequent r
 No configuration was changed, nothing was restarted, and every port-forwarding session was
 confirmed closed afterwards -- including the `session-manager-plugin` child, which survives its
 parent and silently held the tunnel open the first time.
+
+## 29. Passive mode on NOM 9.7: not reproduced, and not fixed either
+
+A properly conducted 9.7 test was run on the demonstration estate, going considerably further
+than §28 could: matching device rows added to both nodes of the main/buddy pair with verified
+identical SHA-256, IIS reset on both, the JSON web-services application pool cycled, both NOM
+services restarted (the extra step required when `g_mos` is edited directly), and an approved,
+MOS-controlled rundown created and then updated.
+
+OpenMOS reconnected successfully in passive mode.
+
+**No `MOSOutput.RemoveQueueOut` and no `ArgumentOutOfRangeException` appeared** — and that is not
+the result it looks like. NOM produced **no per-device MOS log and no observable outbound work at
+all**. The 9.6 defect was not reproduced because the code path that throws it never ran.
+
+So the comparison remains open, and the two versions failed in *different* places:
+
+| | NOM 9.6 (§25) | NOM 9.7 |
+|---|---|---|
+| Device row `Passive=1` | yes | yes |
+| Our end connects and holds | yes, with `keepAlive` | yes |
+| NCS queued outbound work | **yes, 10 items** | **none** |
+| `RemoveQueueOut` throws | 24 times per 300 log lines | never called |
+
+9.6 queued work and could not drain it. 9.7 never queued anything. Only the first is a defect in
+the drain path; the second is a question about what makes NOM consider a MOS 4 device an output
+target at all.
+
+### The most likely reason nothing was queued
+
+Recorded as hypotheses, not findings, because they were not tested:
+
+- **`StorySend` (field 15).** On the demonstration rig 13 of 14 device rows have this at `0`; the
+  reference rig's OpenMOS row has it at `1`. A row copied from a neighbour would inherit `0`, and
+  running-order content is exactly what that field gates. This is the leading candidate.
+- **`MOSVersion` (field 6).** No row on that rig was MOS 4.x. A device declared `2.8.4` may be
+  treated as a socket device, which NOM tries to *dial*, never using the inbound WebSocket link.
+- **Provoking the work.** On the reference rig the queue filled because `roReqAll` was issued,
+  which queues NCS-side work (§16). A passive connection cannot ask, since ENPS does not read
+  requests on it — but a *second, non-passive* connection can, and that two-connection trick is
+  how authentic Profile 2 traffic was obtained without GUI access (§25). Creating a rundown may
+  simply not be enough on its own.
+
+Either way, teardown was verified: both `g_mos` files restored to their baseline digest, fourteen
+rows each, test device absent, disposable rundown removed, all services running.
+
+## 30. A panic on every shutdown, and a race the test for it uncovered
+
+Reported from the 9.7 run: `TCPServer.Shutdown panics with close of closed channel`.
+
+Not an edge case, and not intermittent in cause. `TCPServer.Start` ends with:
+
+```go
+<-ctx.Done()
+return s.Shutdown(context.Background())
+```
+
+and `main` does:
+
+```go
+cancel()                                  // Start's <-ctx.Done() fires: Shutdown, call one
+tcpServer.Shutdown(context.Background())  // Shutdown, call two
+```
+
+Both paths run on **every ordinary shutdown** and race to close the same channel. Whichever
+arrives second panics. `close(s.shutdownCh)` had no guard at all.
+
+`WSServer` had the same two-caller shape with a guard that looks correct and is not:
+
+```go
+select {
+case <-s.shutdownCh:
+	return
+default:
+}
+close(s.shutdownCh)
+```
+
+Two callers can both observe the channel open and both proceed to close it. That narrows the
+window without closing it. Both now use `sync.Once`.
+
+Writing the concurrency test then exposed a **second, pre-existing race**: `s.httpServer` is
+assigned by `Start` and read by `Shutdown` with no synchronisation, which the detector reports as
+soon as `Shutdown` is called concurrently. `Serve` now runs on a local reference and the field is
+guarded by a mutex.
+
+Both faults were confirmed by reverting the fixes: the unguarded close reproduces
+`panic: close of closed channel`, and the select-and-default guard reproduces `WARNING: DATA RACE`
+under `-race`. The suite is now race-clean across three consecutive runs, where a single run had
+been passing before.

@@ -67,7 +67,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | OpenMOS runnable as a purely outbound client | Yes | — | **Yes** | Previously refused to start without a listener, contradicting passive mode |
 | Peer refusals (`mosAck`) parsed and reported | Yes | Unit tests | **Yes** | Accepted without a `messageID`, as real servers send them |
 | One message vocabulary across both transports | Yes | Envelope-reachability test | **Yes** | Sixteen messages were socket-unreachable; see `doc/interop` §28 |
-| MOS 4 outbound client, passive mode | Yes | Loopback tests | No | Tried live: NCS fails to drain its own output queue (`doc/interop` §25) |
+| MOS 4 outbound client, passive mode | Yes | Loopback tests | Connects, receives nothing | Tried on two NOM versions; neither delivered (`doc/interop` §25, §29) |
+| Graceful shutdown, idempotent and race-free | Yes | Unit tests, incl. concurrent | **Yes** | Panicked on every run; `Shutdown` is called twice by design |
 | MOS booleans as `YES`/`NO` | Yes | Unit + live-frame tests | **Yes** | — |
 | MOS timestamps with comma fractions | Yes | Unit tests (spec examples) | **Yes** | `ParseMOSTime`; Go's stdlib cannot read them |
 | Story and item order preserved | Yes | Unit tests, both backends | No | In-memory backend previously returned map order |
@@ -302,9 +303,10 @@ The next interoperability steps, in order of value:
 1. **Passive mode on a newer NOM.** Attempted against NOM 9.6 with the device's `Passive`
    flag set: our end is correct and holds the connection with `keepAlive`, but the NCS fails
    to drain its own output queue, throwing from `MOSOutput.RemoveQueueOut` (`doc/interop`
-   §25). NOM 9.7 is now reachable and its client-facing behaviour is verified (§28), but it has
-   no MOS 4 device configured, so its output path has never run and the comparison is still
-   open. It needs a `Passive=1` device row on a rig belonging to another team.
+   §25). A full 9.7 test has since been run with a `Passive=1` row on both nodes of a
+   main/buddy pair: OpenMOS connected, but NOM generated no outbound work at all, so the
+   defect was not reproduced and not shown fixed either (§29). The likeliest cause is the
+   device row's `StorySend` flag, which gates running-order content and defaults to `0`.
 2. **Enforce `mosScope` propagation.** The payload is now preserved verbatim, but scope
    is carried rather than acted on: `STORY`-scoped blocks should be stripped from
    running-order construction messages and `PLAYLIST`-scoped ones kept.

@@ -37,8 +37,13 @@ type WSServer struct {
 	// resync rate-limits outbound roReq so pull recovery cannot loop, exactly as on the
 	// socket transport. Separate from the TCP server's guard because the two transports
 	// hold independent conversations with independent state.
-	resync     *resyncGuard
-	walk       *discoveryWalk
+	resync *resyncGuard
+	walk   *discoveryWalk
+	// httpServer is assigned by Start and read by Shutdown, which run on different goroutines
+	// and can overlap: Start spawns a goroutine that calls Shutdown on context cancellation
+	// while main also calls it directly. The mutex is not decorative -- the race detector
+	// reports this access pair once Shutdown is exercised concurrently.
+	httpMu     sync.Mutex
 	httpServer *http.Server
 	listener   net.Listener
 	ready      chan struct{} // closed once the listener is bound
@@ -46,7 +51,8 @@ type WSServer struct {
 	sessions   map[string]*WSSession
 	sessionsMu sync.RWMutex
 
-	shutdownCh chan struct{}
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
 	// capture records raw frames when enabled; nil means off.
 	capture *capture.Recorder
 }
@@ -118,10 +124,13 @@ func (s *WSServer) Start(ctx context.Context) error {
 	s.listener = ln
 	close(s.ready) // signal that listener is bound and Addr() is safe to call
 
-	s.httpServer = &http.Server{
+	srv := &http.Server{
 		Handler:     mux,
 		ReadTimeout: s.config.Server.ReadTimeout,
 	}
+	s.httpMu.Lock()
+	s.httpServer = srv
+	s.httpMu.Unlock()
 
 	logger.Infof("WebSocket server listening on %s", ln.Addr().String())
 
@@ -130,7 +139,9 @@ func (s *WSServer) Start(ctx context.Context) error {
 		s.Shutdown()
 	}()
 
-	if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+	// Serve on the local reference, so this does not race with a concurrent Shutdown reading
+	// the field.
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -144,13 +155,20 @@ func (s *WSServer) Addr() net.Addr {
 }
 
 // Shutdown gracefully stops the server.
+//
+// Safe to call more than once and concurrently. The previous guard read shutdownCh in a select
+// with a default, which narrows the window but does not close it: two callers can both see it
+// open and both reach the close. Start already spawns a goroutine that calls Shutdown on context
+// cancellation while main calls it directly, so concurrent calls are the normal case.
 func (s *WSServer) Shutdown() {
-	select {
-	case <-s.shutdownCh:
-		return // already closed
-	default:
+	alreadyClosing := true
+	s.shutdownOnce.Do(func() {
+		alreadyClosing = false
+		close(s.shutdownCh)
+	})
+	if alreadyClosing {
+		return
 	}
-	close(s.shutdownCh)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -161,8 +179,11 @@ func (s *WSServer) Shutdown() {
 	}
 	s.sessionsMu.Unlock()
 
-	if s.httpServer != nil {
-		_ = s.httpServer.Shutdown(ctx)
+	s.httpMu.Lock()
+	srv := s.httpServer
+	s.httpMu.Unlock()
+	if srv != nil {
+		_ = srv.Shutdown(ctx)
 	}
 }
 
