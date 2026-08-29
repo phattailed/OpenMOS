@@ -103,9 +103,9 @@ func main() {
 
 	// Build repositories for the configured storage backend.
 	//
-	// "memory" keeps OpenMOS dependency-free for lab and CI use. "mongo" gives
-	// durable storage and is required for production, since neither the running
-	// order state nor the dedup store survives a restart in memory mode.
+	// "file" is the default: durable without an external service, which is what interop work
+	// needs. "memory" remains available and is what the tests use, because a test that writes
+	// to disk is a test that leaks between runs. "mongo" is for a real deployment.
 	var (
 		runningOrderRepo repository.RunningOrderRepository
 		storyRepo        repository.StoryRepository
@@ -133,7 +133,23 @@ func main() {
 		storyRepo = repository.NewMongoStoryRepository(database)
 		itemRepo = repository.NewMongoItemRepository(database)
 		objectRepo = repository.NewMongoObjectRepository(database)
-	case "memory", "":
+	case "file", "":
+		// The interop default. Protocol state already survives a restart; the rundown did not,
+		// which left OpenMOS silently disagreeing with the NCS about what it holds. The NCS has
+		// no reason to say again, so the divergence is invisible until something breaks -- which
+		// is exactly how the roStorySend defect in doc/interop §13 stayed hidden.
+		durable := repository.OpenDurable(cfg.State.Dir)
+		if durable.Degraded() {
+			log.Warning("Running orders are NOT durable: state directory unavailable, " +
+				"continuing in memory")
+		} else {
+			log.Infof("Running orders persist under %s", cfg.State.Dir)
+		}
+		runningOrderRepo = durable.RunningOrders()
+		storyRepo = durable.Stories()
+		itemRepo = durable.Items()
+		objectRepo = durable.Objects()
+	case "memory":
 		log.Warning("Using in-memory storage; nothing is durable across a restart")
 		runningOrderRepo = repository.NewMemoryRunningOrderRepository()
 		storyRepo = repository.NewMemoryStoryRepository()
