@@ -108,6 +108,9 @@ type ROListEntry struct {
 	MacroIn  string
 	MacroOut string
 	Stories  []StoryInfo
+	// MosExternalMetadata is running-order-level metadata. Only PLAYLIST-scoped blocks belong
+	// here; callers should pass it through FilterMetadataForLevel with LevelRunningOrder.
+	MosExternalMetadata []MosExternalMetadata
 }
 
 // CreateROList builds a <roList>: the complete build of ONE running order, in
@@ -128,6 +131,9 @@ func CreateROList(ro ROListEntry) ROList {
 		MacroIn:  ro.MacroIn,
 		MacroOut: ro.MacroOut,
 		Stories:  ro.Stories,
+		// Filtered here as well as at the call site, so a caller that forgets cannot emit a
+		// STORY-scoped block at running-order level.
+		MosExternalMetadata: FilterMetadataForLevel(ro.MosExternalMetadata, LevelRunningOrder),
 	}
 }
 

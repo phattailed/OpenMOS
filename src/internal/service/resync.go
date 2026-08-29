@@ -98,9 +98,9 @@ func preserveExternalMetadata(blocks []xml.MosExternalMetadata) []model.External
 	return out
 }
 
-// restoreExternalMetadata converts stored blocks back to their wire form, so a roList built
+// ExternalMetadataToWire converts stored blocks back to their wire form, so a roList built
 // from local state carries what was originally received.
-func restoreExternalMetadata(blocks []model.ExternalMetadata) []xml.MosExternalMetadata {
+func ExternalMetadataToWire(blocks []model.ExternalMetadata) []xml.MosExternalMetadata {
 	if len(blocks) == 0 {
 		return nil
 	}

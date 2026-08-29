@@ -2115,3 +2115,71 @@ originate work by modifying an approved MOS-controlled rundown in the client.
 
 That requires a rundown edit in the ENPS client, which is a human action. Until it is run, passive
 mode remains unproven on both versions and the README says so.
+
+## 32. mosScope enforced, and the emission it turned out to be missing
+
+The task was to act on `mosScope` rather than merely carry it. Implementing it exposed a larger
+defect underneath: there was nothing to filter, because the metadata was never emitted at all.
+
+### The dead half of §23
+
+§23 fixed `mosExternalMetadata` being discarded three ways on ingest, and the README gained a row
+saying the payload was preserved verbatim. That was true of *storage* and untrue of the *wire*.
+
+`restoreExternalMetadata` -- the conversion from stored blocks back to wire form -- was **dead
+code**. Defined, never called, not referenced by a single test. Go does not complain about an
+unused function, so it compiled cleanly for as long as it existed. `storyInfosFor` built
+`StoryInfo` and `ItemInfo` values with no metadata field set, and `CreateROList` had no
+running-order-level field to set.
+
+So every `roList` OpenMOS produced dropped all vendor metadata. That matters most in the one place
+it is least visible: `roList` is the payload of pull recovery, where a peer rebuilds its state from
+ours. The loss was silent and nothing compared what went in against what came out.
+
+The round-trip test now does exactly that comparison -- ingest a `roCreate` carrying blocks at all
+three levels, ask for it back with `roReq`, and inspect the `roList` produced. Reverting the
+emission fails it with "the wire emission is missing, not merely misfiltered".
+
+This is the same lesson as §26, one layer down: a function existing is not a workflow. The message
+inventory test catches an unhandled *message*; nothing was watching for an unreachable *field*.
+
+### The scope rule is a hierarchy, not a switch
+
+The README previously described the next step as stripping `STORY`-scoped blocks from
+running-order construction messages and keeping `PLAYLIST` ones. That is too coarse, because a
+running-order construction message has three levels and the rule differs per level.
+
+Per `doc/mos-protocol-source-synthesis.md`: `OBJECT` "stays with object/list/search use", `STORY`
+"may enter an item reference in a story", `PLAYLIST` "may also enter running-order construction
+messages". Each scope permits everywhere the narrower one does, plus one more context:
+
+| level | `OBJECT` | `STORY` | `PLAYLIST` |
+|---|---|---|---|
+| running order | no | no | **yes** |
+| story | no | **yes** | **yes** |
+| item | no | **yes** | **yes** |
+
+`OBJECT` is excluded from all three: a running order is not object, list or search use. An
+`OBJECT`-scoped block belongs with `mosObj` traffic, which OpenMOS does not implement.
+
+### Enforced on emission, never on storage
+
+Scope is applied to what OpenMOS **emits**. Inbound blocks are stored verbatim whatever their
+scope, because discarding metadata a peer sent us would break the project's lenient-inbound rule
+and lose data we may have to hand back. A test pins both halves: storage keeps all three scopes,
+the wire carries only what each level permits.
+
+Two deliberate leniencies, both recorded in the code:
+
+- **An absent `mosScope` is kept.** The element is optional, and omitting it is not a request to
+  be discarded.
+- **An unrecognised scope is kept**, and comparison is case-insensitive after trimming. The
+  payload is opaque to us either way, so silently dropping an unlabelled block is the worse
+  failure. Rejecting `Playlist` would be pedantry that costs real data.
+
+Filtering happens at the call site *and* inside `CreateROList`, so a caller that forgets cannot
+emit a `STORY`-scoped block at running-order level.
+
+Both behaviours were verified by reverting them: removing the emission fails the round-trip test,
+and making the filter permit everything fails the hierarchy test on `OBJECT`, `STORY` and `Story`
+plus the round trip.
