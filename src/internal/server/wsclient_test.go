@@ -54,6 +54,12 @@ type ncsPeer struct {
 	// successful Profile 0 exchange (reqMachInfo + heartbeat) to force a reconnect.
 	forceDropAfterFirst atomic.Bool
 	firstExchangeDone   atomic.Bool
+
+	// refuseHandshake makes the peer complete the WebSocket upgrade and then answer
+	// reqMachInfo with a NACK carrying NO messageID, which is what a real NOM does for a mosID
+	// it does not recognise. That combination -- upgrade succeeds, session never becomes usable
+	// -- is what exposed the reconnect loop.
+	refuseHandshake atomic.Bool
 }
 
 func newNCSPeer(t *testing.T, cfg *config.Config) *ncsPeer {
@@ -117,6 +123,12 @@ func (p *ncsPeer) handle(w http.ResponseWriter, r *http.Request) {
 		var reply []byte
 		switch msg.(type) {
 		case mosxml.ReqMachInfo:
+			if p.refuseHandshake.Load() {
+				// Deliberately no messageID, matching the live NOM 9.7 refusal.
+				nack := mosxml.CreateMOSAck("NACK", "MOS ID is not recognized by this NOM")
+				reply, err = mosxml.GenerateEnvelope(p.cfg.MOS.ID, env.NcsID, "", nack)
+				break
+			}
 			info := mosxml.CreateListMachInfo(p.cfg, mosxml.MosRev40)
 			reply, err = mosxml.GenerateEnvelope(p.cfg.MOS.ID, env.NcsID, env.MessageID, info)
 		case mosxml.Heartbeat:

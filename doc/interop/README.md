@@ -1819,3 +1819,143 @@ the dedup append fails three tests, dropping the walk snapshot fails the resume 
 
 An empty `state.dir` still disables all of it, and a test pins that `""` means disabled rather
 than the current directory -- the config-zero-value trap that has caught this project three times.
+
+## 28. A second NCS version, and four defects that only a real peer could find
+
+The question was whether the passive-mode failure in §25 is specific to NOM 9.6. Answering it
+needed a second estate, which is reachable only through AWS Systems Manager -- no SSH, no
+tunnel. That turned out to be solvable, and the attempt found four defects in OpenMOS before
+passive mode was even reached.
+
+### Getting a socket to an SSM-only host
+
+Run Command executes commands *on* an instance but provides no socket *to* it, and passive mode
+needs OpenMOS to dial the NCS. SSM port forwarding closes that gap:
+
+```sh
+aws ssm start-session --target <instance> \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["80"],"localPortNumber":["18080"]}'
+```
+
+Verified end to end: a WebSocket upgrade completed from a laptop to the rig, `HTTP/1.1 101
+Switching Protocols`, `Server: Microsoft-HTTPAPI/2.0`.
+
+Three operational facts worth keeping:
+
+- **Dial `localhost`, never `127.0.0.1`.** The endpoint is served by `http.sys` under a wildcard
+  prefix, which rejects an IP-literal `Host` header with `400 Bad Request - Invalid Hostname`.
+  A hostname-form `Host` passes. No hosts-file entry or header override is needed, only the URL
+  form.
+- **Target the MAIN server, not its buddy.** The rig is a main/buddy pair. A buddy refuses MOS
+  traffic while main is available, answering everything with "Buddy server cannot respond because
+  main server is available" -- the same behaviour seen in the multi-vendor corpus (§16).
+- **The Windows service is `APNOMService`,** though the process is `NomService`. Checking the
+  service by the process name reports "not running" while it plainly is.
+
+### What NOM 9.7 said, and what OpenMOS did with it
+
+The exchange, verbatim from capture:
+
+```xml
+out: <mos><mosID>openmos.probe.mos</mosID><ncsID>DEMO-NCS</ncsID>
+     <messageID>1</messageID><reqMachInfo></reqMachInfo></mos>
+in:  <mos><mosID>openmos.probe.mos</mosID><ncsID>DEMO-NCS</ncsID>
+     <mosAck><objID></objID><objRev></objRev><status>NACK</status>
+     <statusDescription>MOS ID is not recognized by this NOM</statusDescription></mosAck></mos>
+```
+
+That is the correct answer for an unconfigured device, and it proves the MOS 4 client's framing,
+UCS-2BE encoding and envelope all work against 9.7 as well as 9.6. It also proves NOM completes
+the WebSocket upgrade before it knows whether it recognises the device.
+
+OpenMOS reported it as **`unknown message type`**, then reconnected. Roughly once a second.
+Twenty-six times in twenty seconds, into another team's exception log.
+
+### Defect 1: OpenMOS could not run as a purely outbound client
+
+`main` refused to start unless a listener was enabled. A device that only dials out is
+legitimate, and for MOS 4.0 it is the *point*: passive mode exists so a device behind a firewall
+opens the connection itself and needs no inbound exposure. Such a device may be unable to listen
+at all. The check now counts the outbound client as a transport.
+
+### Defect 2: `Envelope` kept a second, shorter vocabulary than the parser
+
+This is the structural one. There are two envelope implementations. `MosEnvelope`, used by the
+MOS 4.0 server, captures the inner operation generically and hands it to `ParseMessage` -- so it
+understood all 31 message types the parser knows. `Envelope`, used by the MOS 2.x socket path
+**and** the MOS 4 client, had an explicit field per message and listed only 15.
+
+So sixteen messages were unreachable on the socket transport while working on the WebSocket one,
+including `roElementAction`, `roMetadataReplace` and `roReadyToAir` -- three the README claimed
+worked on both. The loopback tests passed because they call `dispatchRunningOrder` directly with
+Go structs, never crossing the parse layer.
+
+That is exactly the divergence the shared dispatcher was built to eliminate, and it survived
+because **the dispatcher sits below the parse layer**. Unifying the handlers did not unify the
+vocabulary.
+
+`Envelope.Message()` now falls back to `ParseMessage` on a generically captured body, so the two
+paths share one vocabulary and the typed list cannot silently fall behind again. The inventory
+test from §26 gained a check that every classified message is reachable *through an envelope*,
+which is where traffic actually arrives -- and that check is what found all sixteen.
+
+### Defect 3: `mosAck` was mis-shaped and unreadable
+
+`mosAck` had no field in `Envelope` at all, so a refusal could not be carried. Two types both
+claimed `xml:"mosAck"`: one XSD-shaped with `objID`/`objRev`, and one with invented
+`requestID`/`timestamp`/`source` attributes -- and the parser used the second, silently dropping
+`objID` and `objRev`.
+
+Those three attributes are the *same invention* that made a live ENPS reject our `heartbeat` with
+`Invalid command: heartbeat requestID="2"` (§12). Heartbeat was fixed without auditing the rest
+of the generator, so `mosAck` kept emitting them for months.
+
+Then, with the shape corrected, the refusal was still rejected -- this time as `envelope is
+missing messageID`, because **NOM sends a NACK with no messageID**. The validator's own comment
+already recorded that behaviour, observed on 9.6, and enforced presence anyway. Acknowledgements
+are now exempt inbound: nothing correlates against them, real servers omit the field, and
+refusing them means being unable to read the one message that says *why* the peer said no.
+
+OpenMOS now reports:
+
+```
+profile 0 handshake failed: peer refused reqMachInfo with NACK:
+MOS ID is not recognized by this NOM
+```
+
+### Defect 4: a refused handshake was treated as a healthy session
+
+The worst of the four, because its blast radius is somebody else's server. The client reset its
+reconnect backoff whenever the *socket* connected, not when the *session became usable*. Against
+a peer that accepts the upgrade and then refuses the handshake -- precisely what NOM does for an
+unconfigured mosID -- the backoff reset on every attempt and the client reconnected indefinitely
+at the initial interval.
+
+The specification's "re-establish as quickly as possible" describes a healthy session dropping.
+A peer saying no deserves progressively more patience, not less.
+
+Measured on the live rig: **26 connections in 20 seconds before, 6 in 30 seconds after**, with
+the delay growing 500ms, 1s, 2s, 4s, 8s, 16s. Reverting the fix in the test harness produces 28
+connections against 6, so the test earns its place.
+
+### Passive mode on 9.7: still unanswered, and honestly so
+
+`MOSOutput.RemoveQueueOut` appears **zero** times in 9.7's entire exception log, against 24
+occurrences in a 300-line window on 9.6. That is tempting and it is not evidence. The rig has no
+MOS 4 device configured, no passive device, and an empty output queue, so the code path has
+almost certainly never run. Absence is consistent with a fix and does not demonstrate one.
+
+Settling it needs a device row with `Passive=1` on a shared demonstration rig belonging to
+another team. Three rows there are fully empty placeholders, so amending one would be a smaller
+change than adding one, but either way it is their environment and their decision. Nothing was
+added.
+
+### Footprint
+
+Connecting at all appends to the rig's exception log; that is inherent and unavoidable. The first
+run's reconnect loop wrote about twenty-six entries, which is more than it should have been and
+is the reason defect 4 is recorded as the most serious of the four. Subsequent runs wrote six.
+No configuration was changed, nothing was restarted, and every port-forwarding session was
+confirmed closed afterwards -- including the `session-manager-plugin` child, which survives its
+parent and silently held the tunnel open the first time.

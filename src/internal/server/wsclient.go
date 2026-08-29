@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"airshift/openmos/internal/config"
@@ -220,8 +221,15 @@ func (c *WSClient) Start(ctx context.Context) error {
 		}
 
 		if connected {
-			// A session that actually established resets the backoff so the next
-			// reconnect is prompt, per the spec's "as quickly as possible".
+			// A session that actually became USABLE resets the backoff so the next reconnect
+			// is prompt, per the spec's "as quickly as possible".
+			//
+			// Reaching this point on a mere successful dial is what produced a tight reconnect
+			// loop against a live NOM 9.7: the WebSocket upgrade succeeded every time and only
+			// the handshake was refused, so the backoff reset on every attempt and the client
+			// reconnected roughly once a second, indefinitely, filling the NCS's exception log
+			// (doc/interop §28). The spec's "as quickly as possible" describes a healthy session
+			// dropping, not a peer that keeps saying no.
 			backoff = initial
 			logger.Infof("MOS 4 client session ended (ncsID=%s channel=%s): %v; reconnecting",
 				c.config.MOS.NCSID, channel, runErr)
@@ -249,10 +257,13 @@ func (c *WSClient) Start(ctx context.Context) error {
 	}
 }
 
-// runSession dials once and, on success, performs the Profile 0 exchange and
-// runs the read loop until the connection drops or ctx is cancelled. The bool
-// reports whether the connection was established (used to distinguish a healthy
-// session ending from a failed connect for backoff purposes).
+// runSession dials once and, on success, performs the Profile 0 exchange and runs the read loop
+// until the connection drops or ctx is cancelled.
+//
+// The bool reports whether the session became USABLE, not merely whether the socket connected.
+// A refused handshake returns false so the caller backs off: those are different outcomes, and
+// treating a refusal as an established session is what produced a one-per-second reconnect loop
+// against a live NCS.
 func (c *WSClient) runSession(ctx context.Context, dialURL string) (bool, error) {
 	conn, resp, err := websocket.Dial(ctx, dialURL, c.dialOptions())
 	if resp != nil && resp.Body != nil {
@@ -287,7 +298,14 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string) (bool, error)
 	handshakeCtx, cancel := context.WithTimeout(ctx, profile0Timeout)
 	defer cancel()
 	if err := c.doProfile0(handshakeCtx, conn); err != nil {
-		return true, fmt.Errorf("profile 0 handshake failed: %w", err)
+		// Report this as NOT established, so the caller backs off.
+		//
+		// The socket connected, but the session never became usable, and those are different
+		// things for retry purposes. Conflating them produced a reconnect roughly every second
+		// against a live NOM that was refusing our mosID: the upgrade always succeeded, so the
+		// backoff reset every time. A peer saying no deserves progressively more patience, not
+		// less.
+		return false, fmt.Errorf("profile 0 handshake failed: %w", err)
 	}
 
 	return true, c.readLoop(ctx, conn)
@@ -313,6 +331,13 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 		return fmt.Errorf("await listMachInfo: %w", err)
 	}
 	if _, ok := msg.(mosxml.ListMachInfo); !ok {
+		// A mosAck here is a refusal, and it carries the reason. Reporting only the Go type
+		// throws away the most useful diagnostic there is when bringing up a device: a live
+		// NOM answers an unconfigured mosID with "MOS ID is not recognized by this NOM".
+		if ack, isAck := msg.(mosxml.MOSAck); isAck {
+			return fmt.Errorf("peer refused reqMachInfo with %s: %s",
+				ack.Status, strings.TrimSpace(ack.StatusDescription))
+		}
 		return fmt.Errorf("expected listMachInfo, got %T", msg)
 	}
 

@@ -107,10 +107,39 @@ func ParseMessageID(raw string) (int32, error) {
 // Presence is required wherever the generation requires it. Format is not
 // enforced, for the reasons above.
 func AcceptInboundMessageID(gen Generation, payload MOSMessage, raw string) error {
+	if inboundExemptFromMessageID(payload) {
+		return nil
+	}
 	if RequiresMessageID(gen, payload) && raw == "" {
 		return fmt.Errorf("%s envelope is missing messageID", gen)
 	}
 	return nil
+}
+
+// inboundExemptFromMessageID lists payloads accepted with no messageID regardless of generation.
+//
+// Acknowledgements are exempt because real servers omit the field on them and because nothing
+// downstream correlates against it. This is not a guess: the comment above already recorded a
+// reference ENPS answering messageID 9001 with a mosAck bearing none, and NOM 9.7 does the same
+// when refusing an unrecognised device --
+//
+//	<mos><mosID>...</mosID><ncsID>...</ncsID><mosAck><status>NACK</status>
+//	<statusDescription>MOS ID is not recognized by this NOM</statusDescription></mosAck></mos>
+//
+// Enforcing presence there meant OpenMOS could not read a refusal at all: the client reported
+// "envelope is missing messageID" and discarded the one message that says WHY the peer said no.
+// That is the worst possible message to be unable to read, and it cost real time twice --
+// the same NACK was misdiagnosed once as "unknown message type" before this.
+//
+// The rule stays strict for anything OpenMOS originates, and strict for messages that genuinely
+// need correlation or deduplication. A terminal acknowledgement is neither.
+func inboundExemptFromMessageID(payload MOSMessage) bool {
+	switch payload.(type) {
+	case MOSAck, ROAck, NCSAck:
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidateOutboundMessageID applies the outbound rule to an identifier OpenMOS

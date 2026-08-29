@@ -431,9 +431,14 @@ func (c *ClientConnection) handleMOSAck(ctx context.Context, ack xml.MOSAck) err
 	return nil
 }
 
-// sendErrorAck sends an error acknowledgment
+// sendErrorAck sends an error acknowledgment.
+//
+// requestID is accepted for call-site compatibility and deliberately not placed on the message:
+// mosAck has no requestID attribute in the specification. Correlation is the envelope's
+// messageID, which the envelope layer echoes.
 func (c *ClientConnection) sendErrorAck(requestID, status, description string) error {
-	ack := xml.CreateMOSAck(c.config.MOS.ID, requestID, status, description)
+	_ = requestID
+	ack := xml.CreateMOSAck(status, description)
 	data, err := xml.GenerateMessage(ack)
 	if err != nil {
 		return fmt.Errorf("failed to generate error ack: %w", err)
