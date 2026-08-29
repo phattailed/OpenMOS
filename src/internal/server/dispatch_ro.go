@@ -224,6 +224,10 @@ func handleReq(ctx context.Context, deps roDeps, r peerResponder, m mosxml.ROReq
 		Channel: ro.Channel,
 		EdDur:   fmt.Sprintf("%d", ro.Duration),
 		Stories: storyInfos,
+		// Running-order level, so only PLAYLIST-scoped blocks survive. CreateROList filters
+		// again as a backstop.
+		MosExternalMetadata: mosxml.FilterMetadataForLevel(
+			service.ExternalMetadataToWire(ro.ExternalMetadata), mosxml.LevelRunningOrder),
 	}))
 }
 
@@ -363,6 +367,12 @@ func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID strin
 
 // storyInfosFor converts stored stories, with their items, into the wire shape shared by
 // roList, roCreate and roReplace.
+//
+// It carries mosExternalMetadata back out, filtered by mosScope for the level it sits at. That
+// emission was previously missing entirely: blocks were parsed and stored on ingest but the
+// conversion back to wire form was dead code, so every roList OpenMOS built silently dropped all
+// vendor metadata. Pull recovery hands a peer its state back, so the loss was invisible until
+// something compared what went in with what came out.
 func storyInfosFor(ctx context.Context, svc *service.MOSService, stories []*model.Story) ([]mosxml.StoryInfo, error) {
 	storyInfos := make([]mosxml.StoryInfo, 0, len(stories))
 	for _, story := range stories {
@@ -382,6 +392,8 @@ func storyInfosFor(ctx context.Context, svc *service.MOSService, stories []*mode
 				Slug:     item.Slug,
 				Duration: fmt.Sprintf("%d", item.Duration),
 				ObjectID: item.ObjectID,
+				MosExternalMetadata: mosxml.FilterMetadataForLevel(
+					service.ExternalMetadataToWire(item.ExternalMetadata), mosxml.LevelItem),
 			})
 		}
 
@@ -394,7 +406,9 @@ func storyInfosFor(ctx context.Context, svc *service.MOSService, stories []*mode
 			Slug:     story.Slug,
 			Number:   story.Number,
 			Duration: fmt.Sprintf("%d", story.Duration),
-			Items:    itemInfos,
+			MosExternalMetadata: mosxml.FilterMetadataForLevel(
+				service.ExternalMetadataToWire(story.ExternalMetadata), mosxml.LevelStory),
+			Items: itemInfos,
 		})
 	}
 	return storyInfos, nil

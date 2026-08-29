@@ -61,6 +61,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
 | `mosID` persisted on running orders and items | Yes | Integration test | **Yes** | — |
 | `mosExternalMetadata` preserved verbatim | Yes | Unit + integration tests | No | Opaque payload kept as raw XML at RO, story and item level |
+| `mosExternalMetadata` survives the round trip to the wire | Yes | Round-trip test | No | Emission was dead code; storage was faithful, the wire was not (`doc/interop` §32) |
+| `mosScope` enforced per level on emission | Yes | Unit + round-trip tests | No | Hierarchy `OBJECT`⊂`STORY`⊂`PLAYLIST`; storage stays lenient |
 | MongoDB backing | Yes | Not covered in CI | **Yes** | No MongoDB in CI; in-memory used for tests |
 | MOS 4 channels `mom`, `ro`, `aux` | Yes | Unit + loopback tests | No | Object and search messages route correctly but are not implemented |
 | MOS 4 outbound client, standard mode | Yes | Loopback tests | **Yes** | Profile 0 completed against a live NCS; framing verified against two NOM versions |
@@ -308,9 +310,9 @@ The next interoperability steps, in order of value:
    main/buddy pair: OpenMOS connected, but NOM generated no outbound work at all, so the
    defect was not reproduced and not shown fixed either (§29). The likeliest cause is the
    device row's `StorySend` flag, which gates running-order content and defaults to `0`.
-2. **Enforce `mosScope` propagation.** The payload is now preserved verbatim, but scope
-   is carried rather than acted on: `STORY`-scoped blocks should be stripped from
-   running-order construction messages and `PLAYLIST`-scoped ones kept.
+2. **Durable running orders for interop work.** Protocol state persists, but the rundown
+   itself still defaults to memory, so a restart silently desynchronises it -- which is what
+   exposed the `roStorySend` defect in `doc/interop` §13.
 3. **Durable storage by default for interop work.** The three pieces of protocol state
    that cannot be rebuilt by asking the NCS -- the outbound `messageID`, deduplication
    receipts and unfinished discovery work -- now persist (`doc/interop` §27). Running
