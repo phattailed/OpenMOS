@@ -1,9 +1,11 @@
 package server
 
 import (
+	stdxml "encoding/xml"
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
 	mosxml "airshift/openmos/internal/xml"
@@ -213,4 +215,52 @@ func parseableElements(t *testing.T) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// TestEveryClassifiedMessageIsReachableThroughAnEnvelope closes a blind spot in the checks above.
+//
+// They read the parser's case list, which is necessary but not sufficient: nothing real reaches
+// the parser except inside a <mos> envelope, and the Envelope struct is a SEPARATE list of
+// fields. A message can therefore have a parser case, be classified here, and still be
+// unreachable in practice.
+//
+// That is not hypothetical. mosAck had a parser case and was classified in this file, but
+// Envelope had no mosAck field, so every mosAck a live NCS sent was rejected as "unknown message
+// type" -- including "MOS ID is not recognized by this NOM", the most useful message there is
+// when bringing up a device. It was found by pointing the client at a real NOM 9.7, roughly an
+// hour after this file was written to prevent exactly this class of gap.
+//
+// So the invariant is checked at the envelope, which is where traffic actually arrives.
+func TestEveryClassifiedMessageIsReachableThroughAnEnvelope(t *testing.T) {
+	var unreachable []string
+
+	for name := range inventory {
+		if name == "mos" {
+			continue // the envelope itself is not carried inside one
+		}
+
+		doc := "<mos><mosID>a.mos</mosID><ncsID>N</ncsID><" + name + "></" + name + "></mos>"
+
+		var env mosxml.Envelope
+		if err := stdxml.Unmarshal([]byte(doc), &env); err != nil {
+			unreachable = append(unreachable, name+" (envelope unmarshal: "+err.Error()+")")
+			continue
+		}
+		msg, err := env.Message()
+		if err != nil {
+			unreachable = append(unreachable, name+" ("+err.Error()+")")
+			continue
+		}
+		if got := msg.GetMessageType(); got != name {
+			unreachable = append(unreachable, name+" (envelope produced "+got+")")
+		}
+	}
+
+	if len(unreachable) > 0 {
+		sort.Strings(unreachable)
+		t.Errorf("these messages are classified but cannot be carried by Envelope, so a peer "+
+			"sending one gets \"unknown message type\":\n  %s\n"+
+			"Add the corresponding field to xml.Envelope. A parser case is not enough: real "+
+			"traffic only ever arrives inside <mos>.", strings.Join(unreachable, "\n  "))
+	}
 }

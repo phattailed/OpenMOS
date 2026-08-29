@@ -169,8 +169,14 @@ func main() {
 	// framing only; they must not own message semantics.
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
 
-	if !cfg.Server.Enabled && !cfg.WebSocket.Enabled {
-		log.Fatal("No transport enabled: set server.enabled and/or websocket.enabled")
+	// The outbound MOS 4 client counts as a transport. A device that only dials out is a
+	// legitimate and, for MOS 4.0, an important configuration: passive mode exists precisely so
+	// that a device behind a firewall can open the connection itself and receive NCS-initiated
+	// traffic through it, with no inbound exposure at all. Such a device may have no ability to
+	// listen. Requiring a listener contradicted the feature.
+	if !cfg.Server.Enabled && !cfg.WebSocket.Enabled && !cfg.WSClient.Enabled {
+		log.Fatal("No transport enabled: set server.enabled, websocket.enabled " +
+			"and/or wsclient.enabled")
 	}
 
 	// Handle signals for graceful shutdown

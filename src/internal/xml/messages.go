@@ -55,6 +55,27 @@ type Envelope struct {
 	ROReqAll      *ROReqAll      `xml:"roReqAll,omitempty"`
 	ROListAll     *ROListAll     `xml:"roListAll,omitempty"`
 	ROElementStat *ROElementStat `xml:"roElementStat,omitempty"`
+
+	// MOSAck is how a peer refuses something. Its absence here meant every mosAck a real NCS
+	// sent was rejected as "unknown message type" -- including "MOS ID is not recognized by
+	// this NOM", which is the single most useful message when bringing up a new device. The
+	// parser had a case for mosAck, so it looked handled; nothing real reaches the parser
+	// except through an envelope.
+	MOSAck *MOSAck `xml:"mosAck,omitempty"`
+
+	// Body catches any operation the typed fields above do not claim.
+	//
+	// This exists because the typed list was a SECOND, hand-maintained vocabulary. The MOS 4.0
+	// server path parses through MosEnvelope, which captures the inner operation generically and
+	// hands it to ParseMessage -- so it understood all 31 message types the parser knows. This
+	// struct, used by the MOS 2.x socket path and the MOS 4 client, understood only the 15 it
+	// happened to list. Sixteen messages were therefore unreachable on the socket transport
+	// while working on the WebSocket one: precisely the divergence the shared dispatcher was
+	// built to eliminate, surviving because the dispatcher sits BELOW the parse layer.
+	//
+	// Message() falls back to ParseMessage on this body, so the two paths share one vocabulary
+	// and the list above cannot silently fall behind the parser again.
+	Body InnerXML `xml:",any"`
 }
 
 // GetMessageType returns the enclosed message type.
@@ -114,13 +135,44 @@ func (e Envelope) Message() (MOSMessage, error) {
 	if e.ROElementStat != nil {
 		messages = append(messages, *e.ROElementStat)
 	}
+	if e.MOSAck != nil {
+		messages = append(messages, *e.MOSAck)
+	}
 	if len(messages) == 0 {
-		return nil, ErrUnknownMessage
+		// Nothing matched a typed field. Fall back to the shared parser rather than declaring
+		// the message unknown, so this struct's vocabulary is the parser's vocabulary.
+		return e.parseBody()
 	}
 	if len(messages) != 1 {
 		return nil, ErrInvalidXML
 	}
 	return messages[0], nil
+}
+
+// parseBody routes an operation with no typed field through the shared parser.
+func (e Envelope) parseBody() (MOSMessage, error) {
+	name := e.Body.XMLName.Local
+	if name == "" {
+		return nil, ErrUnknownMessage
+	}
+
+	// InnerXML captures an element's CONTENTS, not the element itself, so the tags are put back
+	// before handing it to the parser. Attributes are preserved because some operations carry
+	// them -- roElementStat's element attribute is the one that already cost a defect.
+	var attrs strings.Builder
+	for _, a := range e.Body.Attrs {
+		attrs.WriteString(" " + a.Name.Local + "=\"" + a.Value + "\"")
+	}
+	doc := "<" + name + attrs.String() + ">" + string(e.Body.XML) + "</" + name + ">"
+
+	msg, err := ParseMessage(doc)
+	if err != nil {
+		return nil, err
+	}
+	if msg == nil {
+		return nil, ErrUnknownMessage
+	}
+	return msg, nil
 }
 
 // MosExternalMetadata represents external metadata in MOS messages
@@ -495,14 +547,36 @@ func (r RunningOrderInfo) GetMessageType() string {
 	return "roCreate"
 }
 
-// MOSAck represents a general acknowledgment message
+// MOSAck is the general acknowledgement, and the vehicle a real NCS uses to refuse a message
+// it cannot act on. Its shape is (objID, objRev, status, statusDescription) per the XSD.
+//
+// A live NOM 9.7 answered an unrecognised device with exactly this:
+//
+//	<mosAck><objID></objID><objRev></objRev><status>NACK</status>
+//	<statusDescription>MOS ID is not recognized by this NOM</statusDescription></mosAck>
+//
+// ObjID and ObjRev were absent from this struct, so both were silently dropped, and the whole
+// message was unreachable through Envelope -- see the field list there.
+//
+// RequestID, Timestamp and Source are NOT in the specification. They are retained to parse
+// leniently if a peer sends them, and are never emitted: the identical invention on heartbeat
+// made a live ENPS reply "Invalid command: heartbeat requestID=..." (doc/interop §12). Fixing
+// heartbeat without auditing the rest of the generator left this one in place.
 type MOSAck struct {
-	XMLName           xml.Name `xml:"mosAck"`
-	RequestID         string   `xml:"requestID,attr,omitempty"`
-	Timestamp         string   `xml:"timestamp,attr,omitempty"`
-	Source            string   `xml:"source,attr,omitempty"`
-	Status            string   `xml:"status"`
-	StatusDescription string   `xml:"statusDescription,omitempty"`
+	XMLName xml.Name `xml:"mosAck"`
+
+	ObjID string `xml:"objID,omitempty"`
+	// ObjRev is an int per the XSD. A real NOM sends <objRev></objRev> when the ack is not
+	// about an object at all; encoding/xml leaves that as zero rather than erroring, which is
+	// the behaviour relied on here.
+	ObjRev            int    `xml:"objRev,omitempty"`
+	Status            string `xml:"status"`
+	StatusDescription string `xml:"statusDescription,omitempty"`
+
+	// Tolerated on input, never originated. See the type comment.
+	RequestID string `xml:"requestID,attr,omitempty"`
+	Timestamp string `xml:"timestamp,attr,omitempty"`
+	Source    string `xml:"source,attr,omitempty"`
 }
 
 // GetMessageType returns the type of the message

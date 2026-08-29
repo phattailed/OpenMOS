@@ -85,15 +85,15 @@ func CreateHeartbeatResponse(requestID string) Heartbeat {
 	}
 }
 
-// CreateMOSAck creates an acknowledgment message
-func CreateMOSAck(source string, requestID string, status string, description string) MOSAck {
-	return MOSAck{
-		RequestID:         requestID,
-		Timestamp:         Now(),
-		Source:            source,
-		Status:            status,
-		StatusDescription: description,
-	}
+// CreateMOSAck builds a spec-shaped acknowledgement.
+//
+// It previously set requestID, timestamp and source attributes, none of which exist in the
+// specification. That is the same invention that made a live ENPS reject our heartbeat with
+// "Invalid command" (doc/interop §12); heartbeat was fixed without auditing the rest of this
+// file, so mosAck kept emitting them. The signature now takes what the message actually
+// carries.
+func CreateMOSAck(status, description string) MOSAck {
+	return MOSAck{Status: status, StatusDescription: description}
 }
 
 // ROListEntry carries the fields needed to build either a roList or a roListAll
