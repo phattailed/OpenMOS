@@ -137,7 +137,7 @@ func LoadConfig() (*Config, error) {
 	config.WebSocket.Enabled = true
 	config.WebSocket.Port = 8080
 	config.WebSocket.Path = "/mos"
-	config.Storage.Backend = "memory"
+	config.Storage.Backend = "file"
 	config.State.Dir = "state"
 
 	// First, try to load from YAML file
@@ -269,7 +269,7 @@ func LoadConfig() (*Config, error) {
 
 	// Storage backend
 	if envVal := getEnv("STORAGE_BACKEND", ""); envVal != "" || !yamlLoaded {
-		config.Storage.Backend = getEnv("STORAGE_BACKEND", getDefaultString(config.Storage.Backend, "memory"))
+		config.Storage.Backend = getEnv("STORAGE_BACKEND", getDefaultString(config.Storage.Backend, "file"))
 	}
 
 	// MongoDB config
@@ -418,7 +418,7 @@ func GenerateDefaultConfig(filePath string) error {
 	config.WebSocket.Path = "/mos"
 
 	// Storage backend: "memory" or "mongo"
-	config.Storage.Backend = "memory"
+	config.Storage.Backend = "file"
 
 	// Durable protocol state: the messageID counter MOS 4.0 §4.1.7 requires to survive a
 	// restart. Empty disables persistence.

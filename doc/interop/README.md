@@ -2183,3 +2183,62 @@ emit a `STORY`-scoped block at running-order level.
 Both behaviours were verified by reverting them: removing the emission fails the round-trip test,
 and making the filter permit everything fails the hierarchy test on `OBJECT`, `STORY` and `Story`
 plus the round trip.
+
+## 33. Running orders now persist by default
+
+Protocol state has survived a restart since §27 -- the outbound `messageID`, deduplication
+receipts and unfinished discovery work. The rundown itself did not, and that is the piece whose
+loss is hardest to notice.
+
+A restart left OpenMOS silently disagreeing with the NCS about what it holds. The NCS has no
+reason to say again, so nothing surfaces the divergence until something breaks. That is exactly
+how the `roStorySend` defect in §13 stayed hidden: the running order was gone from our side, and
+fabricating one looked like success.
+
+`storage.backend` now defaults to **`file`**. `memory` and `mongo` remain available.
+
+### A decorator, not a third backend
+
+`OpenDurable` wraps the in-memory repositories and writes a snapshot after every successful
+mutation. It does not reimplement storage.
+
+That choice is deliberate. The in-memory repositories already implement all 22 interface methods
+correctly, including the element ordering that was itself a defect once: the in-memory backend
+used to return Go map order while Mongo sorted properly, so the *default* backend silently
+reordered rundowns. Reimplementing that query logic a third time would invite the same divergence
+back. This composes the existing implementation, exactly as `FileDedupStore` composes
+`MemoryDedupStore`.
+
+Snapshot rather than append log, for the opposite reason to dedup: a rundown changes far less often
+than a message arrives, and interop-scale rundowns are tens of stories. Dedup needed a log because
+it writes on every inbound message; this does not. Temp-file-and-rename, as with the `messageID`
+mark.
+
+### Details that matter
+
+- **The persisted shape uses slices, not maps.** A map would discard order, reintroducing the
+  §13-era defect through the back door. The restart test sets each story's `Order` field
+  deliberately *against* alphabetical ID order, so an implementation that sorted by ID rather than
+  honouring the NCS-supplied sequence fails instead of passing by coincidence.
+- **Snapshots are taken by walking the public list methods**, not by reaching into the memory
+  repositories. Whatever the repositories would actually return to a peer is what gets saved.
+- **Deletions persist.** A snapshot that only grew would resurrect deleted state, which is worse
+  than not persisting at all: the NCS would be told we hold a running order it has removed. Tested.
+- **A corrupt snapshot is skipped, not fatal.** Local state starts empty and pull recovery rebuilds
+  it by asking the NCS. Persistence stays enabled for the rest of the run, and a write afterwards
+  reloads correctly -- both tested.
+- **Objects are not persisted.** OpenMOS implements no object workflow, so there is nothing durable
+  to keep and pretending otherwise would imply support that does not exist.
+- **An unusable state directory degrades loudly to memory** rather than refusing to start, matching
+  `internal/messageid` and `FileDedupStore`.
+
+### The tests still use memory
+
+`memory` remains the backend the test suite selects, because a test that writes to disk is a test
+that leaks between runs. The durable path has its own tests using `t.TempDir`, and the suite was
+checked for stray `runningorders.json`, `dedup.log` and `discovery.json` files afterwards.
+
+The config default was changed in **both** places it is set, before the YAML load as well as in the
+environment fallback. Setting only the fallback would leave "YAML loaded but key missing" resolving
+to the zero value -- the trap recorded in this project's steering that has caused three separate
+failures.

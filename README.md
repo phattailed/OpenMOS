@@ -64,6 +64,7 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `mosExternalMetadata` survives the round trip to the wire | Yes | Round-trip test | No | Emission was dead code; storage was faithful, the wire was not (`doc/interop` §32) |
 | `mosScope` enforced per level on emission | Yes | Unit + round-trip tests | No | Hierarchy `OBJECT`⊂`STORY`⊂`PLAYLIST`; storage stays lenient |
 | MongoDB backing | Yes | Not covered in CI | **Yes** | No MongoDB in CI; in-memory used for tests |
+| Running orders persist across restart by default | Yes | Unit tests | No | File-backed snapshot wrapping the in-memory repositories (`doc/interop` §33) |
 | MOS 4 channels `mom`, `ro`, `aux` | Yes | Unit + loopback tests | No | Object and search messages route correctly but are not implemented |
 | MOS 4 outbound client, standard mode | Yes | Loopback tests | **Yes** | Profile 0 completed against a live NCS; framing verified against two NOM versions |
 | OpenMOS runnable as a purely outbound client | Yes | — | **Yes** | Previously refused to start without a listener, contradicting passive mode |
@@ -185,7 +186,7 @@ websocket:
     tlscertfile: ""
     tlskeyfile: ""
 storage:
-    backend: memory        # "memory" or "mongo"
+    backend: file          # "file" (durable, default), "memory" (tests), or "mongo"
 capture:
     dir: ""                # set to record raw MOS frames; off when empty
 state:
@@ -310,9 +311,9 @@ The next interoperability steps, in order of value:
    main/buddy pair: OpenMOS connected, but NOM generated no outbound work at all, so the
    defect was not reproduced and not shown fixed either (§29). The likeliest cause is the
    device row's `StorySend` flag, which gates running-order content and defaults to `0`.
-2. **Durable running orders for interop work.** Protocol state persists, but the rundown
-   itself still defaults to memory, so a restart silently desynchronises it -- which is what
-   exposed the `roStorySend` defect in `doc/interop` §13.
+2. **One in-flight request per ordered lane.** MOS 4.0 §4.1 requires a sender not to send
+   another message on the same port until the previous is acknowledged. The discovery walk
+   honours this; OpenMOS does not yet enforce it across all its own outbound traffic.
 3. **Durable storage by default for interop work.** The three pieces of protocol state
    that cannot be rebuilt by asking the NCS -- the outbound `messageID`, deduplication
    receipts and unfinished discovery work -- now persist (`doc/interop` §27). Running
