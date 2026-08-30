@@ -188,6 +188,21 @@ websocket:
     tlskeyfile: ""
 storage:
     backend: file          # "file" (durable, default), "memory" (tests), or "mongo"
+bridge:
+    enabled: false         # vMix integration; off unless a deployment opts in
+    httpenabled: true      # serve the rundown for vMix to poll
+    httphost: 0.0.0.0
+    httpport: 8090         # distinct from every MOS port
+    csvenabled: false      # also write a CSV file (the Excel-workflow drop-in)
+    csvpath: rundown.csv   # file vMix reads as a CSV/Excel Data Source
+    fields:                # output columns; empty = built-in default set
+        - story.number
+        - story.slug
+        - item.slug
+        - item.duration
+        - story.presenter
+        - item.objectid
+        - story.status
 capture:
     dir: ""                # set to record raw MOS frames; off when empty
 state:
@@ -219,12 +234,78 @@ sentry:
     tracessamplerate: 0.2
 ```
 
-Environment variables override YAML (e.g., `WS_PORT`, `MOS_ID`, `MOS_NCS_ID`, `WS_TLS_CERT_FILE`, `WS_TLS_KEY_FILE`).
+Environment variables override YAML (e.g., `WS_PORT`, `MOS_ID`, `MOS_NCS_ID`, `WS_TLS_CERT_FILE`, `WS_TLS_KEY_FILE`). The bridge reads `BRIDGE_ENABLED`, `BRIDGE_HTTP_ENABLED`, `BRIDGE_HTTP_HOST`, `BRIDGE_HTTP_PORT`, `BRIDGE_CSV_ENABLED` and `BRIDGE_CSV_PATH`.
 
 ### Generate default configuration file:
 ```bash
 ./openmos --generate-config=config.yaml
 ```
+
+## vMix Bridge
+
+The bridge turns the rundown OpenMOS receives from ENPS into something
+[vMix](https://www.vmix.com) can read directly as a **Data Source**, removing the
+manual step of copying story and item data into a spreadsheet by hand.
+
+It is a pure *consumer* of MOS data: it subscribes to running-order change events,
+reads the current rundown through the same service the transports use, and renders
+it as CSV, JSON or XML. It never speaks MOS and never writes back, so it cannot
+affect protocol interop and is off unless `bridge.enabled` is `true`.
+
+```
+ENPS ──MOS 2.x/4.0──▶ OpenMOS ──rundown snapshot──▶ HTTP (/rundown.*)  ──▶ vMix Data Source (polls)
+                                                 └─▶ CSV file           ──▶ vMix Data Source (file)
+```
+
+### Outputs
+
+With `bridge.enabled: true`, the HTTP server (on `bridge.httpport`, default 8090)
+serves the current rundown, refreshed automatically as ENPS sends changes:
+
+| Endpoint | Use as vMix Data Source type |
+|---|---|
+| `GET /rundown.csv` | CSV / Excel |
+| `GET /rundown.json` | JSON |
+| `GET /rundown.xml` | XML |
+| `GET /healthz` | liveness, row count, last-built time |
+
+Set `bridge.csvenabled: true` to *also* write `bridge.csvpath` on every change.
+The file is replaced atomically, so vMix never reads a half-written table. This is
+the drop-in for an existing workflow: point the file at the path vMix already
+reads and the copy/paste step is gone.
+
+### Choosing columns
+
+`bridge.fields` is the ordered list of output columns. Leave it empty for the
+default set. Each entry names a source on the joined running-order/story/item row:
+
+| Field | Value |
+|---|---|
+| `ro.slug`, `ro.channel`, `ro.duration`, `ro.status`, `ro.id` | running order |
+| `story.slug`, `story.number`, `story.presenter`, `story.duration`, `story.order`, `story.status`, `story.id`, `story.rawid` | story |
+| `item.slug`, `item.objectid`, `item.duration`, `item.order`, `item.status`, `item.id`, `item.rawid` | item |
+| `meta.<key>` | any metadata attribute (item wins over story wins over running order) |
+| `external.<schema>` | verbatim `mosExternalMetadata` payload for that schema |
+
+Every item becomes one row, carrying its story and running order. A story with no
+items still produces one row so it stays visible. An unknown field name renders as
+a blank column rather than an error, so a typo degrades gracefully.
+
+The `meta.*` and `external.*` sources mean you can capture everything ENPS sends
+now and decide which pieces vMix actually uses later, without code changes.
+
+### Setting it up in vMix
+
+1. In OpenMOS, set `bridge.enabled: true` (HTTP is on by default).
+2. In vMix, open **Data Sources Manager** and add a source:
+   - **CSV/Excel** or **JSON** or **XML**, URL `http://<openmos-host>:8090/rundown.csv`
+     (or `.json` / `.xml`), or a local file if using `csvenabled`.
+   - Set the refresh interval to how quickly vMix should pick up rundown changes.
+3. Bind the source columns to your title/GT inputs as usual.
+
+For a full end-to-end deployment guide — including the **ENPS-side device
+registration checklist** the newsroom administrator needs — see
+[`doc/vmix-deployment.md`](doc/vmix-deployment.md).
 
 ## Running OpenMOS
 
@@ -241,6 +322,30 @@ Environment variables override YAML (e.g., `WS_PORT`, `MOS_ID`, `MOS_NCS_ID`, `W
 ```bash
 cd src
 go build -o openmos
+```
+
+### Windows quick start (no prerequisites)
+
+On Windows the helper scripts need nothing preinstalled. `build.ps1` uses Go if
+it is on `PATH`, otherwise it downloads a repo-local toolchain into `.gosdk\`
+(no admin, no system changes) just for the build:
+
+```powershell
+# Build dist\openmos.exe
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+
+# Generate a config and run it in the foreground
+dist\openmos.exe --generate-config=config.yaml
+dist\openmos.exe --config=config.yaml
+```
+
+To run it as a background Windows service (auto-start on boot), from an
+**elevated** PowerShell prompt:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-service.ps1
+# ...later, to remove it:
+powershell -ExecutionPolicy Bypass -File scripts\install-service.ps1 -Uninstall
 ```
 
 ## Capturing frames for interop work

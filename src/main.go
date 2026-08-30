@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"airshift/openmos/internal/bridge"
 	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/config"
 	"airshift/openmos/internal/db"
@@ -184,6 +185,35 @@ func main() {
 	// One shared service and message core behind every transport. Transports own
 	// framing only; they must not own message semantics.
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
+
+	// vMix bridge. Purely a consumer of running-order data: it subscribes to the
+	// event bus, snapshots the rundown through the service and exposes it in
+	// vMix-friendly shapes over HTTP and/or as a CSV file. It touches no MOS state,
+	// so it is wired here and left to run alongside the transports.
+	if cfg.Bridge.Enabled {
+		br := bridge.New(mosService, cfg.Bridge.Fields)
+
+		if cfg.Bridge.CSVEnabled && cfg.Bridge.CSVPath != "" {
+			csvWriter := bridge.NewCSVWriter(cfg.Bridge.CSVPath, br.Fields())
+			br.SetOnChange(csvWriter.OnSnapshot)
+			log.Infof("Bridge CSV output enabled, writing %s", cfg.Bridge.CSVPath)
+		}
+
+		go br.Run(ctx, eventBus)
+
+		if cfg.Bridge.HTTPEnabled {
+			bridgeHTTP := bridge.NewHTTPServer(br, cfg.Bridge.HTTPHost, cfg.Bridge.HTTPPort)
+			go func() {
+				if startErr := bridgeHTTP.Start(ctx); startErr != nil {
+					log.Errorf("Bridge HTTP server error: %v", startErr)
+				}
+			}()
+			log.Infof("Bridge HTTP transport listening on %s:%d", cfg.Bridge.HTTPHost, cfg.Bridge.HTTPPort)
+		}
+		log.Info("vMix bridge enabled")
+	} else {
+		log.Info("vMix bridge disabled by configuration")
+	}
 
 	// The outbound MOS 4 client counts as a transport. A device that only dials out is a
 	// legitimate and, for MOS 4.0, an important configuration: passive mode exists precisely so
