@@ -12,3 +12,21 @@ tmp/
 # Runtime data, never source.
 src/state/
 state/
+
+# Build output (openmos.exe and friends). Rebuilt from source by scripts/build.ps1.
+dist/
+src/openmos.exe
+
+# Repo-local Go toolchain downloaded by scripts/build.ps1 when Go is not on PATH.
+# A ~80 MB tool, not our code.
+.gosdk/
+
+# Generated config. Site-specific and may hold hostnames or credentials.
+config.yaml
+
+# Captured MOS frames. WARNING: roStorySend frames contain the full body of news
+# stories, i.e. editorial content. Never commit these.
+# Anchored to the repo root so this does NOT match the source package at
+# src/internal/capture/.
+/capture/
+/src/capture/

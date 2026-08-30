@@ -64,6 +64,35 @@ type Config struct {
 		Backend string
 	}
 
+	// Bridge drives the vMix integration: it subscribes to running-order changes,
+	// snapshots the current rundown from the repositories and exposes it in
+	// vMix-friendly shapes. It is purely a consumer of MOS data and never touches
+	// the protocol, so it can be enabled or disabled without affecting interop.
+	//
+	// Two outputs, both optional and independently toggled:
+	//   - an HTTP server vMix polls as an XML/JSON/CSV Data Source (no file locking)
+	//   - a CSV file written on every change, matching the existing Excel workflow
+	Bridge struct {
+		// Enabled turns the whole bridge on. Off by default so OpenMOS behaves
+		// exactly as before unless a deployment opts in.
+		Enabled bool
+		// HTTPEnabled serves rundown data over HTTP for vMix to poll.
+		HTTPEnabled bool
+		// HTTPHost/HTTPPort is where the bridge HTTP server listens. Distinct from
+		// every MOS port so it cannot collide with a transport.
+		HTTPHost string
+		HTTPPort int
+		// CSVEnabled writes a CSV file on every rundown change.
+		CSVEnabled bool
+		// CSVPath is the file vMix reads as a CSV/Excel Data Source.
+		CSVPath string
+		// Fields is the ordered list of output columns. Each entry names a source
+		// on the joined RO/story/item row (see bridge.FieldSources), so an operator
+		// can capture exactly what their vMix template needs without code changes.
+		// Empty means "use the built-in default column set".
+		Fields []string
+	}
+
 	// Capture writes raw MOS frames to disk for interop work. Off unless Dir is
 	// set. Frames include message payloads -- roStorySend carries full story
 	// bodies -- so enabling this must be deliberate and the destination treated as
@@ -139,6 +168,11 @@ func LoadConfig() (*Config, error) {
 	config.WebSocket.Path = "/mos"
 	config.Storage.Backend = "file"
 	config.State.Dir = "state"
+	// Bridge defaults: off unless explicitly enabled, but pre-fill sensible values
+	// so turning it on requires only Enabled=true. HTTP port avoids every MOS port.
+	config.Bridge.HTTPEnabled = true
+	config.Bridge.HTTPHost = "0.0.0.0"
+	config.Bridge.HTTPPort = 8090
 
 	// First, try to load from YAML file
 	yamlLoaded := false
@@ -270,6 +304,26 @@ func LoadConfig() (*Config, error) {
 	// Storage backend
 	if envVal := getEnv("STORAGE_BACKEND", ""); envVal != "" || !yamlLoaded {
 		config.Storage.Backend = getEnv("STORAGE_BACKEND", getDefaultString(config.Storage.Backend, "file"))
+	}
+
+	// Bridge config (vMix integration). Env overrides YAML, same as everything else.
+	if envVal := getEnv("BRIDGE_ENABLED", ""); envVal != "" || !yamlLoaded {
+		config.Bridge.Enabled = getEnvAsBool("BRIDGE_ENABLED", getDefaultBool(config.Bridge.Enabled, false))
+	}
+	if envVal := getEnv("BRIDGE_HTTP_ENABLED", ""); envVal != "" || !yamlLoaded {
+		config.Bridge.HTTPEnabled = getEnvAsBool("BRIDGE_HTTP_ENABLED", true)
+	}
+	if envVal := getEnv("BRIDGE_HTTP_HOST", ""); envVal != "" || !yamlLoaded {
+		config.Bridge.HTTPHost = getEnv("BRIDGE_HTTP_HOST", getDefaultString(config.Bridge.HTTPHost, "0.0.0.0"))
+	}
+	if envVal := getEnv("BRIDGE_HTTP_PORT", ""); envVal != "" || !yamlLoaded {
+		config.Bridge.HTTPPort = getEnvAsInt("BRIDGE_HTTP_PORT", getDefaultInt(config.Bridge.HTTPPort, 8090))
+	}
+	if envVal := getEnv("BRIDGE_CSV_ENABLED", ""); envVal != "" || !yamlLoaded {
+		config.Bridge.CSVEnabled = getEnvAsBool("BRIDGE_CSV_ENABLED", getDefaultBool(config.Bridge.CSVEnabled, false))
+	}
+	if envVal := getEnv("BRIDGE_CSV_PATH", ""); envVal != "" {
+		config.Bridge.CSVPath = getEnv("BRIDGE_CSV_PATH", config.Bridge.CSVPath)
 	}
 
 	// MongoDB config
@@ -419,6 +473,14 @@ func GenerateDefaultConfig(filePath string) error {
 
 	// Storage backend: "memory" or "mongo"
 	config.Storage.Backend = "file"
+
+	// Bridge config (vMix integration). Off by default; a deployment opts in.
+	config.Bridge.Enabled = false
+	config.Bridge.HTTPEnabled = true
+	config.Bridge.HTTPHost = "0.0.0.0"
+	config.Bridge.HTTPPort = 8090
+	config.Bridge.CSVEnabled = false
+	config.Bridge.CSVPath = "rundown.csv"
 
 	// Durable protocol state: the messageID counter MOS 4.0 §4.1.7 requires to survive a
 	// restart. Empty disables persistence.
