@@ -64,15 +64,42 @@ You cannot register the device without these. Gather them first.
    bridge:
        enabled: true          # turn the vMix bridge on
        httpenabled: true
+       httphost: 127.0.0.1    # loopback by default; see the note below
        httpport: 8090
        csvenabled: false      # set true if vMix should read a file instead
        csvpath: rundown.csv
        fields: []             # empty = default columns; customise later
    ```
 
+   **If vMix runs on a different machine, you must change `httphost`.** It defaults
+   to `127.0.0.1`, so out of the box the endpoints are reachable only from the
+   OpenMOS host itself. To let another machine poll them:
+
+   ```yaml
+   bridge:
+       httphost: 0.0.0.0      # or a specific interface address
+   ```
+
+   or set `BRIDGE_HTTP_HOST` in the environment.
+
+   Understand what that does before you do it. **The bridge endpoints have no
+   authentication.** Anything that can reach the port gets the rundown: story slugs,
+   presenters, running-order state, and whatever your field mapping exposes through
+   `external.*`. That is pre-broadcast editorial content. If you open it beyond
+   loopback, restrict it at the firewall to the vMix machine's address specifically
+   rather than to a subnet, and do not expose it to a network that reaches the
+   public internet.
+
+   If vMix and OpenMOS are on the same machine, leave `httphost` alone — loopback is
+   the safer answer and needs no firewall rule at all. Alternatively, use the CSV
+   file output (`csvenabled: true`) with vMix reading the file over a share, which
+   avoids opening a port entirely.
+
 4. **Open the firewall** on the OpenMOS host for:
    - **inbound** TCP `10541` (and `10540` if ENPS uses the lower port) — from ENPS
-   - **inbound** TCP `8090` — from the vMix machine (only if vMix polls over HTTP)
+   - **inbound** TCP `8090` — from the vMix machine, **only** if vMix polls over
+     HTTP from another host and you have set `httphost` accordingly. Not needed for
+     a same-machine deployment.
 
 5. **Run it.** For a quick check, run in the foreground:
    ```powershell

@@ -191,7 +191,7 @@ storage:
 bridge:
     enabled: false         # vMix integration; off unless a deployment opts in
     httpenabled: true      # serve the rundown for vMix to poll
-    httphost: 0.0.0.0
+    httphost: 127.0.0.1    # loopback: the endpoints have no authentication
     httpport: 8090         # distinct from every MOS port
     csvenabled: false      # also write a CSV file (the Excel-workflow drop-in)
     csvpath: rundown.csv   # file vMix reads as a CSV/Excel Data Source

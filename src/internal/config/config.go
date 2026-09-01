@@ -170,8 +170,19 @@ func LoadConfig() (*Config, error) {
 	config.State.Dir = "state"
 	// Bridge defaults: off unless explicitly enabled, but pre-fill sensible values
 	// so turning it on requires only Enabled=true. HTTP port avoids every MOS port.
+	//
+	// HTTPHost binds to LOOPBACK, not 0.0.0.0. The bridge endpoints carry no
+	// authentication of any kind, and the rows they serve are pre-broadcast editorial
+	// content: story slugs, presenters, running-order state, plus whatever a site maps
+	// through external.* verbatim. Defaulting to every interface would mean the first
+	// operator to set Enabled=true publishes that to the whole network without having
+	// asked to.
+	//
+	// The documented deployment is vMix polling the machine it runs on, which loopback
+	// covers. Serving it to other hosts stays possible and becomes deliberate: set
+	// BRIDGE_HTTP_HOST explicitly, and put access control in front of it.
 	config.Bridge.HTTPEnabled = true
-	config.Bridge.HTTPHost = "0.0.0.0"
+	config.Bridge.HTTPHost = "127.0.0.1"
 	config.Bridge.HTTPPort = 8090
 
 	// First, try to load from YAML file
@@ -314,7 +325,7 @@ func LoadConfig() (*Config, error) {
 		config.Bridge.HTTPEnabled = getEnvAsBool("BRIDGE_HTTP_ENABLED", true)
 	}
 	if envVal := getEnv("BRIDGE_HTTP_HOST", ""); envVal != "" || !yamlLoaded {
-		config.Bridge.HTTPHost = getEnv("BRIDGE_HTTP_HOST", getDefaultString(config.Bridge.HTTPHost, "0.0.0.0"))
+		config.Bridge.HTTPHost = getEnv("BRIDGE_HTTP_HOST", getDefaultString(config.Bridge.HTTPHost, "127.0.0.1"))
 	}
 	if envVal := getEnv("BRIDGE_HTTP_PORT", ""); envVal != "" || !yamlLoaded {
 		config.Bridge.HTTPPort = getEnvAsInt("BRIDGE_HTTP_PORT", getDefaultInt(config.Bridge.HTTPPort, 8090))
@@ -477,7 +488,7 @@ func GenerateDefaultConfig(filePath string) error {
 	// Bridge config (vMix integration). Off by default; a deployment opts in.
 	config.Bridge.Enabled = false
 	config.Bridge.HTTPEnabled = true
-	config.Bridge.HTTPHost = "0.0.0.0"
+	config.Bridge.HTTPHost = "127.0.0.1"
 	config.Bridge.HTTPPort = 8090
 	config.Bridge.CSVEnabled = false
 	config.Bridge.CSVPath = "rundown.csv"
