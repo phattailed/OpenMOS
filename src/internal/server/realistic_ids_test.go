@@ -27,8 +27,8 @@ func TestRealENPSIdentifiersRoundTripThroughRoCreate(t *testing.T) {
 
 	// roEdDur 01:30:00 is the 90-minute rundown seen live; it must parse to 5400.
 	request := `<mos>
-  <mosID>openmos.beltware.test</mosID>
-  <ncsID>beltware.test</ncsID>
+  <mosID>openmos.example.test</mosID>
+  <ncsID>example.test</ncsID>
   <messageID>25</messageID>
   <roCreate>
     <roID>` + realROID + `</roID>
@@ -110,8 +110,8 @@ func TestRealENPSIdentifiersDeduplicate(t *testing.T) {
 	conn := dialMOS28(t, tcpServer)
 
 	request := `<mos>
-  <mosID>openmos.beltware.test</mosID>
-  <ncsID>beltware.test</ncsID>
+  <mosID>openmos.example.test</mosID>
+  <ncsID>example.test</ncsID>
   <messageID>26</messageID>
   <roCreate>
     <roID>` + realROID + `</roID>

@@ -22,7 +22,7 @@ import (
 const recoveryRO = `NCS-HOST;P_NEWS\W;AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE`
 
 func envelopeFor(messageID, payload string) string {
-	return `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+	return `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID>` +
 		`<messageID>` + messageID + `</messageID>` + payload + `</mos>`
 }
 
@@ -64,9 +64,9 @@ func TestPullRecoveryRebuildsLocalStateFromRoList(t *testing.T) {
 			`<roEdDur>1800</roEdDur>`+
 			`<story><storyID>S-1</storyID><storySlug>First</storySlug>`+
 			`<item><itemID>I-1</itemID><itemSlug>Item one</itemSlug><objID>OBJ-1</objID>`+
-			`<mosID>openmos.beltware.test</mosID></item>`+
+			`<mosID>openmos.example.test</mosID></item>`+
 			`<item><itemID>I-2</itemID><itemSlug>Item two</itemSlug><objID>OBJ-2</objID>`+
-			`<mosID>openmos.beltware.test</mosID></item>`+
+			`<mosID>openmos.example.test</mosID></item>`+
 			`</story>`+
 			`<story><storyID>S-2</storyID><storySlug>Second</storySlug></story>`+
 			`</roList>`))
