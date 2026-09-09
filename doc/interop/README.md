@@ -2420,3 +2420,177 @@ Watch restarted `NOM.exe` with a fresh PID. Beltware has no buddy node.
   cause of NOM output failure.
 - Any work item asserting that passive delivery is broken on these earlier configurations needs
   its evidence and scope corrected before engineering acts on it.
+
+## 36. NOM 9.7.0.85: originated output queues, but does not reach the passive client
+
+The corrected device-initiated topology was exercised on the development primary on
+2026-09-09. This run reaches the output-generation path missing from the earlier 9.7 tests:
+a human activated the disposable MOS-controlled StorySend rundown and saved an edit.
+No `roReq` or `roReqAll` was used to manufacture the output.
+
+### Verified configuration and runtime
+
+- `NOM.exe`, `NomService.exe`, and `MOS4WebSockets.dll` all report **9.7.0.85**. The active
+  process is `NomService`, controlled by `APNOMService`; this differs from the interactive
+  `NOM.exe` process used for the successful 9.6 test. That difference is an investigation
+  lead, not an established cause.
+- The test row has exactly 37 actual-tab-separated fields, UTF-16LE encoding, `MOSVersion=4.0`,
+  `Passive=0`, `StorySend=1`, `PreserveExternalMetadata=1`, and a blank endpoint. Its MOS ID
+  and the NCS ID are distinct. The row was verified again after restart.
+- OpenMOS uses the `ro` channel and initiates the connection to `/MOS4NCS/` with `passive=true`.
+  Its listeners are disabled; no reverse tunnel or second requesting MOS session is present.
+- OpenMOS runs commit `e2c3811`, with file-backed storage and an isolated state directory.
+
+For exact-build follow-up, the server artifacts were hashed on the host:
+
+| Artifact | SHA-256 |
+|---|---|
+| `NOM.exe` | `C808CB86238D2857D0CF7011911BB3CEDAC890A6B995D801A8E4BE70A1EA76FC` |
+| `NomService.exe` | `D823414C737912AA553881506F52A6F1B61664861BB489DDFB281CFC3566AA6D` |
+| `MOS4WebSockets.dll` | `79EFB11FD4F9EAFE9D3B7BFF6A6632BAA9D3EA67B697974BC1041FE5BF0E5563` |
+
+### Setup failures excluded from the controlling observation
+
+The initial configuration-edit script incorrectly used PowerShell `-join "\t"`; that writes
+literal backslash-t text, not tab separators. Its read-back compared generated text rather than
+parsing the stored columns, so it missed the error. That row was repaired from the verified
+backup using `[char]9`, preserving unrelated current rows. Both the serialized result and disk
+read-back were then parsed and checked for all 37 fields and the intended values. A PowerShell
+check now rejects the original separator mistake. The earlier failed action is invalid evidence
+against NOM.
+
+The overnight SSM tunnel also became unresponsive while retaining its local listener and
+allowing local keepAlive writes. An ordinary HTTP request through it timed out after six seconds.
+A fresh forward to the same primary returned HTTP 200 in approximately 55 ms. The old tunnel
+was terminated, and OpenMOS was restarted through the fresh tunnel before the observation below.
+A subsequent independent HTTP probe through that fresh tunnel also returned 200. Listener
+existence and outgoing keepAlive capture alone are therefore insufficient tunnel-health proof.
+
+### Controlling observation
+
+All times below are UTC. At 14:55:56 the device's output directory contained 41 files, rising to
+42 by 14:56:26. Safe XML parsing of those files found **one `roCreate`, 39 `roStorySend`, and two
+`roElementAction` messages**, all for the configured device and one running order. There were
+no XML parse failures. The queue totaled 138,608 bytes.
+
+OpenMOS was admitted through the fresh tunnel at **14:58:11**. At 14:58:20 all 42 files remained,
+no per-device NOM XML log existed, and OpenMOS had no saved running-order snapshot or handler
+error. Its raw capture still has the inbound-recording gap described in §35, so absence from
+that capture is not used alone as proof of non-delivery.
+
+A single controlled restart of `APNOMService` at **14:59:01–14:59:03** tested the queued-at-startup
+sequence without deleting or modifying the queue. The process ID changed, configuration stayed
+unchanged, and OpenMOS reconnected at **14:59:06**. At **14:59:36**, all 42 messages remained,
+with the same type counts and byte total. No running-order snapshot had appeared locally.
+
+NOM's device-tagged exception entries repeatedly report `System.UriFormatException` while
+opening an outbound WebSocket, in `MOS4WebSockets.MOSClientWebSocket.OpenClientWebSocket`,
+reported source line 91. The error says the URI format could not be determined. The inspected
+1,500-line exception windows contained no `RemoveQueueOut`, `ArgumentOutOfRangeException`, or
+`WebSocketException` occurrences. Those bounded observations do not establish that an earlier
+defect was fixed.
+
+### Conclusion and follow-up
+
+The delivery test is **red** for this configuration on 9.7.0.85: real originated messages are
+queued but are not applied by the passive client, even after a fresh tunnel/connection and a
+service restart. Admission succeeds; the failure occurs later. This is a different observed
+failure from the old 9.6 queue-removal exception and does not overturn the successful §35 test.
+
+Exact-build tracing in §37 identifies two defects in the accepted-socket handoff that explain
+the outbound-URL fallback. A repaired build has not been tested. Neither the old generic-DLL
+dictionary theory nor a product-wide passive-mode defect has been established by this run.
+No new ADO conclusion was posted. Live persistence/restart recovery remains untested because
+no running order reached local storage.
+
+Private process identifiers, full configuration hashes, recovery details and log locations are
+kept in the ignored test run directory. No queue files, story bodies, credentials, or raw vendor
+logs are included here.
+
+## 37. NOM 9.7.0.85: the accepted passive socket is not handed to the output worker
+
+Read-only analysis on 2026-09-09 traced the §36 failure through the exact assemblies used by
+the running service. This is a concrete listener-to-output wiring defect, distinct from the
+earlier dictionary-key theory. The live delivery test remains **red**; no vendor binary was
+patched and no repaired-build result is claimed.
+
+### Exact-build and symbol checks
+
+The live process's loaded-module list identifies `NomService.dll`, `NOM.dll`, and
+`MOS4WebSockets.dll` as 9.7.0.85, at the same paths whose file hashes match the local copies.
+`NomService.exe` is a native launcher; `NomService.dll` calls `Nom.Main` in `NOM.dll`, where
+the output implementation resides. The service-versus-interactive distinction alone is not
+an established cause.
+
+The `MOS4WebSockets.dll` hash is recorded in §36. Additional exact inputs:
+
+| Artifact | SHA-256 |
+|---|---|
+| `NOM.dll` | `0D73C428286439617BF0070D381E1A730C2088CCD25F1407FA9CC2514C80C7D5` |
+| `NomService.dll` | `719515978F5F6B6EC07BCF720536C1CCEC3D1C129EED922B1FDB4033F056947B` |
+| `NOM.pdb` | `4A9DB322B58A21105E46C287038BB603B295EABE950E4F551F6703988EBE3078` |
+| `MOS4WebSockets.pdb` | `5F7B954BE8512CCB160594E31A15265027DE7DE6B796299C2178A7E7F959B669` |
+
+Both PDBs match their assembly's CodeView GUID and age. The findings were checked in IL as
+well as reconstructed C#, with matching-PDB sequence points. The source references below
+are **original source filenames and lines from those symbols**, not generated C# line numbers.
+Raw assemblies, symbols, decompiled source and build-machine paths remain in ignored scratch.
+
+### Where the handoff stops
+
+`MOSServerWebSocket.ProcessRequest` maps query `passive=true` to `_incoming=false`, accepts
+the WebSocket and raises `ConnectionEstablished`. The WebSocket manager relays that event
+to NOM's listener wrapper. Admission is therefore not the missing step.
+
+| Source breadcrumb | Compiled behavior |
+|---|---|
+| `MOSMain.vb:347–349`, `StartProcessing` | Creates a new listener `MOSSocket`, calls `MOS4_Listen`, then `InitializePassiveConnectionsAsync`. It does not subscribe to that instance's `MOS4_ConnectionEstablished` event. |
+| `MOSSocket.vb:391–396`, `MOS4WebSockets_ConnectionEstablished` | For an accepted passive socket, it only raises the wrapper's instance event. With no subscriber it returns. The opposite direction has a direct call to the input processor. |
+| `MOSOutput.vb:147,155`, constructor | Creates a **different** `MOSSocket` for an output worker and subscribes to that object's event. This is the sole compiled call to `MOSSocket.add_MOS4_ConnectionEstablished` in `NOM.dll`; it does not wire the listener. |
+| `MOSMain.vb:3290`, three-argument `AddMOSSocketOut` | If an output entry already exists for `mosID_channel`, it returns without attaching the supplied socket. This would also obstruct queued-before-connect or reconnect handling after the listener wiring is repaired. |
+
+The key IL checks are small and unambiguous: `StartProcessing` creates its listener at
+`IL_0475`; the only event subscription is in `MOSOutput`'s constructor at `IL_016b`.
+The listener's callback branches from its null-subscriber check at `IL_0010` to `ret` at
+`IL_0036`. The existing-output check branches at `IL_0051` directly to `ret` at `IL_0196`.
+The wrapper's constructor only calls the base constructor; it installs no hidden subscriber.
+
+### Why the blank-URL exception follows
+
+Originated messages reach `MOSMain.AddQueueOut`, which creates an output entry without a
+socket. `MOSOutput.Setup` delegates to `MOSSocket.Setup`; for MOS 4, that constructs an
+outbound `MOSClientWebSocket` and takes its base URL from the device's `IP` field
+(`MOSSocket.vb:260`). The output loop then tries to connect through that object
+(`MOSSocket.vb:299`). The accepted listener socket was never substituted.
+
+With the verified blank endpoint, URL construction in `MOSClientWebSocket.OpenClientWebSocket`
+fails. Its matching PDB maps the URL expression and URI construction to
+`MOSClientWebSocket.cs:91–92`, consistent with the exception family observed in §36.
+This links the missing handoff to the observed outbound-URL fallback; it is not evidence
+that a device-initiated passive connection requires a separately reachable device URL.
+
+### Comparison and scope
+
+The working 9.6.2.2026 `NOM.exe` was rechecked in IL, SHA-256
+`55CE8C4CA116D9D5331BA92577D7A4361D2CB48ED5D954C2CD1A8F9742863D06`.
+Its listener callback directly calls `frmMOS.AddMOSWebSocketOut` and then the output
+connection handler. Its registration method also replaces the socket in an existing output
+entry. Both behaviors are absent from the traced 9.7.0.85 path.
+
+At 15:29:59 UTC the live queue still held the same 42 messages and 138,608 bytes, and the
+configuration hash was unchanged. The local client still had no running-order snapshot;
+an independent HTTP probe through its tunnel returned 200. These corroborate §36 but do
+not substitute for a repaired-build test.
+
+**Direct evidence:** missing listener subscription and missing existing-entry socket update
+in this exact build. **Strong causal explanation:** the accepted passive socket cannot reach
+the output worker through this path, leaving the queued messages on an outbound client with
+a blank URL. Other defects are not excluded, and other 9.7 builds have not been examined.
+
+For a vendor repair, wire the accepted outgoing socket into registration by distinct
+`mosID_channel`, attach or replace it without discarding queued work, and run the output
+connection handling. Retest both orders: connect first then have a human activate/edit the
+test rundown; and generate queued work first then connect or reconnect. Require actual
+delivery, acknowledgment and queue drain, corroborated by the client's stored running order.
+No `roReq`-then-disconnect experiment, equal-ID workaround, or URL/configuration change is
+needed to test this handoff. No ADO item was changed by this investigation.

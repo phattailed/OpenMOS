@@ -305,10 +305,10 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Repeat the corrected passive topology on NOM 9.7.** NOM 9.6 is proven: configure the
-   device row as `MOSVersion=4.0`, `Passive=0`, then have the device connect to the NCS with
-   `passive=true`. Earlier 9.7 attempts used the opposite topology and are not evidence of a
-   passive-output defect (`doc/interop` §35).
+1. **Retest after the NOM 9.7.0.85 passive-socket handoff is repaired.** The corrected live
+   test left 42 originated messages queued. Exact-build analysis found an unsubscribed
+   listener event and no socket replacement for an existing output entry; a vendor repair
+   has not been tested (`doc/interop` §§36–37). NOM 9.6's successful result remains valid (§35).
 2. **Exercise the file-backed default in live interop.** The outbound `messageID`, deduplication
    receipts, unfinished discovery work and running orders now persist (`doc/interop` §§27, 33),
    but the live NCS proofs used intentionally disposable state.
