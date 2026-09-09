@@ -2292,7 +2292,7 @@ claims the rule for the request family OpenMOS originates in volume, not univers
 
 ## 35. Passive mode works live: the row flag names the initiator, not the accepted socket
 
-The discriminating human-driven test from §31 was completed on Beltware NOM **9.6.2.2026** on
+The discriminating human-driven test from §31 was completed on the reference NCS running NOM **9.6.2.2026** on
 2026-08-29. It overturns three earlier conclusions:
 
 1. Device-initiated passive delivery works on this NOM version.
@@ -2333,10 +2333,10 @@ initiator, so the resulting HTTP 403 is not evidence of an admission defect.
 
 ### The production-realistic live test
 
-The Beltware row kept its normal unique identifier and was configured as:
+The reference NCS's device row kept its normal unique identifier and was configured as:
 
 ```text
-MOSID=openmos.beltware.mos
+MOSID=openmos.example.mos
 MOSVersion=4.0
 Passive=0
 IP=<blank>
@@ -2346,14 +2346,14 @@ StorySend=1
 OpenMOS connected to NOM's `/MOS4NCS/` endpoint with:
 
 ```text
-mosID=openmos.beltware.mos
-ncsID=APSTSNOM21
+mosID=openmos.example.mos
+ncsID=NCS-HOST
 channel=ro
 passive=true
 ```
 
 NOM admitted the connection without a 403. A human activated a MOS-controlled StorySend rundown,
-causing twelve originated items to appear for `openmos.beltware.mos_ro`. After NOM was restarted,
+causing twelve originated items to appear for `openmos.example.mos_ro`. After NOM was restarted,
 OpenMOS reconnected at 16:11:31 and immediately received unsolicited `roStorySend`,
 `roReadyToAir` and `roCreate` traffic. NOM's UI showed repeated `Sent:` entries and the queue fell
 from twelve to two. The final two were waiting for application replies after OpenMOS reported
@@ -2363,7 +2363,7 @@ transport failure.
 NOM independently recorded the transmission in:
 
 ```text
-H:\NOM\LOGS\MOS-openmos.beltware.mos-20260829.xml
+H:\NOM\LOGS\MOS-openmos.example.mos-20260829.xml
 ```
 
 The file was created at 16:11:32, last written at 16:13:03, and was 85,078 bytes with SHA-256
@@ -2386,10 +2386,10 @@ AddMOSWebSocketOut(e._mosID, e._mos4Channel, e)
 ```
 
 That attaches it to NOM's own `mcolMOSOut` under `mosID_channel`, which is the collection
-`MOSOutput` uses. The live GUI displayed this correct `openmos.beltware.mos_ro` association, and
+`MOSOutput` uses. The live GUI displayed this correct `openmos.example.mos_ro` association, and
 the successful delivery proves that path is effective.
 
-An earlier artificial experiment made `mosID` and `ncsID` both `APSTSNOM21`. It also delivered
+An earlier artificial experiment made `mosID` and `ncsID` both `NCS-HOST`. It also delivered
 traffic, but equality was coincidence rather than a fix. The experiment is not a valid production
 configuration because MOS and NCS identities must remain distinct, and it cannot demonstrate
 which dictionary routed the messages. The later unique-ID test is the controlling result.
@@ -2402,10 +2402,10 @@ frames despite the live receive events. That is an instrumentation gap: do not c
 alone as proof that no inbound traffic occurred. It needs separate investigation before raw
 capture is used as the sole oracle for passive-client tests.
 
-After the test, the client and SSM tunnel were stopped. Beltware's `g_mos` was restored
+After the test, the client and SSM tunnel were stopped. the reference NCS's `g_mos` was restored
 byte-for-byte to SHA-256
 `EF76424512CF37E4A8FC909EC01EE7E32585857F51B50654A5A7B741D5EF3CE4`, IIS reset completed, and
-Watch restarted `NOM.exe` with a fresh PID. Beltware has no buddy node.
+Watch restarted `NOM.exe` with a fresh PID. The reference NCS has no buddy node.
 
 ### Consequences
 

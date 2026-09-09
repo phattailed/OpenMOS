@@ -24,8 +24,8 @@ func TestMOS28ROCreatePersistsAndAcknowledgesOnSameSocket(t *testing.T) {
 	conn := dialMOS28(t, tcpServer)
 
 	const request = `<mos>
-  <mosID>openmos.beltware.test</mosID>
-  <ncsID>beltware.test</ncsID>
+  <mosID>openmos.example.test</mosID>
+  <ncsID>example.test</ncsID>
   <messageID>41</messageID>
   <roCreate>
     <roID>RO-41</roID>
@@ -38,7 +38,7 @@ func TestMOS28ROCreatePersistsAndAcknowledgesOnSameSocket(t *testing.T) {
         <itemID>ITEM-1</itemID>
         <itemSlug>Tracer graphic</itemSlug>
         <objID>OBJ-1</objID>
-        <mosID>openmos.beltware.test</mosID>
+        <mosID>openmos.example.test</mosID>
         <itemEdDur>25</itemEdDur>
       </item>
     </story>
@@ -57,7 +57,7 @@ func TestMOS28ROCreatePersistsAndAcknowledgesOnSameSocket(t *testing.T) {
 		} `xml:"roAck"`
 	}
 	readMOS28XMLForTest(t, conn, &ack)
-	if ack.MosID != "openmos.beltware.test" || ack.NcsID != "beltware.test" {
+	if ack.MosID != "openmos.example.test" || ack.NcsID != "example.test" {
 		t.Fatalf("unexpected ACK route: mosID=%q ncsID=%q", ack.MosID, ack.NcsID)
 	}
 	if ack.MessageID != "41" {
@@ -79,7 +79,7 @@ func TestMOS28ROCreatePersistsAndAcknowledgesOnSameSocket(t *testing.T) {
 	// of mosID and objID will serve as a unique reference to an object on a
 	// specific server within an enterprise or multi-Media Object Server
 	// environment" (MOS 4.0 §2.2), and Profile 6 redirection keys off it.
-	if ro := runningOrders.value("RO-41"); ro == nil || ro.MosID != "openmos.beltware.test" {
+	if ro := runningOrders.value("RO-41"); ro == nil || ro.MosID != "openmos.example.test" {
 		t.Fatalf("running order lost its mosID: %#v", ro)
 	}
 	if story := stories.value("RO-41/STORY-1"); story == nil || story.RawID != "STORY-1" || story.RunningOrderID != "RO-41" {
@@ -91,7 +91,7 @@ func TestMOS28ROCreatePersistsAndAcknowledgesOnSameSocket(t *testing.T) {
 	// An item's mosID names the MOS owning the referenced object, which can differ
 	// from the MOS receiving the running order. Dropping it would make Profile 6
 	// redirection impossible.
-	if item := items.value("RO-41/STORY-1/ITEM-1"); item == nil || item.Metadata["mosID"] != "openmos.beltware.test" {
+	if item := items.value("RO-41/STORY-1/ITEM-1"); item == nil || item.Metadata["mosID"] != "openmos.example.test" {
 		t.Fatalf("item lost its mosID: %#v", item)
 	}
 }
@@ -100,7 +100,7 @@ func TestMOS28AcceptsSplitUCS2BEAndRepliesUCS2BE(t *testing.T) {
 	tcpServer, runningOrders, _, _ := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
 	request := encodeUCS2BEForTest("\ufeff" + `<?xml version="1.0" encoding="UTF-16"?>
-<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>x2A</messageID><roCreate><roID>RO-É</roID><roSlug>Café 東京</roSlug></roCreate></mos>`)
+<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>x2A</messageID><roCreate><roID>RO-É</roID><roSlug>Café 東京</roSlug></roCreate></mos>`)
 	for _, part := range [][]byte{request[:1], request[1:17], request[17:]} {
 		if _, err := conn.Write(part); err != nil {
 			t.Fatal(err)
@@ -133,7 +133,7 @@ func TestMOS28AcceptsSplitUCS2BEAndRepliesUCS2BE(t *testing.T) {
 func TestMOS28InvalidFrameClosesOnlyThatConnection(t *testing.T) {
 	tcpServer, _, _, _ := startMOS28Server(t)
 	invalid := dialMOS28(t, tcpServer)
-	writeMOS28ForTest(t, invalid, `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>1</messageID><bogus/></mos>`)
+	writeMOS28ForTest(t, invalid, `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>1</messageID><bogus/></mos>`)
 	_ = invalid.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := invalid.Read(make([]byte, 1)); err == nil {
 		t.Fatal("invalid MOS frame left its connection open")
@@ -142,7 +142,7 @@ func TestMOS28InvalidFrameClosesOnlyThatConnection(t *testing.T) {
 	}
 
 	valid := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>2</messageID><roCreate><roID>RO-2</roID><roSlug>Still alive</roSlug></roCreate></mos>`
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>2</messageID><roCreate><roID>RO-2</roID><roSlug>Still alive</roSlug></roCreate></mos>`
 	writeMOS28ForTest(t, valid, request)
 	_ = valid.SetReadDeadline(time.Now().Add(time.Second))
 	var ack struct {
@@ -188,7 +188,7 @@ func TestMOS28CapsAnIncompleteFrame(t *testing.T) {
 func TestMOS28RejectsUnexpectedNCSID(t *testing.T) {
 	tcpServer, _, _, _ := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>other-ncs.test</ncsID><messageID>3</messageID><roCreate><roID>RO-3</roID><roSlug>Wrong NCS</roSlug></roCreate></mos>`
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>other-ncs.test</ncsID><messageID>3</messageID><roCreate><roID>RO-3</roID><roSlug>Wrong NCS</roSlug></roCreate></mos>`
 	writeMOS28ForTest(t, conn, request)
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := conn.Read(make([]byte, 1)); err == nil {
@@ -226,7 +226,7 @@ func TestRoStorySendForUnknownRunningOrderIsRefused(t *testing.T) {
 	conn := dialMOS28(t, tcpServer)
 
 	const unknown = `NCS-HOST;P_TEST\W;11111111-2222-3333-4444-555555555555`
-	request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+	request := `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID>` +
 		`<messageID>90</messageID><roStorySend><roID>` + unknown + `</roID>` +
 		`<storyID>STORY-1</storyID><storySlug>orphan</storySlug>` +
 		`<storyBody><p>body</p></storyBody></roStorySend></mos>`
@@ -273,7 +273,7 @@ func TestRoStorySendForUnknownRunningOrderIsRefused(t *testing.T) {
 func TestMOS28ToleratesUnusualMessageID(t *testing.T) {
 	tcpServer, runningOrders, _, _ := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>0</messageID><roCreate><roID>RO-0</roID><roSlug>Unusual ID</roSlug></roCreate></mos>`
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>0</messageID><roCreate><roID>RO-0</roID><roSlug>Unusual ID</roSlug></roCreate></mos>`
 	writeMOS28ForTest(t, conn, request)
 
 	var ack struct {
@@ -301,7 +301,7 @@ func TestMOS28EchoesAcceptedMessageIDFormats(t *testing.T) {
 	for _, messageID := range []string{"42", "0x2A", "x2A"} {
 		t.Run(messageID, func(t *testing.T) {
 			conn := dialMOS28(t, tcpServer)
-			request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>` + messageID + `</messageID><roCreate><roID>RO-` + messageID + `</roID><roSlug>Message ID tracer</roSlug></roCreate></mos>`
+			request := `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>` + messageID + `</messageID><roCreate><roID>RO-` + messageID + `</roID><roSlug>Message ID tracer</roSlug></roCreate></mos>`
 			writeMOS28ForTest(t, conn, request)
 			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 			var ack struct {
@@ -324,8 +324,8 @@ func TestMOS28ROReplaceReplacesPersistedContentAndAcknowledges(t *testing.T) {
 
 	conn := dialMOS28(t, tcpServer)
 	const request = `<mos>
-  <mosID>openmos.beltware.test</mosID>
-  <ncsID>beltware.test</ncsID>
+  <mosID>openmos.example.test</mosID>
+  <ncsID>example.test</ncsID>
   <messageID>42</messageID>
   <roReplace>
     <roID>RO-42</roID>
@@ -338,7 +338,7 @@ func TestMOS28ROReplaceReplacesPersistedContentAndAcknowledges(t *testing.T) {
         <itemID>NEW-ITEM</itemID>
         <itemSlug>Replacement item</itemSlug>
         <objID>NEW-OBJECT</objID>
-        <mosID>openmos.beltware.test</mosID>
+        <mosID>openmos.example.test</mosID>
       </item>
     </story>
   </roReplace>
@@ -388,7 +388,7 @@ func TestMOS28ROStorySendUpdatesCompositeStoryAndAcknowledges(t *testing.T) {
 	})
 
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>84</messageID><roStorySend><roID>RO-STORY</roID><storyID>STORY-1</storyID><storySlug>After</storySlug><storyBody><p>Tracer body</p></storyBody></roStorySend></mos>`
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>84</messageID><roStorySend><roID>RO-STORY</roID><storyID>STORY-1</storyID><storySlug>After</storySlug><storyBody><p>Tracer body</p></storyBody></roStorySend></mos>`
 	writeMOS28ForTest(t, conn, request)
 	var ack struct {
 		MessageID string `xml:"messageID"`
@@ -418,7 +418,7 @@ func TestMOS28RODeleteDeletesPersistedContentAndAcknowledges(t *testing.T) {
 	_, _ = items.Create(ctx, &model.Item{ID: "RO-DELETE/STORY/ITEM", RawID: "ITEM", StoryID: "RO-DELETE/STORY"})
 
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>85</messageID><roDelete><roID>RO-DELETE</roID></roDelete></mos>`
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>85</messageID><roDelete><roID>RO-DELETE</roID></roDelete></mos>`
 	writeMOS28ForTest(t, conn, request)
 	var ack struct {
 		MessageID string `xml:"messageID"`
@@ -445,7 +445,7 @@ func TestMOS28RODeleteReportsChildDeleteFailure(t *testing.T) {
 	items.deleteErr = errors.New("injected item delete failure")
 
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>86</messageID><roDelete><roID>RO-DELETE-FAIL</roID></roDelete></mos>`
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>86</messageID><roDelete><roID>RO-DELETE-FAIL</roID></roDelete></mos>`
 	writeMOS28ForTest(t, conn, request)
 	var ack struct {
 		ROAck struct {
@@ -470,10 +470,10 @@ func TestMOS28RODeleteReportsChildDeleteFailure(t *testing.T) {
 func TestMOS28PersistsDuplicateItemIDsUnderCompositeChildKeys(t *testing.T) {
 	tcpServer, _, stories, items := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>77</messageID><roCreate>
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>77</messageID><roCreate>
 <roID>RO-DUP</roID><roSlug>Duplicate item tracer</roSlug>
-<story><storyID>STORY-A</storyID><storySlug>First</storySlug><item><itemID>ITEM-SAME</itemID><itemSlug>First item</itemSlug><objID>OBJECT-A</objID><mosID>openmos.beltware.test</mosID></item></story>
-<story><storyID>STORY-B</storyID><storySlug>Second</storySlug><item><itemID>ITEM-SAME</itemID><itemSlug>Second item</itemSlug><objID>OBJECT-B</objID><mosID>openmos.beltware.test</mosID></item></story>
+<story><storyID>STORY-A</storyID><storySlug>First</storySlug><item><itemID>ITEM-SAME</itemID><itemSlug>First item</itemSlug><objID>OBJECT-A</objID><mosID>openmos.example.test</mosID></item></story>
+<story><storyID>STORY-B</storyID><storySlug>Second</storySlug><item><itemID>ITEM-SAME</itemID><itemSlug>Second item</itemSlug><objID>OBJECT-B</objID><mosID>openmos.example.test</mosID></item></story>
 </roCreate></mos>`
 	writeMOS28ForTest(t, conn, request)
 	var ack struct {
@@ -505,8 +505,8 @@ func TestMOS28RepeatedROCreateUpdatesCompositeItem(t *testing.T) {
 	tcpServer, _, _, items := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
 	for _, request := range []string{
-		`<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>80</messageID><roCreate><roID>RO-UPDATE</roID><roSlug>Update tracer</roSlug><story><storyID>STORY</storyID><storySlug>Story</storySlug><item><itemID>ITEM</itemID><itemSlug>Before</itemSlug><objID>OBJECT</objID><mosID>openmos.beltware.test</mosID></item></story></roCreate></mos>`,
-		`<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>81</messageID><roCreate><roID>RO-UPDATE</roID><roSlug>Update tracer</roSlug><story><storyID>STORY</storyID><storySlug>Story</storySlug><item><itemID>ITEM</itemID><itemSlug>After</itemSlug><objID>OBJECT</objID><mosID>openmos.beltware.test</mosID></item></story></roCreate></mos>`,
+		`<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>80</messageID><roCreate><roID>RO-UPDATE</roID><roSlug>Update tracer</roSlug><story><storyID>STORY</storyID><storySlug>Story</storySlug><item><itemID>ITEM</itemID><itemSlug>Before</itemSlug><objID>OBJECT</objID><mosID>openmos.example.test</mosID></item></story></roCreate></mos>`,
+		`<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>81</messageID><roCreate><roID>RO-UPDATE</roID><roSlug>Update tracer</roSlug><story><storyID>STORY</storyID><storySlug>Story</storySlug><item><itemID>ITEM</itemID><itemSlug>After</itemSlug><objID>OBJECT</objID><mosID>openmos.example.test</mosID></item></story></roCreate></mos>`,
 	} {
 		writeMOS28ForTest(t, conn, request)
 		var ack struct {
@@ -527,7 +527,7 @@ func TestMOS28RepeatedROCreateUpdatesCompositeItem(t *testing.T) {
 func TestMOS28RejectsMissingRequiredFieldsBeforeMutation(t *testing.T) {
 	tcpServer, runningOrders, stories, items := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>78</messageID><roCreate>
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>78</messageID><roCreate>
 <roID>RO-INVALID</roID><roSlug>Must not persist</roSlug>
 <story><storyID>STORY-INVALID</storyID><storySlug>Must not persist</storySlug><item><itemSlug>Missing ID</itemSlug></item></story>
 </roCreate></mos>`
@@ -555,9 +555,9 @@ func TestMOS28RejectsMissingRequiredFieldsBeforeMutation(t *testing.T) {
 func TestMOS28AcceptsOptionalStoryAndItemSlugs(t *testing.T) {
 	tcpServer, _, _, items := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>82</messageID><roCreate>
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>82</messageID><roCreate>
 <roID>RO-OPTIONAL-SLUGS</roID><roSlug>Optional slugs</roSlug>
-<story><storyID>STORY</storyID><item><itemID>ITEM</itemID><objID>OBJECT</objID><mosID>openmos.beltware.test</mosID></item></story>
+<story><storyID>STORY</storyID><item><itemID>ITEM</itemID><objID>OBJECT</objID><mosID>openmos.example.test</mosID></item></story>
 </roCreate></mos>`
 	writeMOS28ForTest(t, conn, request)
 	var ack struct {
@@ -577,7 +577,7 @@ func TestMOS28AcceptsOptionalStoryAndItemSlugs(t *testing.T) {
 func TestMOS28RejectsMissingRequiredObjectFieldsBeforeMutation(t *testing.T) {
 	tcpServer, runningOrders, stories, items := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>83</messageID><roCreate>
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>83</messageID><roCreate>
 <roID>RO-MISSING-OBJECT</roID><roSlug>Invalid item</roSlug>
 <story><storyID>STORY</storyID><storySlug>Story</storySlug><item><itemID>ITEM</itemID><itemSlug>Item</itemSlug></item></story>
 </roCreate></mos>`
@@ -611,7 +611,7 @@ func TestMOS28ROReplaceStopsOnDeleteFailure(t *testing.T) {
 	items.deleteErr = errors.New("injected item delete failure")
 
 	conn := dialMOS28(t, tcpServer)
-	const request = `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID><messageID>79</messageID><roReplace>
+	const request = `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID><messageID>79</messageID><roReplace>
 <roID>RO-DELETE-FAIL</roID><roSlug>Replacement</roSlug>
 <story><storyID>STORY-NEW</storyID><storySlug>New</storySlug></story>
 </roReplace></mos>`
@@ -654,8 +654,8 @@ func startMOS28Server(t *testing.T) (*TCPServer, *memoryRunningOrders, *memorySt
 	cfg.Server.Port = 0
 	cfg.Server.WriteTimeout = time.Second
 	cfg.Server.ShutdownTimeout = time.Second
-	cfg.MOS.ID = "openmos.beltware.test"
-	cfg.MOS.NCSID = "beltware.test"
+	cfg.MOS.ID = "openmos.example.test"
+	cfg.MOS.NCSID = "example.test"
 	cfg.MOS.HeartbeatInterval = time.Minute
 	cfg.MOS.ClientTimeout = time.Minute
 

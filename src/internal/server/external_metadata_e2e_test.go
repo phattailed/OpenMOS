@@ -21,7 +21,7 @@ func TestExternalMetadataSurvivesIngest(t *testing.T) {
 	conn := dialMOS28(t, tcpServer)
 
 	// Metadata at all three levels the spec allows, with nested payloads at each.
-	request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+	request := `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID>` +
 		`<messageID>900</messageID><roCreate>` +
 		`<roID>RO-META</roID><roSlug>With metadata</roSlug>` +
 		`<mosExternalMetadata><mosScope>PLAYLIST</mosScope><mosSchema>ro-schema</mosSchema>` +
@@ -29,7 +29,7 @@ func TestExternalMetadataSurvivesIngest(t *testing.T) {
 		`<story><storyID>S-1</storyID><storySlug>First</storySlug>` +
 		`<mosExternalMetadata><mosScope>STORY</mosScope><mosSchema>story-schema</mosSchema>` +
 		`<mosPayload><RevisionNumber>5</RevisionNumber></mosPayload></mosExternalMetadata>` +
-		`<item><itemID>I-1</itemID><objID>OBJ-1</objID><mosID>openmos.beltware.test</mosID>` +
+		`<item><itemID>I-1</itemID><objID>OBJ-1</objID><mosID>openmos.example.test</mosID>` +
 		`<mosExternalMetadata><mosScope>PLAYLIST</mosScope><mosSchema>item-schema</mosSchema>` +
 		`<mosPayload><transitionMode>2</transitionMode><nested><deep>x</deep></nested></mosPayload>` +
 		`</mosExternalMetadata></item>` +

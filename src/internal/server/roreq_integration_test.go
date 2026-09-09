@@ -75,7 +75,7 @@ func TestRoReqReturnsRoListForTheRequestedRunningOrder(t *testing.T) {
 	}
 
 	conn := dialMOS28(t, tcpServer)
-	request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+	request := `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID>` +
 		`<messageID>500</messageID><roReq><roID>` + roID + `</roID></roReq></mos>`
 	writeMOS28ForTest(t, conn, request)
 
@@ -119,7 +119,7 @@ func TestRoReqForUnknownRunningOrderIsNacked(t *testing.T) {
 	tcpServer, _, _, _ := startMOS28Server(t)
 	conn := dialMOS28(t, tcpServer)
 
-	request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+	request := `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID>` +
 		`<messageID>501</messageID><roReq><roID>RO-ABSENT</roID></roReq></mos>`
 	writeMOS28ForTest(t, conn, request)
 
@@ -149,7 +149,7 @@ func TestRoReqAllReturnsRoListAllSummaries(t *testing.T) {
 
 	conn := dialMOS28(t, tcpServer)
 	// Self-closing, as real devices send it, and carrying no roID.
-	request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+	request := `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID>` +
 		`<messageID>502</messageID><roReqAll/></mos>`
 	writeMOS28ForTest(t, conn, request)
 
@@ -200,7 +200,7 @@ func TestRoListCarriesNoInventedAttributes(t *testing.T) {
 	seedRunningOrder(t, ros, stories, items, "RO-SHAPE")
 
 	conn := dialMOS28(t, tcpServer)
-	request := `<mos><mosID>openmos.beltware.test</mosID><ncsID>beltware.test</ncsID>` +
+	request := `<mos><mosID>openmos.example.test</mosID><ncsID>example.test</ncsID>` +
 		`<messageID>503</messageID><roReq><roID>RO-SHAPE</roID></roReq></mos>`
 	writeMOS28ForTest(t, conn, request)
 
