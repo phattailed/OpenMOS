@@ -71,8 +71,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | OpenMOS runnable as a purely outbound client | Yes | — | **Yes** | Previously refused to start without a listener, contradicting passive mode |
 | Peer refusals (`mosAck`) parsed and reported | Yes | Unit tests | **Yes** | Accepted without a `messageID`, as real servers send them |
 | One message vocabulary across both transports | Yes | Envelope-reachability test | **Yes** | Sixteen messages were socket-unreachable; see `doc/interop` §28 |
-| MOS 4 outbound client, passive mode | Yes | Loopback tests | Connects, receives nothing | Untested against NCS-*originated* output; prior attempts exercised replies (`doc/interop` §25, §29, §31) |
-| MOS 4 admission vs device `MOSVersion` | — | — | **Yes** | `4.0` is refused with HTTP 403; a 2.x string is required (`doc/interop` §31) |
+| MOS 4 outbound client, passive mode | Yes | Loopback tests | **Yes** | NOM 9.6 delivered unsolicited `roCreate`, `roStorySend` and `roReadyToAir` with distinct production-style IDs (`doc/interop` §35) |
+| Device-initiated passive topology on NOM | — | — | **Yes** | Device row `MOSVersion=4.0`, `Passive=0`; the device connects with `passive=true` (`doc/interop` §35) |
 | Graceful shutdown, idempotent and race-free | Yes | Unit tests, incl. concurrent | **Yes** | Panicked on every run; `Shutdown` is called twice by design |
 | MOS booleans as `YES`/`NO` | Yes | Unit + live-frame tests | **Yes** | — |
 | MOS timestamps with comma fractions | Yes | Unit tests (spec examples) | **Yes** | `ParseMOSTime`; Go's stdlib cannot read them |
@@ -91,8 +91,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 - Not claiming Profiles 1, 3, 4, 5, 6 or 7. `listMachInfo` advertises Profile 0
   alone, which is deliberate.
 - Able to initiate a MOS 4 connection to an NCS. Standard mode has completed
-  Profile 0 against a real NCS; passive mode is implemented but loopback-tested
-  only.
+  Profile 0 against a real NCS; device-initiated passive mode has received
+  NCS-originated running-order traffic from a live NOM 9.6.
 - The MOS 2.x transport is listener-only: the NCS connects to us.
 - Not MOS 3.x capable.
 - Not suitable for production without durable storage, TLS, and authentication on
@@ -305,23 +305,14 @@ the outstanding defect list are in [`doc/interop/README.md`](doc/interop/README.
 
 The next interoperability steps, in order of value:
 
-1. **Passive mode on a newer NOM.** Attempted against NOM 9.6 with the device's `Passive`
-   flag set: our end is correct and holds the connection with `keepAlive`, but the NCS fails
-   to drain its own output queue, throwing from `MOSOutput.RemoveQueueOut` (`doc/interop`
-   §25). A full 9.7 test has since been run with a `Passive=1` row on both nodes of a
-   main/buddy pair: OpenMOS connected, but NOM generated no outbound work at all, so the
-   defect was not reproduced and not shown fixed either (§29). The likeliest cause is the
-   device row's `StorySend` flag, which gates running-order content and defaults to `0`.
-2. **Passive mode against NCS-originated output.** Every attempt so far has exercised replies
-   rather than output ENPS generates itself (`doc/interop` §31). The discriminating test needs a
-   rundown edit in the ENPS client while only a passive connection is held.
-3. **Durable storage by default for interop work.** The three pieces of protocol state
-   that cannot be rebuilt by asking the NCS -- the outbound `messageID`, deduplication
-   receipts and unfinished discovery work -- now persist (`doc/interop` §27). Running
-   orders themselves still default to memory, so a restart silently desynchronises the
-   rundown, which is what exposed the `roStorySend` defect in §13. MongoDB is supported
-   but not the default.
-4. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
+1. **Retest after the NOM 9.7.0.85 passive-socket handoff is repaired.** The corrected live
+   test left 42 originated messages queued. Exact-build analysis found an unsubscribed
+   listener event and no socket replacement for an existing output entry; a vendor repair
+   has not been tested (`doc/interop` §§36–37). NOM 9.6's successful result remains valid (§35).
+2. **Exercise the file-backed default in live interop.** The outbound `messageID`, deduplication
+   receipts, unfinished discovery work and running orders now persist (`doc/interop` §§27, 33),
+   but the live NCS proofs used intentionally disposable state.
+3. **MOS 3.x WebService** (#15), lowest value and blocked on the WSDL.
 
 ## License
 
