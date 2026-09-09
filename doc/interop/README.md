@@ -1559,13 +1559,17 @@ confirms it as a boolean field alongside `PreserveExternalMetadata`, both `false
 
 ## 25. Passive mode: three of our bugs fixed, and an NCS-side wall
 
+> **Historical result; superseded by §35.** The OpenMOS defects found here were real, but the
+> remaining "NCS-side wall" was tested with the wrong NOM topology. Correctly configured
+> device-initiated passive delivery is now live-proven on this same NOM 9.6 build.
+
 §24 established from vendor documentation what passive mode means. This is what happened when
 it was actually tried, with **no reverse tunnel** — only a forward tunnel, so the NCS could not
 reach this machine at all. Anything arriving had to come down the connection we opened.
 
-The honest summary: **passive mode is still not proven live.** But the attempt found three
-defects in our own implementation, and the remaining obstacle is on the NCS side with its own
-stack traces.
+At the time, passive mode was not yet proven live. The attempt found three defects in our own
+implementation and NCS-side stack traces; §35 later separated those valid observations from the
+incorrect configuration conclusion.
 
 ### Our bug 1: the client drove a handshake the peer will never answer
 
@@ -1638,8 +1642,8 @@ SSM (§21). If 9.7 drains a passive queue where 9.6 does not, that is the answer
 a device row on a shared demonstration rig, which is a change to someone else's environment
 and has not been made.
 
-Until then the README records passive mode as implemented, loopback-tested, and **not** proven
-live, with the reason stated rather than left as "untested".
+That proposed comparison was later run, but with the same reversed topology. §35 contains the
+first controlling live proof.
 
 ## 26. Acting on the Sofie breadcrumbs: two gaps, seven already closed
 
@@ -1962,6 +1966,12 @@ parent and silently held the tunnel open the first time.
 
 ## 29. Passive mode on NOM 9.7: not reproduced, and not fixed either
 
+> **Superseded by §35.** This run used `MOSVersion=2.8.4`, `Passive=1` while the MOS device
+> initiated the connection. NOM's implementation and the MOS 4 sequence define that row as the
+> opposite topology: NOM initiates `passive=true` connections to the device's configured URL.
+> The negative result therefore does not establish a NOM 9.7 passive-output defect. The original
+> account remains below because it records how the incorrect conclusion was reached.
+
 A properly conducted 9.7 test was run on the demonstration estate, going considerably further
 than §28 could: matching device rows added to both nodes of the main/buddy pair with verified
 identical SHA-256, IIS reset on both, the JSON web-services application pool cycled, both NOM
@@ -2050,26 +2060,26 @@ Both faults were confirmed by reverting the fixes: the unguarded close reproduce
 under `-race`. The suite is now race-clean across three consecutive runs, where a single run had
 been passing before.
 
-## 31. MOS 4.0 admission requires a 2.x version string, and a distinction that changed a result
+## 31. MOS 4.0 admission was misread, and a response was mistaken for originated output
+
+> **Admission conclusion superseded by §35.** `MOSVersion=4.0` was not itself the cause of the
+> 403. The row also had `Passive=1`, which tells NOM to initiate passive connections toward the
+> MOS device. NOM consequently rejected a device-initiated connection for that row. With the
+> production-realistic device-initiated topology -- `MOSVersion=4.0`, `Passive=0` -- NOM 9.6
+> admitted the same `passive=true` client and delivered originated output.
 
 Two findings from a two-connection live test on NOM 9.7, run on the demonstration estate by
 another agent with the operator's authorisation. The harness is reusable and stays untracked.
 
-### `MOSVersion=4.0` is refused at admission
+### Original observation: `MOSVersion=4.0` plus `Passive=1` was refused at admission
 
-Setting the device row's `MOSVersion` (field 6) to `4.0` makes the MOS 4.0 WebSocket upgrade
-return **HTTP 403**. `2.8.4` is required for admission on this build.
+Setting the device row's `MOSVersion` (field 6) to `4.0` while leaving `Passive=1` made the MOS
+4.0 WebSocket upgrade return **HTTP 403**. At the time this was incorrectly attributed to the
+version field alone. §35 traces the complete call path and shows why the topology was rejected.
 
-That is worth stating plainly because it is counterintuitive and because this document
-previously suggested the opposite. §29 offered, as a hypothesis for why the rig produced no
-outbound work, that a device declared `2.8.4` might be treated as a socket device and therefore
-dialled rather than reached over the held WebSocket. The reverse is true: `4.0` is rejected
-outright, and the version string that *works* for MOS 4.0 traffic is a 2.x one. The hypothesis
-is withdrawn.
-
-It also means the `MOSVersion` column does not select the transport generation in the way the
-field name suggests, at least not on this build. Transport is determined by how the device
-connects; this field gates something else.
+The observation was real; its interpretation was not. A 2.x string happened to bypass NOM's
+MOS-4 passive-device list, allowing a connection under a configuration that later fell back to
+legacy socket behavior. It was not proof that a 2.x version is required for MOS 4 traffic.
 
 ### A `roList` is a response, not NCS-originated output
 
@@ -2104,7 +2114,7 @@ running-order content, and `RemoveQueueOut` was failing to **drain** them. The 9
 the originated-output path, which this test never reaches — which explains the zero
 `RemoveQueueOut` occurrences without implying a fix.
 
-### What would actually settle it
+### What would actually settle it -- completed in §35
 
 Hold **only** the passive connection, with no second connection at all, and then cause ENPS to
 originate work by modifying an approved MOS-controlled rundown in the client.
@@ -2113,8 +2123,7 @@ originate work by modifying an approved MOS-controlled rundown in the client.
   problem is purely the drain crash.
 - It does not arrive: a genuine passive-output failure, no longer explicable as reply routing.
 
-That requires a rundown edit in the ENPS client, which is a human action. Until it is run, passive
-mode remains unproven on both versions and the README says so.
+That human-driven test is now complete on NOM 9.6; see §35.
 
 ## 32. mosScope enforced, and the emission it turned out to be missing
 
@@ -2280,3 +2289,134 @@ Periodic `heartbeat` still fires on its timer regardless of an outstanding `roRe
 Profile 0 liveness machinery, and gating it behind running-order work would defeat its purpose:
 a peer that stopped answering `roReq` is exactly when liveness detection matters most. The README
 claims the rule for the request family OpenMOS originates in volume, not universally.
+
+## 35. Passive mode works live: the row flag names the initiator, not the accepted socket
+
+The discriminating human-driven test from §31 was completed on Beltware NOM **9.6.2.2026** on
+2026-08-29. It overturns three earlier conclusions:
+
+1. Device-initiated passive delivery works on this NOM version.
+2. `MOSVersion=4.0` is valid; the earlier 403 came from combining it with the opposite passive
+   topology.
+3. The `ncsID` key in `MOS4WebSockets.dll` is not the key NOM uses to route its output queue.
+
+### Two valid passive topologies
+
+MOS 4 says the system protected inside the firewall opens the WebSocket client connection to the
+externally reachable listener and adds `passive=true`. The receiver then uses that connection for
+traffic back through the temporary opening. Either the NCS or the MOS may be the protected
+initiator; the configuration must say which one.
+
+NOM's `g_mos` `Passive` field selects **NOM-initiated** passive mode:
+
+| topology | NOM `MOSVersion` | NOM `Passive` | `IP` / `MOSDeviceURL` | connection initiator |
+|---|---:|---:|---|---|
+| NOM initiates passive connections | `4.0` | `1` | required, full MOS WebSocket URL | NOM |
+| MOS initiates a passive connection | `4.0` | `0` | not needed for that connection | MOS device |
+| Standard MOS 4 outbound from NOM | `4.0` | `0` | required | NOM |
+
+This is visible in the 9.6 NOM code. `InitializePassiveConnectionsAsync` selects rows whose
+`MOSVer` starts with `4`, whose `Passive` value is non-zero, and whose `IP` is non-empty. It then
+dials the configured URL twice, once each for `ro` and `mom`, with `_incoming=true`; the DLL emits
+that value as `passive=true` in the query string. The row's `IP` property is the DLL's
+`MOSDeviceURL`; it is not a separate configuration field.
+
+The same rows populate `PassiveMOSList`. NOM's listener rejects an inbound connection whose
+`mosID` is in that list. The error says the device "requested an active connection" without
+testing the query's `passive` value, so the wording is misleading, but the rejection itself is
+consistent: the row says NOM, not the MOS device, will initiate the passive connections.
+
+The relevant admission logic is the same in the inspected 9.6.2.2026 and 9.7.0.65
+`MOS4WebSockets.dll` assemblies. The earlier 9.7 configuration set `MOSVersion=4.0`, `Passive=1`
+and also had OpenMOS dial NOM with `passive=true`. Both sides were configured as the passive
+initiator, so the resulting HTTP 403 is not evidence of an admission defect.
+
+### The production-realistic live test
+
+The Beltware row kept its normal unique identifier and was configured as:
+
+```text
+MOSID=openmos.beltware.mos
+MOSVersion=4.0
+Passive=0
+IP=<blank>
+StorySend=1
+```
+
+OpenMOS connected to NOM's `/MOS4NCS/` endpoint with:
+
+```text
+mosID=openmos.beltware.mos
+ncsID=APSTSNOM21
+channel=ro
+passive=true
+```
+
+NOM admitted the connection without a 403. A human activated a MOS-controlled StorySend rundown,
+causing twelve originated items to appear for `openmos.beltware.mos_ro`. After NOM was restarted,
+OpenMOS reconnected at 16:11:31 and immediately received unsolicited `roStorySend`,
+`roReadyToAir` and `roCreate` traffic. NOM's UI showed repeated `Sent:` entries and the queue fell
+from twelve to two. The final two were waiting for application replies after OpenMOS reported
+that it did not yet hold the running order; that is a state-synchronisation issue, not a passive
+transport failure.
+
+NOM independently recorded the transmission in:
+
+```text
+H:\NOM\LOGS\MOS-openmos.beltware.mos-20260829.xml
+```
+
+The file was created at 16:11:32, last written at 16:13:03, and was 85,078 bytes with SHA-256
+`3D95106E06ECA61315491122F3E61BA10E43A5BD806459B1A57781CEDE7250BA`. It contains four
+`roCreate`, twenty-two `roStorySend` and two `roReadyToAir` tag occurrences. Those are XML-log
+occurrences, not claimed as distinct message counts; NOM may log more than one representation of
+an exchange.
+
+### Why the dictionary theory was wrong
+
+Decompiling `MOS4WebSockets.dll` showed that its server stores a received `passive=true` socket in
+an internal dictionary under `ncsID_channel`, while its generic send method searches
+`mosID_channel`. That looked like the cause of the undelivered queue.
+
+It is not NOM's output route. `MOS4WebSockets` raises `ConnectionEstablished` before returning
+from admission. NOM's parent `frmMOS` handler receives the socket and calls:
+
+```text
+AddMOSWebSocketOut(e._mosID, e._mos4Channel, e)
+```
+
+That attaches it to NOM's own `mcolMOSOut` under `mosID_channel`, which is the collection
+`MOSOutput` uses. The live GUI displayed this correct `openmos.beltware.mos_ro` association, and
+the successful delivery proves that path is effective.
+
+An earlier artificial experiment made `mosID` and `ncsID` both `APSTSNOM21`. It also delivered
+traffic, but equality was coincidence rather than a fix. The experiment is not a valid production
+configuration because MOS and NCS identities must remain distinct, and it cannot demonstrate
+which dictionary routed the messages. The later unique-ID test is the controlling result.
+
+### Evidence hygiene and teardown
+
+The OpenMOS runtime logged the received operations, and NOM's XML log independently records the
+transmissions. The raw-capture manifest written by this OpenMOS client run listed only outbound
+frames despite the live receive events. That is an instrumentation gap: do not cite that manifest
+alone as proof that no inbound traffic occurred. It needs separate investigation before raw
+capture is used as the sole oracle for passive-client tests.
+
+After the test, the client and SSM tunnel were stopped. Beltware's `g_mos` was restored
+byte-for-byte to SHA-256
+`EF76424512CF37E4A8FC909EC01EE7E32585857F51B50654A5A7B741D5EF3CE4`, IIS reset completed, and
+Watch restarted `NOM.exe` with a fresh PID. Beltware has no buddy node.
+
+### Consequences
+
+- Passive MOS 4 output is **live-proven on NOM 9.6.2.2026** with distinct IDs and no
+  `MOSDeviceURL`.
+- The earlier NOM 9.7 negative result used the wrong topology and must not be used to claim a 9.7
+  passive defect or fix. Repeat it with `MOSVersion=4.0`, `Passive=0`.
+- The HTTP 403 from `MOSVersion=4.0`, `Passive=1` is consistent with NOM being configured to dial
+  the MOS endpoint; it is not a bulletproof functional bug. Its error text may still merit a small
+  diagnostics issue.
+- The `ncsID_channel` versus `mosID_channel` internal dictionary mismatch is not the demonstrated
+  cause of NOM output failure.
+- Any work item asserting that passive delivery is broken on these earlier configurations needs
+  its evidence and scope corrected before engineering acts on it.
