@@ -3357,7 +3357,7 @@ encoded the units bug as the expectation.
 
 ### A malformed schema URI, carried verbatim
 
-One vendor's schema arrives as `http:'rossvideo.com/…` — an apostrophe where `//` belongs. It is like that
+One vendor's schema URI arrives as `http:'vendor.example/…` — an apostrophe where `//` belongs. It is like that
 on the wire, not mangled by us.
 
 That is the right outcome. `mosSchema` is "implied to be a pointer or URL", and the payload is to be
