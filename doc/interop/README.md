@@ -3180,3 +3180,62 @@ undisturbed, which is the part a reorder gets wrong most easily.
 Every earlier run of this test was against an empty rundown, so the inbound half was correctly refused
 and never exercised. That is worth stating plainly: the write half was proven hours before the read half,
 and a passing `roStatus=OK` said nothing about whether we had applied anything.
+
+## 46. The timing bar: the only message that says *now*
+
+An operator dragging the timing bar in the ENPS client emits `roElementStat`, and this is the message a
+device actually needs. Everything else in the running-order family describes what a rundown *contains*;
+this describes what is *happening* in it. It is also the most common non-heartbeat message in real
+traffic, and OpenMOS had been parsing, logging and acknowledging it while recording nothing.
+
+Each bar move produces a **pair**, roughly two seconds apart:
+
+```xml
+<roElementStat element="STORY">
+  <roID>NCS-HOST;P_STORYTELLING\W;2D526A13-…</roID>
+  <storyID>NCS-HOST;…;DA7C2774-0824-458F-9EF5-3446CFA9C078</storyID>
+  <status>PLAY</status>
+  <time>2026-09-10T20:20:30</time>
+</roElementStat>
+```
+
+`STOP` on the story being left, `PLAY` on the story being entered. The on-air position is therefore
+fully recoverable from the `PLAY` messages alone, with the transition time carried in the message rather
+than inferred from arrival.
+
+The first move of a session also produced a `roMetadataReplace` for the running order — ENPS updating
+RO-level metadata, presumably recalculated timings, as the bar moves.
+
+### The ordering trap
+
+`STOP` clears the on-air pointer **only when it names the story currently on air.**
+
+The pair's order is not guaranteed. A `STOP` for the story being left can arrive *after* the `PLAY` for
+the story being entered, and clearing unconditionally would blank a pointer that had just been set
+correctly — reporting nothing on air while the bar is plainly sitting somewhere. A consumer driving
+graphics or automation off that would go dark on every move.
+
+### Where the state lives
+
+`RunningOrder.OnAirStoryID` and `OnAirSince`, not derived by scanning story statuses. The two answer
+differently the moment a `STOP` is missed: a scan would report two stories on air, whereas a single
+pointer cannot. `OnAirStory()` is a first-class lookup because "what is on air right now" is the
+question a consumer asks.
+
+Timestamps go through `ParseMOSTime`, since MOS uses a comma decimal separator that Go's `time.Parse`
+rejects. A value that will not parse falls back to arrival time rather than failing the report — the
+status is the point.
+
+### It is a notification, not a command
+
+The NCS is reporting where the bar is. Nothing here asks us to play anything. Actual playout control is
+Profile 5 (`roCtrl`, `roItemCue`), and the reference NCS advertises **Profile 5: NO**, so those never
+arrive from it. A device wanting to *act* on the bar reads this message; a device wanting to *be told to
+act* will wait forever on this estate.
+
+### Removed while here
+
+`ReportElementStatus` was the previous handler. It only examined `stat.ItemID` — empty for a STORY-level
+report — so the timing bar reached it and did nothing, and it addressed items by bare wire identifier,
+which never matches a composite storage key (§42). Now unreferenced and deleted rather than left to look
+live, which is the fourth time dead-but-plausible code has cost this project time.

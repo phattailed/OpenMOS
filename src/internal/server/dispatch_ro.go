@@ -224,7 +224,27 @@ func handleElementAction(ctx context.Context, deps roDeps, r peerResponder, m mo
 func handleElementStat(ctx context.Context, deps roDeps, r peerResponder, m mosxml.ROElementStat) error {
 	logger.Infof("Received roElementStat element=%s from %s: roID=%s status=%s",
 		m.Element, r.peerLabel(), m.ROID, m.Status)
-	return r.respond(ctx, mosxml.CreateROAck(m.ROID, "OK", nil))
+
+	err := deps.service.ProcessElementStatus(ctx, m)
+	if err == nil {
+		return r.respond(ctx, mosxml.CreateROAck(m.ROID, "OK", nil))
+	}
+
+	// A status report for something we do not hold is lost synchronisation like any other, and §2.3
+	// names roElementStat's siblings as grounds for a rebuild. Acknowledge, then ask.
+	var unknown *service.UnknownRunningOrderError
+	if errors.As(err, &unknown) {
+		logger.Warningf("Status report for RO %s names an element we do not hold", unknown.ROID)
+		if ackErr := r.respond(ctx, mosxml.CreateROAck(m.ROID,
+			"NACK: element not held by this device, requesting resync", nil)); ackErr != nil {
+			return ackErr
+		}
+		requestResync(ctx, deps, r, unknown.ROID)
+		return nil
+	}
+
+	logger.Errorf("Failed to record status for RO %s: %v", m.ROID, err)
+	return r.respond(ctx, mosxml.CreateROAck(m.ROID, "NACK: "+firstLine(err), nil))
 }
 
 // handleReq answers a request for one running order with a full roList.
