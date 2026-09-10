@@ -188,6 +188,20 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 		}
 	}
 
+	// Extract and persist the story's items.
+	//
+	// This call was missing entirely, and it is the message that matters: roStorySend is how
+	// stories actually arrive from an NCS. Item extraction existed only on the roElementAction
+	// path, via createNewStory/updateStory, so a live ENPS could deliver a complete rundown and
+	// every item -- the objID, the channel, the graphics payload -- was dropped while the story
+	// itself persisted fine. A rundown without items is a list of headlines (doc/interop §40).
+	//
+	// Failures are reported rather than fatal: the story is already stored and acknowledged, and
+	// turning a partial application into an error would leave the NCS believing nothing landed.
+	if err := s.processStoryBody(ctx, story, &storySend.StoryBody); err != nil {
+		logger.Errorf("Stored story %s but failed to persist its items: %v", storySend.StoryID, err)
+	}
+
 	// Publish event
 	if s.eventBus != nil {
 		s.eventBus.Publish(events.Event{

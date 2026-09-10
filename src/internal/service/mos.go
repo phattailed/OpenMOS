@@ -497,6 +497,16 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 		existing.ObjectID = item.ObjectID
 		existing.Duration = item.Duration
 		existing.Order = item.Order
+		// Carry external metadata across an update.
+		//
+		// It was set on create and not on update, and update is the COMMON path: a live ENPS
+		// re-sends the same roStorySend repeatedly as an operator edits, so a graphics payload
+		// would survive first arrival and be dropped by every message after it. Only overwrite
+		// when the new message actually carries blocks, so a peer that omits them does not
+		// silently erase what we already hold.
+		if len(item.ExternalMetadata) > 0 {
+			existing.ExternalMetadata = item.ExternalMetadata
+		}
 		if info.MosID != "" {
 			if existing.Metadata == nil {
 				existing.Metadata = make(map[string]string, 1)

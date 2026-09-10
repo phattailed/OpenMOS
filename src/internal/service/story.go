@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,35 +157,64 @@ func (s *MOSService) replaceStory(ctx context.Context, storySend xml.ROStorySend
 	return s.createNewStory(ctx, storySend)
 }
 
-// processStoryBody processes the story body and extracts items
+// processStoryBody extracts the story's items and persists them.
+//
+// It used to build the item slice and then throw it away, with a comment saying persistence
+// would come "in a later step". So items were only ever logged: a running order arrived, stories
+// were stored, and every item silently vanished. That is the whole point of a MOS device -- the
+// objID, the channel and the graphics payload all live on the item -- so a rundown without items
+// is a list of headlines (doc/interop §40).
+//
+// Items are collected from both shapes MOS traffic uses: storyItem elements that are direct
+// children of storyBody, which is what a live ENPS sends, and storyItem elements nested inside a
+// paragraph, which the specification's examples show. Order follows document order across both,
+// because element order is significant and the NCS-supplied sequence must be retained.
+//
+// Persistence delegates to storeItems, the same routine the roCreate path uses, so the two
+// cannot drift apart in how they create, update, order or preserve metadata.
 func (s *MOSService) processStoryBody(ctx context.Context, story *model.Story, storyBody *xml.StoryBody) error {
-	// Find all items in the story body
-	var items []*model.Item
+	if storyBody == nil {
+		return nil
+	}
 
-	// Iterate through paragraphs
-	for i, paragraph := range storyBody.Paragraphs {
-		// Process each story item
-		for j, storyItem := range paragraph.Items {
-			// Create a new item
-			item := &model.Item{
-				ID:        fmt.Sprintf("%s_I%d_%d", story.ID, i, j),
-				StoryID:   story.ID,
-				Slug:      storyItem.ItemSlug,
-				ObjectID:  storyItem.ObjID,
-				Duration:  storyItem.ItemEdDur,
-				Status:    model.StatusPending,
-				Order:     j + 1,
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-			}
+	infos := make([]xml.ItemInfo, 0, len(storyBody.Items))
 
-			items = append(items, item)
+	appendItem := func(si xml.StoryItem) {
+		f := si.ItemFields()
+		if f == nil {
+			return
+		}
+		info := xml.ItemInfo{
+			ID:                  f.ItemID,
+			Slug:                f.ItemSlug,
+			ObjectID:            f.ObjID,
+			MosID:               f.MosID,
+			Channel:             f.ItemChannel,
+			MosExternalMetadata: f.ExternalMeta,
+		}
+		if f.ItemEdDur > 0 {
+			info.Duration = strconv.Itoa(f.ItemEdDur)
+		}
+		infos = append(infos, info)
+	}
+
+	// Direct children first: that is the live ENPS shape and the common case.
+	for _, si := range storyBody.Items {
+		appendItem(si)
+	}
+	for _, paragraph := range storyBody.Paragraphs {
+		for _, si := range paragraph.Items {
+			appendItem(si)
 		}
 	}
 
-	// Handle item creation/update (will be implemented in a later step)
-	// For now, just log what we found
-	logger.Infof("Found %d items in story %s", len(items), story.ID)
+	if len(infos) == 0 {
+		return nil
+	}
 
+	if err := s.storeItems(ctx, story.ID, infos); err != nil {
+		return fmt.Errorf("failed to store items for story %s: %w", story.ID, err)
+	}
+	logger.Infof("Stored %d items for story %s", len(infos), story.ID)
 	return nil
 }

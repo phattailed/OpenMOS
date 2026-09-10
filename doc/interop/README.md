@@ -2713,3 +2713,88 @@ Three details worth recording:
 Raising the cap was considered and rejected: a larger number moves the cliff without removing it.
 `Recorder.KeepAlive` re-enables capture for the rare case of deliberately debugging Profile 0
 keep-alive behaviour on a short run.
+
+## 40. Items were never persisted from roStorySend, three ways
+
+One graphics item, added by hand to a story on the reference NCS, exposed three defects in a row.
+The item arrived intact — payload and all — and OpenMOS stored the running order and twelve stories
+while persisting **zero items**.
+
+That matters more than the earlier gaps. Items are the point of a MOS device: the `objID`, the
+`itemChannel` and the graphics payload all live on the item. A running order without items is a
+list of headlines. It also means the Profile 2 claim was overstated — running orders and stories
+were persisted, items were not.
+
+The captured frame, which is what made each defect visible:
+
+```xml
+<storyBody><p> </p>
+<p> </p><storyItem><mosItem><itemID>1</itemID>
+  <itemSlug>LOWER THIRD: Mayor Jones / Transit Vote</itemSlug>
+  <objID>OM-T99124A</objID><mosID>openmos.example.mos</mosID>
+  <itemEdDur>150</itemEdDur><itemChannel>A</itemChannel>
+  <mosExternalMetadata><mosScope>STORY</mosScope>
+    <mosSchema>http://openmos.example/schema/graphics/v1</mosSchema>
+    <mosPayload><template>lower_third_2line</template>
+      <line1>Mayor Alicia Jones</line1>…</mosPayload>
+  </mosExternalMetadata>
+</mosItem></storyItem><p> </p>
+</storyBody>
+```
+
+### `storyItem` is a direct child of `storyBody`, not nested in a paragraph
+
+`StoryParagraph` had `Items []StoryItem` bound to `storyItem`, so only the paragraph-nested form
+was modelled. `StoryBody` had no such field. A live ENPS emits `storyItem` as a **sibling of the
+paragraphs**, so `encoding/xml` had nowhere to unmarshal it and discarded every item silently.
+
+Both shapes are now accepted. The specification's examples show the nested form and a real NCS
+sends the flat one, which is the same "correct by the document, wrong in the field" pattern as the
+two `listMachInfo` dialects in §14.
+
+### The fields are one level deeper, inside `mosItem`
+
+`StoryItem`'s fields were declared flat. The real traffic wraps them in `<mosItem>`. A new
+`StoryItemFields` models the nested form, and `StoryItem.ItemFields()` returns whichever shape
+arrived so callers need not know which. `mosAbstract` is used as a slug fallback: it is an object
+field rather than an item field, but ENPS populates both with the same text and some peers send
+only the abstract.
+
+### `processStoryBody` built the items and threw them away
+
+```go
+// Handle item creation/update (will be implemented in a later step)
+// For now, just log what we found
+logger.Infof("Found %d items in story %s", len(items), story.ID)
+return nil
+```
+
+Dead in the same manner as `restoreExternalMetadata` in §32: it compiled, it logged plausibly, and
+it did nothing. So even a correctly-shaped item was only counted.
+
+Worse, **`ProcessROStorySend` never called `processStoryBody` at all.** Item extraction existed only
+on the `roElementAction` path, through `createNewStory`/`updateStory`. Since `roStorySend` is how
+stories actually arrive, items were unreachable in practice by two independent routes at once.
+
+Persistence now delegates to `storeItems`, the routine the `roCreate` path already used, so the two
+cannot drift in how they create, update, order or preserve metadata.
+
+### And metadata was dropped on every resend
+
+`storeItems` set `ExternalMetadata` when creating an item and not when updating one. Update is the
+**common** path: a live ENPS re-sends the same `roStorySend` repeatedly as an operator edits, so a
+graphics payload survived first arrival and was dropped by every message after it. It is now carried
+across, and only overwritten when the incoming message actually has blocks, so a peer that omits
+them cannot silently erase what is held.
+
+### What did work
+
+`PreserveExternalMetadata=1` on the device row is confirmed: eleven metadata blocks arrived with
+payloads intact, including ENPS's own running-order block at `mosScope=PLAYLIST`. The flag gates
+whether ENPS sends payloads at all, so this had to be established before drawing any conclusion
+about our own handling — an ambiguity that has already cost time once.
+
+The fixture for these tests is the captured frame itself, structure verbatim, rather than one
+written by hand. Reverting the `storyBody` binding fails the parse test with *"the element has
+nowhere to unmarshal into"*, and reverting persistence fails with *"parsing the item is not
+enough"*.
