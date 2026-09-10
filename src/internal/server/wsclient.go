@@ -67,6 +67,53 @@ type WSClient struct {
 	// whether a keepAlive is actually needed.
 	frameMu   sync.Mutex
 	lastFrame time.Time
+
+	// Heartbeat loop prevention. The specification requires that a heartbeat be answered with a
+	// heartbeat AND warns in the same paragraph to "avoid an endless looping condition on response".
+	// Those pull in opposite directions, and answering unconditionally is what loops: we heartbeat, the
+	// peer answers, we treat its answer as a request and answer that, forever. Measured against a live
+	// NOM at five round trips per second, 2060 of 6182 lines in one rotated log (doc/interop §47).
+	hbMu sync.Mutex
+	// hbOutstanding is the messageID of a heartbeat we sent and have not seen answered. An inbound
+	// heartbeat carrying it is a RESPONSE and must not be answered.
+	hbOutstanding string
+	// hbLastAnswer is when we last answered a peer's heartbeat, used as a backstop in case a peer does
+	// not echo messageID correctly -- identifier matching is the right test, but it depends on the
+	// other end, and a loop must be impossible rather than merely unlikely.
+	hbLastAnswer time.Time
+}
+
+// noteHeartbeatSent records the identifier of a heartbeat we originated.
+func (c *WSClient) noteHeartbeatSent(messageID string) {
+	c.hbMu.Lock()
+	c.hbOutstanding = messageID
+	c.hbMu.Unlock()
+}
+
+// isOurHeartbeatAnswered reports whether an inbound heartbeat is the answer to one we sent, clearing
+// the outstanding identifier when it is.
+func (c *WSClient) isOurHeartbeatAnswered(messageID string) bool {
+	if messageID == "" {
+		return false
+	}
+	c.hbMu.Lock()
+	defer c.hbMu.Unlock()
+	if c.hbOutstanding != "" && c.hbOutstanding == messageID {
+		c.hbOutstanding = ""
+		return true
+	}
+	return false
+}
+
+// mayAnswerHeartbeat rate-limits heartbeat responses to at most one per interval.
+func (c *WSClient) mayAnswerHeartbeat(interval time.Duration) bool {
+	c.hbMu.Lock()
+	defer c.hbMu.Unlock()
+	if !c.hbLastAnswer.IsZero() && time.Since(c.hbLastAnswer) < interval {
+		return false
+	}
+	c.hbLastAnswer = time.Now()
+	return true
 }
 
 // noteFrame records that the connection carried traffic.
@@ -472,6 +519,7 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 
 	// heartbeat -> heartbeat
 	hbID := c.messageID()
+	c.noteHeartbeatSent(hbID)
 	hb := mosxml.CreateHeartbeat()
 	hbEnv, err := mosxml.GenerateEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, hbID, hb)
 	if err != nil {
@@ -600,6 +648,9 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn, lane clie
 				payload, label, msgID = mosxml.KeepAlive{}, "keepAlive", ""
 			} else {
 				payload, label, msgID = mosxml.CreateHeartbeat(), "heartbeat", c.messageID()
+				// Record it so the peer's answer is recognised as an answer rather than treated as a
+				// fresh request and answered in turn.
+				c.noteHeartbeatSent(msgID)
 			}
 
 			env, err := mosxml.GenerateEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, msgID, payload)
@@ -664,6 +715,22 @@ func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8
 
 	switch msg.(type) {
 	case mosxml.Heartbeat:
+		// An answer to our own heartbeat is not a request. Answering it is what produces the endless
+		// loop the specification warns about, and messageID exists precisely to tell the two apart:
+		// "Messages used as response to a request have the same messageID as the request."
+		if c.isOurHeartbeatAnswered(env.MessageID) {
+			return
+		}
+		// Backstop for a peer that does not echo the identifier. Without this, an unmatched heartbeat
+		// flood still loops -- and correctness here must not depend on the other end behaving.
+		interval := c.config.MOS.HeartbeatInterval
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		if !c.mayAnswerHeartbeat(interval) {
+			return
+		}
+
 		respID := env.MessageID
 		if respID == "" {
 			respID = c.messageID()
