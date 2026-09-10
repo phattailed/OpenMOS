@@ -439,14 +439,14 @@ func TestParserAllProfiles(t *testing.T) {
 				if rsa.Username != "producer1" {
 					t.Errorf("expected username producer1, got %s", rsa.Username)
 				}
-				if rsa.ROStorySend.ROID != "RO001" {
-					t.Errorf("expected roStorySend.roID RO001, got %s", rsa.ROStorySend.ROID)
+				if rsa.StoryAction.ROID != "RO001" {
+					t.Errorf("expected roStorySend.roID RO001, got %s", rsa.StoryAction.ROID)
 				}
-				if rsa.ROStorySend.StoryID != "STORY001" {
-					t.Errorf("expected roStorySend.storyID STORY001, got %s", rsa.ROStorySend.StoryID)
+				if rsa.StoryAction.StoryID != "STORY001" {
+					t.Errorf("expected roStorySend.storyID STORY001, got %s", rsa.StoryAction.StoryID)
 				}
-				if rsa.ROStorySend.StorySlug != "Updated Story" {
-					t.Errorf("expected roStorySend.storySlug 'Updated Story', got %s", rsa.ROStorySend.StorySlug)
+				if rsa.StoryAction.StorySlug != "Updated Story" {
+					t.Errorf("expected roStorySend.storySlug 'Updated Story', got %s", rsa.StoryAction.StorySlug)
 				}
 			},
 		},

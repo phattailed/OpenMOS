@@ -16,6 +16,7 @@ import (
 	"airshift/openmos/internal/repository"
 	"airshift/openmos/internal/server"
 	"airshift/openmos/internal/service"
+	mosxml "airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
 
 	"github.com/getsentry/sentry-go"
@@ -25,6 +26,21 @@ func main() {
 	// Define command-line flags
 	generateConfig := flag.String("generate-config", "", "Generate a default configuration file at the specified path and exit")
 	configPath := flag.String("config", "", "Path to the configuration file (default: search for config.yaml)")
+
+	// One-shot Profile 7 mode. This does not start a server: it opens a single non-passive MOS 4
+	// connection, sends one roReqStoryAction, reports the answer and exits.
+	//
+	// It is a separate mode rather than a feature of the running server because a passive connection
+	// cannot carry a request -- ENPS treats a passive link as its own output channel -- and because
+	// the standing test appliance runs the passive client continuously and should not also be firing
+	// experimental writes at the NCS.
+	storyAction := flag.String("story-action", "", "One-shot Profile 7 request: NEW, UPDATE, DELETE or MOVE")
+	actionRO := flag.String("action-ro", "", "roID the story action applies to")
+	actionStory := flag.String("action-story", "", "storyID to act on (UPDATE, DELETE) or to move (MOVE)")
+	actionBefore := flag.String("action-before", "", "storyID to place before (MOVE, NEW)")
+	actionSlug := flag.String("action-slug", "", "storySlug for NEW or UPDATE")
+	actionUser := flag.String("action-user", "", "username attribute; identifies who the change is on behalf of")
+	actionTimeout := flag.Duration("action-timeout", 30*time.Second, "how long to wait for the roAck")
 
 	// Parse flags
 	flag.Parse()
@@ -47,6 +63,19 @@ func main() {
 	// Set config file path if provided
 	if *configPath != "" {
 		os.Setenv("CONFIG_FILE", *configPath)
+	}
+
+	if *storyAction != "" {
+		runStoryAction(storyActionRequest{
+			operation: *storyAction,
+			roID:      *actionRO,
+			storyID:   *actionStory,
+			before:    *actionBefore,
+			slug:      *actionSlug,
+			username:  *actionUser,
+			timeout:   *actionTimeout,
+		})
+		return
 	}
 
 	// Initialize standard logger
@@ -283,4 +312,87 @@ func main() {
 	defer sentry.Flush(2 * time.Second)
 
 	log.Info("Shutdown complete. Goodbye!")
+}
+
+// storyActionRequest is the flag set for the one-shot Profile 7 mode.
+type storyActionRequest struct {
+	operation string
+	roID      string
+	storyID   string
+	before    string
+	slug      string
+	username  string
+	timeout   time.Duration
+}
+
+// runStoryAction sends one roReqStoryAction and reports what came back.
+//
+// Exit status carries the outcome so this is usable from a script: 0 when the NCS acknowledged, 1
+// when it refused or never answered. That distinction matters because the specification permits an
+// ACK that never arrives -- silence is a documented outcome, not a crash, and must not be read as
+// success.
+func runStoryAction(req storyActionRequest) {
+	log := logger.DefaultLogger()
+
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+	if lvl, ok := logger.LevelValues[strings.ToLower(cfg.Logging.Level)]; ok {
+		log.SetLevel(lvl)
+	}
+
+	op := mosxml.StoryActionOperation(strings.ToUpper(strings.TrimSpace(req.operation)))
+	if !op.Valid() {
+		log.Fatalf("Unknown operation %q. Profile 7 defines NEW, UPDATE, DELETE and MOVE; "+
+			"INSERT and SWAP belong to roElementAction, and REPLACE to ncsReqStoryAction.", req.operation)
+	}
+
+	var body *mosxml.StoryActionBody
+	switch op {
+	case mosxml.StoryActionMove:
+		body = mosxml.NewStoryActionMove(req.roID, req.before, req.storyID)
+	case mosxml.StoryActionDelete:
+		body = mosxml.NewStoryActionDelete(req.roID, req.storyID)
+	case mosxml.StoryActionUpdate:
+		body = mosxml.NewStoryActionUpdate(req.roID, req.storyID, req.slug, &mosxml.StoryBody{})
+	case mosxml.StoryActionNew:
+		body = mosxml.NewStoryActionCreate(req.roID, req.before, req.slug, "", &mosxml.StoryBody{})
+	}
+
+	// Capture is deliberately enabled for this mode when a directory is configured: a live write is
+	// exactly the traffic worth keeping as evidence.
+	var frames *capture.Recorder
+	if cfg.Capture.Dir != "" {
+		frames, err = capture.New(cfg.Capture.Dir)
+		if err != nil {
+			log.Warningf("Frame capture unavailable: %v", err)
+		}
+	}
+
+	client := server.NewStoryActionClient(cfg, frames)
+	ctx, cancel := context.WithTimeout(context.Background(), req.timeout+30*time.Second)
+	defer cancel()
+
+	result, err := client.Send(ctx, op, body, req.username, req.timeout)
+	if err != nil {
+		log.Fatalf("Story action failed: %v", err)
+	}
+
+	switch {
+	case result.TimedOut:
+		log.Errorf("No roAck within %s. The specification allows this: \"It is possible that an ACK "+
+			"condition may never be returned by the NCS.\" The request may still have been applied.",
+			req.timeout)
+		os.Exit(1)
+	case result.Accepted():
+		log.Infof("ACCEPTED  operation=%s roStatus=%q", op, result.Ack.Status)
+		if op == mosxml.StoryActionNew {
+			log.Infof("On NEW the specification returns the assigned storyID in roStatus, so the "+
+				"value above is the new story's identifier: %q", result.Ack.Status)
+		}
+	default:
+		log.Errorf("REFUSED   operation=%s roStatus=%q", op, result.Ack.Status)
+		os.Exit(1)
+	}
 }
