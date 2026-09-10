@@ -126,7 +126,7 @@ func (s *MOSService) InsertStories(ctx context.Context, roID string, target *xml
 	// Determine insert position
 	insertAfterOrder := 0
 	if target != nil && target.StoryID != "" {
-		targetStory, err := s.storyRepo.Get(ctx, target.StoryID)
+		targetStory, err := s.resolveStory(ctx, roID, target.StoryID)
 		if err != nil {
 			return fmt.Errorf("target story not found: %w", err)
 		}
@@ -153,7 +153,8 @@ func (s *MOSService) InsertStories(ctx context.Context, roID string, target *xml
 	// Insert the new stories
 	for i, storyInfo := range stories {
 		story := &model.Story{
-			ID:             storyInfo.ID,
+			ID:             storyPersistenceID(roID, storyInfo.ID),
+			RawID:          storyInfo.ID,
 			RunningOrderID: roID,
 			Slug:           storyInfo.Slug,
 			Number:         storyInfo.Number,
@@ -171,8 +172,9 @@ func (s *MOSService) InsertStories(ctx context.Context, roID string, target *xml
 		// Insert items for this story
 		for j, itemInfo := range storyInfo.Items {
 			item := &model.Item{
-				ID:        itemInfo.ID,
-				StoryID:   storyInfo.ID,
+				ID:        itemPersistenceID(storyPersistenceID(roID, storyInfo.ID), itemInfo.ID),
+				RawID:     itemInfo.ID,
+				StoryID:   storyPersistenceID(roID, storyInfo.ID),
 				Slug:      itemInfo.Slug,
 				ObjectID:  itemInfo.ObjectID,
 				Order:     j + 1,
@@ -198,10 +200,16 @@ func (s *MOSService) InsertStories(ctx context.Context, roID string, target *xml
 
 // InsertItems inserts items into a story at the specified position
 func (s *MOSService) InsertItems(ctx context.Context, roID, storyID, beforeItemID string, items []xml.ItemInfo) error {
+	// The peer names the story by its wire identifier; storage uses the composite key.
+	storyKey, err := s.storyKeyFor(ctx, roID, storyID)
+	if err != nil {
+		return err
+	}
+	storyID = storyKey
 	// Determine insert position
 	insertAfterOrder := 0
 	if beforeItemID != "" {
-		targetItem, err := s.itemRepo.Get(ctx, beforeItemID)
+		targetItem, err := s.resolveItem(ctx, storyID, beforeItemID)
 		if err != nil {
 			return fmt.Errorf("target item not found: %w", err)
 		}
@@ -259,14 +267,14 @@ func (s *MOSService) ReplaceStories(ctx context.Context, roID string, target *xm
 	}
 
 	// Get the target story to determine its position
-	targetStory, err := s.storyRepo.Get(ctx, target.StoryID)
+	targetStory, err := s.resolveStory(ctx, roID, target.StoryID)
 	if err != nil {
 		return fmt.Errorf("target story not found: %w", err)
 	}
 	replaceOrder := targetStory.Order
 
 	// Delete the target story and its items
-	items, err := s.itemRepo.ListByStory(ctx, target.StoryID)
+	items, err := s.itemRepo.ListByStory(ctx, targetStory.ID)
 	if err == nil {
 		for _, item := range items {
 			_ = s.itemRepo.Delete(ctx, item.ID)
@@ -296,7 +304,8 @@ func (s *MOSService) ReplaceStories(ctx context.Context, roID string, target *xm
 	// Insert replacement stories
 	for i, storyInfo := range stories {
 		story := &model.Story{
-			ID:             storyInfo.ID,
+			ID:             storyPersistenceID(roID, storyInfo.ID),
+			RawID:          storyInfo.ID,
 			RunningOrderID: roID,
 			Slug:           storyInfo.Slug,
 			Number:         storyInfo.Number,
@@ -306,15 +315,24 @@ func (s *MOSService) ReplaceStories(ctx context.Context, roID string, target *xm
 			UpdatedAt:      time.Now(),
 		}
 
-		if _, err := s.storyRepo.Create(ctx, story); err != nil {
+		// Replacing a story that is already held must update it rather than fail. Under the old
+		// identity handling this never arose, because each replacement minted a fresh record under a
+		// key nothing else used -- which is exactly how duplicates accumulated.
+		if existing, getErr := s.storyRepo.Get(ctx, story.ID); getErr == nil {
+			story.CreatedAt = existing.CreatedAt
+			if err := s.storyRepo.Update(ctx, story); err != nil {
+				return fmt.Errorf("failed to update replacement story %s: %w", storyInfo.ID, err)
+			}
+		} else if _, err := s.storyRepo.Create(ctx, story); err != nil {
 			return fmt.Errorf("failed to create replacement story %s: %w", storyInfo.ID, err)
 		}
 
 		// Insert items for this story
 		for j, itemInfo := range storyInfo.Items {
 			item := &model.Item{
-				ID:        itemInfo.ID,
-				StoryID:   storyInfo.ID,
+				ID:        itemPersistenceID(storyPersistenceID(roID, storyInfo.ID), itemInfo.ID),
+				RawID:     itemInfo.ID,
+				StoryID:   storyPersistenceID(roID, storyInfo.ID),
 				Slug:      itemInfo.Slug,
 				ObjectID:  itemInfo.ObjectID,
 				Order:     j + 1,
@@ -340,12 +358,18 @@ func (s *MOSService) ReplaceStories(ctx context.Context, roID string, target *xm
 
 // ReplaceItems replaces the target item with the provided items
 func (s *MOSService) ReplaceItems(ctx context.Context, roID, storyID, targetItemID string, items []xml.ItemInfo) error {
+	// The peer names the story by its wire identifier; storage uses the composite key.
+	storyKey, err := s.storyKeyFor(ctx, roID, storyID)
+	if err != nil {
+		return err
+	}
+	storyID = storyKey
 	if targetItemID == "" {
 		return fmt.Errorf("REPLACE item requires target itemID")
 	}
 
 	// Get the target item to determine its position
-	targetItem, err := s.itemRepo.Get(ctx, targetItemID)
+	targetItem, err := s.resolveItem(ctx, storyID, targetItemID)
 	if err != nil {
 		return fmt.Errorf("target item not found: %w", err)
 	}
@@ -405,12 +429,14 @@ func (s *MOSService) ReplaceItems(ctx context.Context, roID, storyID, targetItem
 func (s *MOSService) MoveStories(ctx context.Context, roID string, target *xml.ElementTarget, storyIDs []string) error {
 	// Determine the target position (insert after this story)
 	targetOrder := 0
+	targetKey := ""
 	if target != nil && target.StoryID != "" {
-		targetStory, err := s.storyRepo.Get(ctx, target.StoryID)
+		targetStory, err := s.resolveStory(ctx, roID, target.StoryID)
 		if err != nil {
 			return fmt.Errorf("target story not found: %w", err)
 		}
 		targetOrder = targetStory.Order
+		targetKey = targetStory.ID
 	}
 
 	// Get all stories in the RO
@@ -419,10 +445,18 @@ func (s *MOSService) MoveStories(ctx context.Context, roID string, target *xml.E
 		return fmt.Errorf("failed to list stories: %w", err)
 	}
 
-	// Build a set of stories being moved
-	moveSet := make(map[string]bool)
-	for _, id := range storyIDs {
-		moveSet[id] = true
+	// Translate the wire identifiers into storage keys before comparing. Building this set from the
+	// raw wire values is the defect that made MOVE a silent no-op: nothing matched, the order was
+	// rebuilt unchanged, and an OK was returned.
+	keys, missing := s.resolveStoryKeys(ctx, roID, storyIDs)
+	if len(missing) > 0 {
+		// Refusing is the honest answer. A partial move leaves our sequence disagreeing with the
+		// NCS's, and the caller turns this into a NACK plus a roReq resync rather than pretending.
+		return fmt.Errorf("cannot move stories not held by this device: %v", missing)
+	}
+	moveSet := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		moveSet[key] = true
 	}
 
 	// Remove moved stories from their positions and reorder remaining
@@ -436,12 +470,23 @@ func (s *MOSService) MoveStories(ctx context.Context, roID string, target *xml.E
 		}
 	}
 
-	// Determine the new insert position within remaining stories
-	insertIdx := 0
-	for i, story := range remaining {
-		if story.Order <= targetOrder {
-			insertIdx = i + 1
+	// MOVE places the sources BEFORE the target: the spec defines element_target as "a storyID
+	// specifying the story before which the source stories are moved". The position is therefore the
+	// target's own index among the stories that stay put, not the index after it. Comparing orders
+	// with <= walked one place too far, which made a move onto the immediately following story a
+	// no-op -- invisible unless the assertion is on the resulting sequence.
+	insertIdx := len(remaining)
+	if targetKey != "" {
+		for i, story := range remaining {
+			if story.ID == targetKey {
+				insertIdx = i
+				break
+			}
 		}
+	} else {
+		// No target: the spec leaves placement to the receiver. Appending is the least surprising
+		// choice and keeps the existing sequence otherwise intact.
+		_ = targetOrder
 	}
 
 	// Build new order: remaining[:insertIdx] + moving + remaining[insertIdx:]
@@ -460,7 +505,7 @@ func (s *MOSService) MoveStories(ctx context.Context, roID string, target *xml.E
 	}
 
 	s.publishROUpdate(roID)
-	logger.Infof("Moved %d stories in RO %s to position after %d", len(storyIDs), roID, targetOrder)
+	logger.Infof("Moved %d stories in RO %s to position %d, before story %s", len(moving), roID, insertIdx, targetKey)
 	return nil
 }
 
@@ -469,7 +514,7 @@ func (s *MOSService) MoveItems(ctx context.Context, roID, storyID, targetItemID 
 	// Determine the target position
 	targetOrder := 0
 	if targetItemID != "" {
-		targetItem, err := s.itemRepo.Get(ctx, targetItemID)
+		targetItem, err := s.resolveItem(ctx, storyID, targetItemID)
 		if err != nil {
 			return fmt.Errorf("target item not found: %w", err)
 		}
@@ -483,9 +528,17 @@ func (s *MOSService) MoveItems(ctx context.Context, roID, storyID, targetItemID 
 	}
 
 	// Build a set of items being moved
-	moveSet := make(map[string]bool)
-	for _, id := range itemIDs {
-		moveSet[id] = true
+	storyKey, keyErr := s.storyKeyFor(ctx, roID, storyID)
+	if keyErr != nil {
+		return keyErr
+	}
+	itemKeys, missingItems := s.resolveItemKeys(ctx, storyKey, itemIDs)
+	if len(missingItems) > 0 {
+		return fmt.Errorf("cannot move items not held in story %s: %v", storyID, missingItems)
+	}
+	moveSet := make(map[string]bool, len(itemKeys))
+	for _, key := range itemKeys {
+		moveSet[key] = true
 	}
 
 	// Separate moving items from remaining
@@ -531,7 +584,14 @@ func (s *MOSService) MoveItems(ctx context.Context, roID, storyID, targetItemID 
 func (s *MOSService) DeleteStories(ctx context.Context, roID string, storyIDs []string) error {
 	// Collect all item IDs to delete across all stories being removed
 	var allItemIDs []string
-	for _, storyID := range storyIDs {
+	for _, wireStoryID := range storyIDs {
+		storyID, err := s.storyKeyFor(ctx, roID, wireStoryID)
+		if err != nil {
+			// Deleting something we do not hold is not an error worth failing the whole batch for:
+			// the end state the NCS wants is that it is absent, and it already is.
+			logger.Warningf("Delete skipped story %s: %v", wireStoryID, err)
+			continue
+		}
 		items, err := s.itemRepo.ListByStory(ctx, storyID)
 		if err == nil {
 			for _, item := range items {
@@ -569,7 +629,18 @@ func (s *MOSService) DeleteStories(ctx context.Context, roID string, storyIDs []
 
 // DeleteItems deletes items from a story by their IDs
 func (s *MOSService) DeleteItems(ctx context.Context, roID, storyID string, itemIDs []string) error {
-	if err := s.itemRepo.DeleteMultiple(ctx, itemIDs); err != nil {
+	// The peer names the story by its wire identifier; storage uses the composite key.
+	storyKey, err := s.storyKeyFor(ctx, roID, storyID)
+	if err != nil {
+		return err
+	}
+	storyID = storyKey
+	// Deleting by wire identifier removes nothing, because storage keys are composite.
+	itemKeys, missing := s.resolveItemKeys(ctx, storyID, itemIDs)
+	if len(missing) > 0 {
+		logger.Warningf("Delete skipped items not held in story %s: %v", storyID, missing)
+	}
+	if err := s.itemRepo.DeleteMultiple(ctx, itemKeys); err != nil {
 		return fmt.Errorf("failed to delete items: %w", err)
 	}
 
@@ -590,12 +661,12 @@ func (s *MOSService) DeleteItems(ctx context.Context, roID, storyID string, item
 
 // SwapStories swaps the positions of two stories in a running order
 func (s *MOSService) SwapStories(ctx context.Context, roID, storyID1, storyID2 string) error {
-	story1, err := s.storyRepo.Get(ctx, storyID1)
+	story1, err := s.resolveStory(ctx, roID, storyID1)
 	if err != nil {
 		return fmt.Errorf("story %s not found: %w", storyID1, err)
 	}
 
-	story2, err := s.storyRepo.Get(ctx, storyID2)
+	story2, err := s.resolveStory(ctx, roID, storyID2)
 	if err != nil {
 		return fmt.Errorf("story %s not found: %w", storyID2, err)
 	}
@@ -619,12 +690,18 @@ func (s *MOSService) SwapStories(ctx context.Context, roID, storyID1, storyID2 s
 
 // SwapItems swaps the positions of two items within a story
 func (s *MOSService) SwapItems(ctx context.Context, roID, storyID, itemID1, itemID2 string) error {
-	item1, err := s.itemRepo.Get(ctx, itemID1)
+	// The peer names the story by its wire identifier; storage uses the composite key.
+	storyKey, err := s.storyKeyFor(ctx, roID, storyID)
+	if err != nil {
+		return err
+	}
+	storyID = storyKey
+	item1, err := s.resolveItem(ctx, storyID, itemID1)
 	if err != nil {
 		return fmt.Errorf("item %s not found: %w", itemID1, err)
 	}
 
-	item2, err := s.itemRepo.Get(ctx, itemID2)
+	item2, err := s.resolveItem(ctx, storyID, itemID2)
 	if err != nil {
 		return fmt.Errorf("item %s not found: %w", itemID2, err)
 	}
