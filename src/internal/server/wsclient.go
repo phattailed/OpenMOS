@@ -448,6 +448,23 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			if data == nil {
 				continue
 			}
+
+			// Record every inbound frame HERE, not only in readMessage.
+			//
+			// readMessage is the handshake's reader, and capture used to live there alone. Passive
+			// mode skips the handshake entirely, so this loop was the only reader in use and
+			// nothing inbound was ever written. A live NCS delivered a roReadyToAir and nine
+			// roStorySend to the appliance and the capture directory recorded zero inbound frames
+			// (doc/interop §38). For an appliance whose purpose is producing evidence, silently
+			// capturing nothing is worse than the delivery bug it was hiding.
+			//
+			// Recorded before parsing, deliberately: a frame we fail to parse is the most valuable
+			// one to have on disk.
+			if err := c.frames.Record("mos4-ws-client", capture.Inbound, c.config.WSClient.PeerURL,
+				data, len(msg.data), wireEncoding(msg.msgType)); err != nil {
+				logger.Errorf("Frame capture failed: %v", err)
+			}
+
 			c.handleInbound(ctx, conn, data)
 		}
 	}

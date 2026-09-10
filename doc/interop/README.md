@@ -2594,3 +2594,86 @@ test rundown; and generate queued work first then connect or reconnect. Require 
 delivery, acknowledgment and queue drain, corroborated by the client's stored running order.
 No `roReq`-then-disconnect experiment, equal-ID workaround, or URL/configuration change is
 needed to test this handoff. No ADO item was changed by this investigation.
+
+## 38. Passive delivery works on 9.6, and standing an appliance up found two of our bugs
+
+A standing appliance was built on a small Linux instance inside the same VPC as the reference NCS
+(NOM **9.6.2.2026**), running as an unattended service, MOS 4 passive client only, no listeners and
+no inbound firewall rules. Device row per §35: `MOSVersion=4.0`, `Passive=0`, blank endpoint, and
+the device dials with `passive=true`.
+
+**§35 is confirmed with production traffic.** A human activated a MOS-controlled rundown in the
+ENPS client and ENPS pushed it down the connection the appliance had opened: one `roCreate`, one
+`roReadyToAir`, and nine `roStorySend`, carrying real running-order and story identifiers. Nothing
+was solicited. Passive output delivery on 9.6 is not in doubt.
+
+Two of our own defects were exposed in the process, and neither was reachable by any existing test.
+
+### `roCreate` was unhandled on the client, and it took the whole rundown with it
+
+The client logged:
+
+```
+MOS 4 client received unhandled message type roCreate from ncsID=...
+```
+
+`roReadyToAir` and every `roStorySend` routed correctly through the shared dispatcher. `roCreate`
+did not, because `roCreate` was never in the shared dispatcher — it was per-transport, on the
+reasoning that deduplication scope differs between transports.
+
+That reasoning confused two layers. Deduplication happens in the transport **above** dispatch, using
+that transport's own scope; the application step below is identical. Keeping the application
+per-transport bought nothing and cost the client completely, because the client has no per-transport
+`roCreate` handler of its own.
+
+The consequence is a cascade, and it is exactly what the protocol prescribes: with no running order
+created locally, every following `roStorySend` referenced an unknown `roID`. The appliance persisted
+a 48-byte snapshot with **zero running orders, zero stories, zero items** — from a rundown that had
+arrived intact.
+
+The client's own dispatch comment already claimed a pushed `roCreate` would be applied rather than
+dropped. It is now true.
+
+### Inbound frame capture never ran on the passive path
+
+While twelve messages were being received, the capture directory recorded **zero inbound frames**.
+
+Capture lived only in `readMessage`, which is the *handshake's* reader. Passive mode deliberately
+skips the handshake (§25), so `readLoop` was the only reader in use — and it decoded and dispatched
+without recording anything. §35 had already noticed an "inbound-recording gap" and correctly
+declined to treat capture absence as proof of non-delivery; this is that gap, located.
+
+For an appliance whose purpose is producing evidence, silently capturing nothing is worse than the
+delivery bug it was concealing: it makes a negative result indistinguishable from a broken
+instrument. Recording now happens in the read loop, before parsing, on the same discipline as
+elsewhere — a frame that fails to parse is the most valuable one to keep.
+
+### Why no existing test caught either
+
+`TestClaimedSharedMessagesReallyAreShared` verifies what the shared dispatcher recognises, and
+`roCreate` was *honestly* classified as per-transport, so it passed. The inventory from §26 asks
+"is this message handled?" but not "can the client handle the family it exists to receive?" The
+blind spot was one layer over from the one that test closed.
+
+Both are now covered, and both were confirmed by reverting the fix: removing `roCreate` from the
+dispatcher reproduces the live failure with the message *"a passive client would log it as
+unhandled and drop the whole rundown"*.
+
+### A transient worth recording, because it looks like §37
+
+Mid-test, NOM's own MOS status showed the device as **`Disconnected` with 14 queued** while an
+`ESTAB` socket existed at OS level between appliance and NCS. That resembles the 9.7 handoff failure
+in §37. It was not: after the client reconnected, NOM attached the socket and the queue drained. So
+the queued-before-connect obstacle §37 predicts did **not** bite on 9.6, which narrows §37's scope to
+9.7 rather than broadening it.
+
+### Operational notes for rebuilding the appliance
+
+- **SSM Run Command executes without `HOME`**, so Go cannot derive `GOMODCACHE`. Set `GOPATH`,
+  `GOMODCACHE` and `GOCACHE` explicitly or the build fails with "module cache not found".
+- **`nhooyr.io/websocket`'s vanity domain no longer resolves** — the package moved to
+  `github.com/coder/websocket`. `GOPROXY=https://proxy.golang.org` is required so Go does not
+  attempt a direct fetch of a dead host. This is a latent fragility in `go.mod` worth migrating off.
+- The ingress rule permitting the appliance to reach the NCS was added **by hand to a
+  CloudFormation-managed security group**. Template and reality now differ, so a stack update could
+  revert it and the appliance would silently stop connecting.

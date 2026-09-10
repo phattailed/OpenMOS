@@ -71,9 +71,12 @@ var inventory = map[string]struct {
 	// classification changes with it -- which is the mechanism working as intended.
 	"roListAll": {sharedDispatcher, "seeds the sequential roReq-per-running-order discovery walk"},
 
-	// roCreate is deliberately per-transport: both do dedup with ack-after-persist, but the
-	// dedup scoping differs because MOS 4.0 gives each channel its own messageID sequence.
-	"roCreate": {transportHandled, "dedup scope differs per transport, so not yet shared"},
+	// roCreate was per-transport on the reasoning that dedup scoping differs. That confused two
+	// layers: dedup happens in the transport above dispatch, and the application step is
+	// identical. Keeping it split meant the MOS 4 client had no handler at all, so a live NCS
+	// pushed a running order down a passive connection and it was logged as unhandled and
+	// dropped -- taking every following roStorySend with it (doc/interop §38).
+	"roCreate": {sharedDispatcher, "applied with ack-after-persist; dedup stays per-transport above"},
 	"roAck":    {transportHandled, "logged; OpenMOS originates few requests needing correlation"},
 
 	// Profile 1 and 3, object workflow. Parsed so a peer's messages are understood and can be
@@ -160,7 +163,8 @@ func TestClaimedSharedMessagesReallyAreShared(t *testing.T) {
 		"heartbeat": mosxml.Heartbeat{},
 		"keepAlive": mosxml.KeepAlive{},
 		"roCreate":  mosxml.RunningOrderInfo{ID: "RO-1", Slug: "S"},
-		"mosObj":    mosxml.MosObj{},
+		// roCreate is now shared; it stays in the sample set so the claim keeps being checked.
+		"mosObj": mosxml.MosObj{},
 	}
 
 	for name, msg := range samples {
