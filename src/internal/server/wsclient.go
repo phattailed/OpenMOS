@@ -466,19 +466,8 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 		return fmt.Errorf("send reqMachInfo: %w", err)
 	}
 
-	msg, err := c.readMessage(ctx, conn)
-	if err != nil {
-		return fmt.Errorf("await listMachInfo: %w", err)
-	}
-	if _, ok := msg.(mosxml.ListMachInfo); !ok {
-		// A mosAck here is a refusal, and it carries the reason. Reporting only the Go type
-		// throws away the most useful diagnostic there is when bringing up a device: a live
-		// NOM answers an unconfigured mosID with "MOS ID is not recognized by this NOM".
-		if ack, isAck := msg.(mosxml.MOSAck); isAck {
-			return fmt.Errorf("peer refused reqMachInfo with %s: %s",
-				ack.Status, strings.TrimSpace(ack.StatusDescription))
-		}
-		return fmt.Errorf("expected listMachInfo, got %T", msg)
+	if err := c.awaitListMachInfo(ctx, conn); err != nil {
+		return err
 	}
 
 	// heartbeat -> heartbeat
@@ -492,12 +481,8 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 		return fmt.Errorf("send heartbeat: %w", err)
 	}
 
-	hbResp, err := c.readMessage(ctx, conn)
-	if err != nil {
-		return fmt.Errorf("await heartbeat response: %w", err)
-	}
-	if _, ok := hbResp.(mosxml.Heartbeat); !ok {
-		return fmt.Errorf("expected heartbeat response, got %T", hbResp)
+	if err := c.awaitHeartbeat(ctx, conn); err != nil {
+		return err
 	}
 
 	logger.Infof("MOS 4 client completed Profile 0 exchange with ncsID=%s", c.config.MOS.NCSID)
@@ -827,4 +812,67 @@ func (c *WSClient) writeFrame(ctx context.Context, conn *websocket.Conn, utf8XML
 		logger.Errorf("Frame capture failed: %v", err)
 	}
 	return conn.Write(ctx, websocket.MessageBinary, encoded)
+}
+
+// awaitListMachInfo reads until listMachInfo arrives, rather than assuming it is the next frame.
+//
+// The peer is not obliged to answer before saying anything else. A live NOM sent a heartbeat first, and
+// treating the next frame as the answer failed the handshake with "expected listMachInfo, got
+// xml.Heartbeat", forcing a reconnect and another attempt -- burning connections and filling the NCS's
+// log for no reason. This is the same mistake the Profile 7 client made with roAck: what a peer sends
+// alongside an answer is not an error.
+//
+// Bounded by the caller's handshake timeout, so a peer that never answers still fails rather than
+// blocking. A heartbeat seen here is answered, because the specification requires it and ignoring it
+// would leave the peer thinking we are unresponsive during our own handshake.
+func (c *WSClient) awaitListMachInfo(ctx context.Context, conn *websocket.Conn) error {
+	for {
+		msg, err := c.readMessage(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("await listMachInfo: %w", err)
+		}
+		switch m := msg.(type) {
+		case mosxml.ListMachInfo:
+			return nil
+		case mosxml.MOSAck:
+			// A refusal, carrying the reason. Reporting only the Go type throws away the most useful
+			// diagnostic when bringing up a device: a live NOM answers an unconfigured mosID with
+			// "MOS ID is not recognized by this NOM".
+			return fmt.Errorf("peer refused reqMachInfo with %s: %s",
+				m.Status, strings.TrimSpace(m.StatusDescription))
+		case mosxml.Heartbeat:
+			if err := c.answerHeartbeat(ctx, conn, m); err != nil {
+				return err
+			}
+		default:
+			logger.Infof("While awaiting listMachInfo, received %s", msg.GetMessageType())
+		}
+	}
+}
+
+// awaitHeartbeat reads until the peer's heartbeat response arrives.
+func (c *WSClient) awaitHeartbeat(ctx context.Context, conn *websocket.Conn) error {
+	for {
+		msg, err := c.readMessage(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("await heartbeat response: %w", err)
+		}
+		if _, ok := msg.(mosxml.Heartbeat); ok {
+			return nil
+		}
+		logger.Infof("While awaiting a heartbeat response, received %s", msg.GetMessageType())
+	}
+}
+
+// answerHeartbeat replies to a peer's heartbeat during the handshake.
+//
+// The specification warns to "avoid an endless looping condition on response", so this answers a
+// heartbeat the PEER sent and is never called for one we originated.
+func (c *WSClient) answerHeartbeat(ctx context.Context, conn *websocket.Conn, inbound mosxml.Heartbeat) error {
+	resp := mosxml.CreateHeartbeatResponse(inbound.RequestID)
+	env, err := mosxml.GenerateEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, c.messageID(), resp)
+	if err != nil {
+		return fmt.Errorf("build heartbeat response: %w", err)
+	}
+	return c.writeFrame(ctx, conn, env)
 }
