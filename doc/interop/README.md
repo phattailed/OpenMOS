@@ -3239,3 +3239,60 @@ act* will wait forever on this estate.
 report — so the timing bar reached it and did nothing, and it addressed items by bare wire identifier,
 which never matches a composite storage key (§42). Now unreferenced and deleted rather than left to look
 live, which is the fourth time dead-but-plausible code has cost this project time.
+
+## 47. The heartbeat loop, and an instrument that could not see it
+
+Reported by an operator watching NOM's UI: "constant blast of heartbeat messages". Confirmed in NOM's
+own per-device log:
+
+```
+<mosCommand  Command="heartbeat" Time="9/10/2026 9:54:21 PM" IP="openmos.example.mos">
+<nomResponse Command="heartbeat" Time="9/10/2026 9:54:21 PM" IP="openmos.example.mos">
+<mosCommand  Command="heartbeat" Time="9/10/2026 9:54:21 PM" IP="openmos.example.mos">
+<nomResponse Command="heartbeat" Time="9/10/2026 9:54:21 PM" IP="openmos.example.mos">
+```
+
+Five round trips in one second. **2060 of 6182 lines** in a single rotated log, and **148 rotations of
+that log in a day.**
+
+### The specification requires the loop and forbids it, one sentence apart
+
+> An application will respond to a heartbeat message with another heartbeat message. However, care should
+> be taken in implementation of this message to avoid an endless looping condition on response.
+
+Answering unconditionally satisfies the first clause and violates the second. We answered every inbound
+heartbeat; so does NOM; nothing terminated.
+
+### It was concealed by passive mode
+
+The loop needs a long-lived connection on which both ends heartbeat. A passive lane sends `keepAlive`,
+never `heartbeat` — so for as long as the client was passive-only there was no exchange to loop. Adding
+the non-passive request lane (§44) created one, and the loop began immediately.
+
+Worth generalising: a feature that removes the *only* thing suppressing a latent fault will appear to
+have caused it. The request lane did not introduce the answering behaviour, which had been there all
+along; it introduced the conditions under which it mattered.
+
+### Two guards, because one depends on the peer
+
+An inbound heartbeat carrying the `messageID` of one we sent is a **response** and is not answered. That
+is precisely what the field is for: *"Messages used as response to a request have the same messageID as
+the request."*
+
+Identifier matching is the correct test, but it depends on the other end echoing correctly, so a rate
+backstop answers at most one heartbeat per interval. The backstop expires, so a genuine heartbeat is
+still answered later and the peer never concludes we are dead. A loop should be impossible rather than
+merely unlikely.
+
+### The instrument was blind by construction
+
+Before the operator reported it, the frame rate had been measured through the capture directory and
+reported as "2 frames a minute, the normal 30-second cadence". That measurement could not have detected
+this: **capture excludes `keepAlive` and `heartbeat`** (§39, extended in §44's commit), an exclusion added
+hours earlier in the same session. The count was of everything *except* the messages in question, and it
+was used to conclude there was no problem.
+
+The lesson is not "measure more". It is that a filter added for one purpose silently invalidates every
+later measurement that passes through it, and the filter is invisible at the point of measuring. Where
+a subsystem deliberately discards data, a count taken from it needs to state what it excludes — or the
+count needs to come from the other end of the wire, which is what settled this.
