@@ -2961,3 +2961,27 @@ in-place update is the normal path, not the exception.
 Rebuilding `moveSet` from wire identifiers reproduces the original symptom exactly: *"Moved 1
 stories"* in the log, `order = [first, has the graphics item, third]` unchanged, no error. The
 fixture is the captured frame from the live loop above.
+
+### An unknown storyID did not trigger recovery
+
+Re-running the loop with the appliance's state deliberately cleared showed the next layer. The write
+succeeded again -- `ACCEPTED roStatus="OK"` -- and the notification came back, and this time we
+**refused it correctly** instead of silently no-oping:
+
+```
+Failed to apply roElementAction: target story not found: story …;593BEF12 is not held
+in running order …;2D526A13
+```
+
+That is the §42 fix working. But no `roReq` followed, so the divergence stayed. The transport decides
+to request a rebuild by matching `UnknownRunningOrderError`, and `resolveStory` was returning a plain
+`fmt.Errorf`. We refused honestly and then sat diverged with nothing scheduled to repair it.
+
+The recovery is normative, and it names all three levels:
+
+> if a MOS device receives an `roElementAction` message which references an unknown `roID`, `storyID`
+> or `itemID`, the MOS device will send an `roReq` message to the NCS which includes the `roID`.
+
+We had implemented it for an unknown running order only. A missing story or item now reports the same
+lost-synchronisation error, from both the target lookup and the source set, so a NACK is always
+accompanied by a request for the full `roList`.

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	stdxml "encoding/xml"
+	"errors"
 	"testing"
 
 	"airshift/openmos/internal/xml"
@@ -163,5 +164,42 @@ func TestElementActionDoesNotDuplicateStories(t *testing.T) {
 		if n > 1 {
 			t.Errorf("story %s has %d records", raw, n)
 		}
+	}
+}
+
+// An unknown storyID must be reported as lost synchronisation, not as a generic failure.
+//
+// MOS 4.0 §2.3 makes the recovery normative: "if a MOS device receives an roElementAction message
+// which references an unknown roID, storyID or itemID, the MOS device will send an roReq message to
+// the NCS which includes the roID." The transport layer decides to send that roReq by matching this
+// error type, so a plain error means we refuse correctly and then sit diverged with nothing scheduled
+// to repair it -- which is what happened on the live rig after the state was cleared.
+func TestUnknownStoryReportsLostSynchronisation(t *testing.T) {
+	svc, _, _ := newStoryTestService(t)
+	ctx := context.Background()
+	seedThreeStories(t, svc, ctx)
+
+	cases := map[string]error{
+		"unknown target": svc.MoveStories(ctx, moveROID,
+			&xml.ElementTarget{StoryID: `NCS-HOST;P_STORYTELLING\W\R_2D526A13;NOT-HELD`},
+			[]string{moveSourceS}),
+		"unknown source": svc.MoveStories(ctx, moveROID,
+			&xml.ElementTarget{StoryID: moveTargetS},
+			[]string{`NCS-HOST;P_STORYTELLING\W\R_2D526A13;NOT-HELD`}),
+	}
+	for name, err := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err == nil {
+				t.Fatal("expected a refusal")
+			}
+			var unknown *UnknownRunningOrderError
+			if !errors.As(err, &unknown) {
+				t.Errorf("error %q is not recognisable as lost synchronisation, so no roReq will be "+
+					"sent and the divergence will persist", err)
+			}
+			if unknown != nil && unknown.ROID != moveROID {
+				t.Errorf("recovery must name the running order; got %q", unknown.ROID)
+			}
+		})
 	}
 }
