@@ -46,11 +46,19 @@ func (r ROItemCue) GetMessageType() string {
 // Per XSD: operation attr (required), leaseLock attr (optional), username attr (optional), roStorySend child
 // This is DIFFERENT from ncsReqStoryAction (which is NCS->MOS direction)
 type ROReqStoryAction struct {
-	XMLName     xml.Name    `xml:"roReqStoryAction"`
-	Operation   string      `xml:"operation,attr"`
-	LeaseLock   string      `xml:"leaseLock,attr,omitempty"`
-	Username    string      `xml:"username,attr,omitempty"`
-	ROStorySend ROStorySend `xml:"roStorySend"`
+	XMLName   xml.Name `xml:"roReqStoryAction"`
+	Operation string   `xml:"operation,attr"`
+	// LeaseLock is a duration in seconds, under 999, for which the MOS asks the NCS to lock the
+	// story. The spec makes it a live obligation rather than a hint: "The MOS must send a subsequent
+	// action message after the first leaseLock message has been sent, but before the original
+	// leaseLock message has expired. If the leaseLock message has expired then the NCS will take
+	// back control of the story from the MOS." A device that sets this and then goes quiet has
+	// broken its side of the bargain, so leave it empty unless a follow-up is genuinely coming.
+	LeaseLock string `xml:"leaseLock,attr,omitempty"`
+	Username  string `xml:"username,attr,omitempty"`
+	// StoryAction is the Profile 7 form of roStorySend, which carries element_target and
+	// element_source that the plain message does not. See StoryActionBody.
+	StoryAction StoryActionBody `xml:"roStorySend"`
 }
 
 // GetMessageType returns the type of the message

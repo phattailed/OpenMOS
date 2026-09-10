@@ -215,11 +215,19 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 	return nil
 }
 
-// ProcessROReqStoryAction processes a roReqStoryAction message (Profile 6)
-// MOS requests a story modification from NCS; forwards via event bus
+// ProcessROReqStoryAction processes an inbound roReqStoryAction (Profile 7).
+//
+// Profile 7 is a MOS device asking an NCS to change a story, so receiving one means a peer is
+// treating us as the newsroom system. We are not one: we have no story editor and no authority to
+// assign a storyID. The content is stored and the request published on the bus so an NCS-side
+// consumer could act, which is as far as this can honestly go.
+//
+// Note the direction. OpenMOS ORIGINATING this message is the useful case, and that lives in the
+// client rather than here.
 func (s *MOSService) ProcessROReqStoryAction(ctx context.Context, reqAction xml.ROReqStoryAction) error {
-	// Process based on the operation
-	storySend := reqAction.ROStorySend
+	// The nested element is the Profile 7 form of roStorySend, which carries placement elements the
+	// storage path has no use for.
+	storySend := reqAction.StoryAction.AsStorySend()
 
 	// Store/update the story content
 	err := s.ProcessROStorySend(ctx, storySend)

@@ -31,19 +31,19 @@ import (
 func (c *ClientConnection) handleROReqStoryAction(ctx context.Context, msg xml.ROReqStoryAction) error {
 	span := sentry.StartSpan(ctx, "handle_ro_req_story_action")
 	span.SetTag("operation", msg.Operation)
-	span.SetTag("ro_id", msg.ROStorySend.ROID)
-	span.SetTag("story_id", msg.ROStorySend.StoryID)
+	span.SetTag("ro_id", msg.StoryAction.ROID)
+	span.SetTag("story_id", msg.StoryAction.StoryID)
 	defer span.Finish()
 
 	logger.Infof("Received roReqStoryAction from client %s: operation=%s, roID=%s, storyID=%s",
-		c.id, msg.Operation, msg.ROStorySend.ROID, msg.ROStorySend.StoryID)
+		c.id, msg.Operation, msg.StoryAction.ROID, msg.StoryAction.StoryID)
 
 	// Delegate to service layer
 	err := c.server.service.ProcessROReqStoryAction(ctx, msg)
 	if err != nil {
 		logger.Errorf("Failed to process roReqStoryAction for story %s in RO %s: %v",
-			msg.ROStorySend.StoryID, msg.ROStorySend.ROID, err)
-		ack := xml.CreateROAck(msg.ROStorySend.ROID, "NACK", nil)
+			msg.StoryAction.StoryID, msg.StoryAction.ROID, err)
+		ack := xml.CreateROAck(msg.StoryAction.ROID, "NACK", nil)
 		data, marshalErr := xml.GenerateMessage(ack)
 		if marshalErr != nil {
 			return marshalErr
@@ -52,7 +52,7 @@ func (c *ClientConnection) handleROReqStoryAction(ctx context.Context, msg xml.R
 	}
 
 	// Send success ack
-	ack := xml.CreateROAck(msg.ROStorySend.ROID, "ACK", nil)
+	ack := xml.CreateROAck(msg.StoryAction.ROID, "ACK", nil)
 	data, err := xml.GenerateMessage(ack)
 	if err != nil {
 		return err
