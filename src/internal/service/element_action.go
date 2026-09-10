@@ -450,9 +450,12 @@ func (s *MOSService) MoveStories(ctx context.Context, roID string, target *xml.E
 	// rebuilt unchanged, and an OK was returned.
 	keys, missing := s.resolveStoryKeys(ctx, roID, storyIDs)
 	if len(missing) > 0 {
-		// Refusing is the honest answer. A partial move leaves our sequence disagreeing with the
-		// NCS's, and the caller turns this into a NACK plus a roReq resync rather than pretending.
-		return fmt.Errorf("cannot move stories not held by this device: %v", missing)
+		// Refusing is the honest answer: a partial move leaves our sequence disagreeing with the
+		// NCS's. Reported as lost synchronisation so the caller NACKs AND requests a rebuild, which
+		// §2.3 makes normative for an unknown storyID -- a bare error stops at the NACK and leaves
+		// the divergence with nothing scheduled to repair it.
+		return &UnknownRunningOrderError{ROID: roID,
+			Err: fmt.Errorf("stories not held by this device: %v", missing)}
 	}
 	moveSet := make(map[string]bool, len(keys))
 	for _, key := range keys {
@@ -534,7 +537,9 @@ func (s *MOSService) MoveItems(ctx context.Context, roID, storyID, targetItemID 
 	}
 	itemKeys, missingItems := s.resolveItemKeys(ctx, storyKey, itemIDs)
 	if len(missingItems) > 0 {
-		return fmt.Errorf("cannot move items not held in story %s: %v", storyID, missingItems)
+		// §2.3 names an unknown itemID alongside roID and storyID as grounds for recovery.
+		return &UnknownRunningOrderError{ROID: roID,
+			Err: fmt.Errorf("items not held in story %s: %v", storyID, missingItems)}
 	}
 	moveSet := make(map[string]bool, len(itemKeys))
 	for _, key := range itemKeys {

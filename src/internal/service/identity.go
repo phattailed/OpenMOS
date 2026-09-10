@@ -49,7 +49,16 @@ func (s *MOSService) resolveStory(ctx context.Context, roID, wireStoryID string)
 			return story, nil
 		}
 	}
-	return nil, fmt.Errorf("story %s is not held in running order %s", wireStoryID, roID)
+	// A story the NCS believes we hold and we do not is lost synchronisation, and the recovery is
+	// normative rather than optional. MOS 4.0 §2.3: "if a MOS device receives an roElementAction
+	// message which references an unknown roID, storyID or itemID, the MOS device will send an roReq
+	// message to the NCS which includes the roID."
+	//
+	// Returning a plain error here meant the caller NACKed and stopped. It refused correctly -- which
+	// is already better than the silent no-op it replaced -- but left the divergence in place with
+	// nothing scheduled to repair it.
+	return nil, &UnknownRunningOrderError{ROID: roID,
+		Err: fmt.Errorf("story %s is not held in this running order", wireStoryID)}
 }
 
 // resolveStoryKeys maps wire story identifiers onto the storage keys of the stories actually held.
