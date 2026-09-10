@@ -67,6 +67,43 @@ func (r *StoryActionResult) Accepted() bool {
 	return !strings.Contains(strings.ToUpper(r.Ack.Status), "NACK")
 }
 
+// Reason returns the NCS's explanation, looking where it actually puts it.
+//
+// The spec says the reason belongs in roStatus: "the NCS sends a NACK message with <roStatus>
+// containing a reason for the error". The reference ENPS does something else -- it puts the bare word
+// "NACK" in roStatus and the human-readable cause in the per-element <status> instead:
+//
+//	<roStatus>NACK</roStatus>
+//	<status>External modification not allowed</status>
+//
+// Reading only roStatus therefore loses the one piece of information worth having, which is exactly
+// what happened on the first live attempt. Both places are consulted, roStatus first, and the
+// per-element status appended when it adds something.
+func (r *StoryActionResult) Reason() string {
+	if r.Ack == nil {
+		return "no answer from the NCS"
+	}
+	parts := []string{}
+	if s := strings.TrimSpace(r.Ack.Status); s != "" {
+		parts = append(parts, s)
+	}
+	for _, story := range r.Ack.Stories {
+		detail := strings.TrimSpace(story.Status)
+		if detail == "" {
+			continue
+		}
+		// Skip a detail that merely repeats roStatus.
+		if len(parts) > 0 && strings.EqualFold(detail, parts[0]) {
+			continue
+		}
+		parts = append(parts, detail)
+	}
+	if len(parts) == 0 {
+		return "acknowledged with no status text"
+	}
+	return strings.Join(parts, ": ")
+}
+
 // Send dials the peer, sends one roReqStoryAction, and waits for the roAck.
 //
 // The connection is NOT passive: this is the standard direction, where the device opens a link and

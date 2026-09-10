@@ -2798,3 +2798,94 @@ The fixture for these tests is the captured frame itself, structure verbatim, ra
 written by hand. Reverting the `storyBody` binding fails the parse test with *"the element has
 nowhere to unmarshal into"*, and reverting persistence fails with *"parsing the item is not
 enough"*.
+
+## 41. Writing to the NCS: Profile 7 works, and is gated by a rundown checkbox
+
+Every message OpenMOS had exchanged before this was inbound. `roReqStoryAction` is the only message
+in the protocol that lets a MOS device change a running order in the NCS -- Profile 2's whole
+running-order family travels the other way -- so this was the first time we asked the newsroom system
+to do something rather than told it what we had received.
+
+The reference NCS advertises the profile. Its captured `listMachInfo` reports profiles
+0, 1, 2, 3, 4, 6, 7 as `YES` and only 5 as `NO`.
+
+### The round trip works on the first attempt
+
+A `MOVE` sent over a **non-passive** connection was answered in under a second, with our own
+`messageID` echoed:
+
+```xml
+<roAck>
+  <roID>NCS-HOST;P_STORYTELLING\W;2D526A13-…</roID>
+  <roStatus>NACK</roStatus>
+  <storyID>NCS-HOST;P_STORYTELLING\W;2D526A13-…</storyID>
+  <status>External modification not allowed</status>
+</roAck>
+```
+
+A refusal, but a *conversational* one: the request was parsed, routed and evaluated. That establishes
+the transport, the envelope, the operation vocabulary and the element ordering all at once.
+
+The connection had to be non-passive. §25 established that ENPS treats a passive link as its own
+output channel and does not service requests arriving on one, so a passive appliance cannot ask for
+anything. This is the practical consequence: writing needs a second connection.
+
+### ENPS puts the reason in the wrong element
+
+The specification is explicit that the cause belongs in `roStatus` -- "the NCS sends a NACK message
+with `<roStatus>` containing a reason for the error". ENPS instead puts the bare word `NACK` there and
+the human-readable cause in the per-element `<status>`.
+
+Our client read only `roStatus`, so the first live attempt reported `NACK` and discarded
+*"External modification not allowed"* -- the single piece of information worth having. Both locations
+are now consulted. This is the same class of mistake as §14's two `listMachInfo` dialects: the field
+that the document says carries the meaning is not the field that carries it.
+
+`storyID` in that `roAck` echoes the **roID**, not a story. NOM refuses before resolving the target,
+so that value is not evidence of a lookup failure -- worth knowing before reading it as one.
+
+### The gate is a rundown property, not device configuration
+
+Located in NOM's own strings and confirmed in decompiled IL. `AllowExternalMod` and
+`External modification not allowed` sit 34 bytes apart in `NOM.exe`'s UTF-16 literal heap, and the
+check appears at five byte-identical sites in `clsMOS.cs`:
+
+```csharp
+if (booROReqStoryAction & (Conversion.Val(serverRundownRecord
+        .GetProperty("AllowExternalMod")) == 0.0))
+{
+    list.Add(… + "External modification not allowed");
+}
+```
+
+in `ProcessROStoryInsert`, `ProcessROStoryReplace`, `ProcessROStoryMoveMultiple`,
+`ProcessROStoryDelete` and `ProcessROStorySend`.
+
+`booROReqStoryAction` is an optional parameter defaulting to `false`, set `true` only by
+`ProcessROReqStoryAction`. **So the gate fires only on the Profile 7 path.** The same handlers reached
+by a legacy `roStoryInsert` or `roStoryMoveMultiple` are not gated at all -- the deprecated messages
+MOS 4.0 says never to initiate are *less* restricted than their supported replacement.
+
+`AllowExternalMod` is declared in `g_fielddef` as a checkbox, `"Allow External Modification"`,
+scope `RO Property`, group `MOS Properties`, alongside `MOSControl`, `MOSroAllow`, `MOSroBlock` and
+`MOSroStorySend`. It is absent from the test rundown's `ENPSObjectProperties`, and
+`Conversion.Val("")` is `0`, so it refuses.
+
+Negative results worth recording, because each was a plausible theory:
+
+- **Not device configuration.** `g_mos` has 37 columns and no candidate; the full device property
+  vocabulary contains nothing matching Modify, External, Action, Profile, Write, Allow or Lock.
+- **Not a system switch.** `nom.ini`'s `[MOS]` section holds only `Version`, `LogIn`, `LogOut`.
+  `G_CONFIG` has no such key.
+- **Not a licence limitation**, and not hard-coded: it is a runtime property read.
+- **`g_mos` has no header row.** Line 0 is a `dummy` template device. Field positions have to be
+  established by diffing dated backups, not by reading a header.
+
+### Where this leaves the claim
+
+Originating `roReqStoryAction` is implemented, spec-shaped and answered by a live NCS. Whether ENPS
+*applies* a MOVE is unproven, because the rundown property is off. Enabling it is a checkbox in the
+ENPS client, per rundown, needing no `g_mos` edit and no NOM restart.
+
+Profile 7 still cannot be claimed regardless: it requires Profiles 0, 1 and 2, and Profile 1 is
+object workflow, which OpenMOS does not implement.

@@ -386,13 +386,14 @@ func runStoryAction(req storyActionRequest) {
 			req.timeout)
 		os.Exit(1)
 	case result.Accepted():
-		log.Infof("ACCEPTED  operation=%s roStatus=%q", op, result.Ack.Status)
+		log.Infof("ACCEPTED  operation=%s status=%q", op, result.Reason())
 		if op == mosxml.StoryActionNew {
 			log.Infof("On NEW the specification returns the assigned storyID in roStatus, so the "+
 				"value above is the new story's identifier: %q", result.Ack.Status)
 		}
 	default:
-		log.Errorf("REFUSED   operation=%s roStatus=%q", op, result.Ack.Status)
+		// The reason may live in the per-element status rather than roStatus, so report both.
+		log.Errorf("REFUSED   operation=%s reason=%q", op, result.Reason())
 		os.Exit(1)
 	}
 }
