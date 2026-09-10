@@ -402,10 +402,10 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 	// connection received no reply at all, and the client sat wedged awaiting listMachInfo.
 	//
 	// So passive mode connects and then listens. The peer initiates; we answer.
-	if c.config.WSClient.Passive {
-		logger.Infof("MOS 4 client connected in passive mode; not initiating a handshake, " +
-			"because the peer uses this connection for messages to us")
-		return true, c.readLoop(ctx, conn)
+	if lane.passive {
+		logger.Infof("MOS 4 client %s lane connected passively; not initiating a handshake, "+
+			"because the peer uses this connection for messages to us", lane.name)
+		return true, c.readLoop(ctx, conn, lane)
 	}
 
 	// Active mode: we drive Profile 0. Bounded, because a peer that accepts the connection
@@ -424,7 +424,7 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 		return false, fmt.Errorf("profile 0 handshake failed: %w", err)
 	}
 
-	return true, c.readLoop(ctx, conn)
+	return true, c.readLoop(ctx, conn, lane)
 }
 
 // doProfile0 performs the Profile 0 exchange the acceptance criteria require:
@@ -484,7 +484,7 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 // buffered channel and multiplexed in a select against a heartbeat timer and
 // context cancellation, so the loop never busy-spins. Inbound heartbeats are
 // answered; keepAlive is silent per Profile 0.
-func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
+func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn, lane clientLane) error {
 	interval := c.config.MOS.HeartbeatInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -538,7 +538,7 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				label   string
 				msgID   string
 			)
-			if c.config.WSClient.Passive {
+			if lane.passive {
 				payload, label, msgID = mosxml.KeepAlive{}, "keepAlive", ""
 			} else {
 				payload, label, msgID = mosxml.CreateHeartbeat(), "heartbeat", c.messageID()
@@ -581,14 +581,14 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 				logger.Errorf("Frame capture failed: %v", err)
 			}
 
-			c.handleInbound(ctx, conn, data)
+			c.handleInbound(ctx, conn, data, lane)
 		}
 	}
 }
 
 // handleInbound validates a received envelope through the shared validator and
 // reacts per Profile 0: an inbound heartbeat is answered, keepAlive is silent.
-func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8XML []byte) {
+func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8XML []byte, lane clientLane) {
 	var env mosxml.Envelope
 	if err := stdxml.Unmarshal(utf8XML, &env); err != nil {
 		logger.Errorf("MOS 4 client envelope parse error from ncsID=%s: %v", c.config.MOS.NCSID, err)
@@ -637,7 +637,7 @@ func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8
 				"be applied", msg.GetMessageType())
 			return
 		}
-		responder := wsClientResponder{client: c, conn: conn, messageID: env.MessageID}
+		responder := wsClientResponder{client: c, conn: conn, messageID: env.MessageID, lane: lane}
 		if handled, err := dispatchRunningOrder(ctx, *c.deps, responder, msg); handled {
 			if err != nil {
 				logger.Errorf("MOS 4 client failed to handle %s: %v", msg.GetMessageType(), err)
@@ -655,6 +655,9 @@ type wsClientResponder struct {
 	client    *WSClient
 	conn      *websocket.Conn
 	messageID string
+	// lane records which connection this responder answers on, because whether a request may be sent
+	// is a property of the lane and not of the process.
+	lane clientLane
 }
 
 // canOriginate is FALSE in passive mode.
@@ -666,7 +669,7 @@ type wsClientResponder struct {
 //
 // MOS 4.0 §1 says the opposite, naming roReq as the example of what a passive connection should
 // carry. This follows the implementation, because the implementation is what will be on the other end.
-func (w wsClientResponder) canOriginate() bool { return !w.client.config.WSClient.Passive }
+func (w wsClientResponder) canOriginate() bool { return !w.lane.passive }
 
 func (w wsClientResponder) peerLabel() string {
 	return "ncsID=" + w.client.config.MOS.NCSID + " (passive client)"

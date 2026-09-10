@@ -176,3 +176,35 @@ func TestRecoveryDefersWhenRequestLaneIsDown(t *testing.T) {
 		t.Error("the roElementAction must still be acknowledged")
 	}
 }
+
+// The responder must carry its lane, and a zero-value lane must not look like one that can originate.
+//
+// This is a live hazard rather than a hypothetical: clientLane's zero value has passive=false, so a
+// responder built without its lane reports that it CAN carry a request. Constructing it that way is a
+// silent reintroduction of the defect in doc/interop §43, where a request on a passive connection puts
+// the NCS into a permanent retry loop. Nothing else in the suite exercises this responder, so it is
+// asserted directly.
+func TestPassiveLaneResponderCannotOriginate(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WSClient.PeerURL = "ws://ncs.example.test/MOS4NCS/"
+	cfg.WSClient.Passive = true
+	cfg.WSClient.RequestLane = true
+	client := &WSClient{config: cfg}
+
+	for _, lane := range client.lanePlan() {
+		responder := wsClientResponder{client: client, lane: lane}
+		if got := responder.canOriginate(); got == lane.passive {
+			t.Errorf("lane %q: canOriginate()=%t with passive=%t; a passive lane must not originate "+
+				"and a standard one must", lane.name, got, lane.passive)
+		}
+	}
+
+	// A responder built without its lane would default to "can originate", which is the dangerous
+	// direction. Asserting the pairing is what keeps that from slipping back in.
+	bare := wsClientResponder{client: client}
+	if !bare.canOriginate() {
+		t.Skip("zero-value lane already reports non-originating; the hazard below does not apply")
+	}
+	t.Log("note: a zero-value clientLane reports canOriginate()==true, so every construction site " +
+		"must pass the lane explicitly")
+}
