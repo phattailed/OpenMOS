@@ -46,7 +46,7 @@ type Recorder struct {
 	maxFrames int
 
 	// KeepAlive records keepAlive frames when set. Off by default; see skipKeepAlive.
-	KeepAlive bool
+	Liveness bool
 
 	mu       sync.Mutex
 	seq      int
@@ -117,7 +117,7 @@ func (r *Recorder) Record(transport string, direction Direction, peer string, ut
 		return nil
 	}
 
-	if !r.KeepAlive && isKeepAlive(utf8XML) {
+	if !r.Liveness && isLiveness(utf8XML) {
 		r.skipped++
 		return nil
 	}
@@ -171,7 +171,7 @@ func (r *Recorder) Close() error {
 	return r.manifest.Close()
 }
 
-// isKeepAlive reports whether a frame is a bare keepAlive.
+// isLiveness reports whether a frame is Profile 0 liveness traffic, which carries no state.
 //
 // keepAlive frames are excluded from capture by default, and the reason is arithmetic. A standing
 // passive appliance sends one every thirty seconds: about 2,880 a day against a 2,000-frame cap.
@@ -185,18 +185,19 @@ func (r *Recorder) Close() error {
 // only purpose is holding a connection open through firewalls. Its arrival is already visible in
 // the service log. Nothing in a capture directory is learned from the 2,879th one.
 //
-// Raising the cap instead would only move the cliff. Set Recorder.KeepAlive when deliberately
+// Raising the cap instead would only move the cliff. Set Recorder.Liveness when deliberately
 // debugging Profile 0 keep-alive behaviour and a short run is expected.
 //
 // The check is a substring test rather than a parse because Record deliberately runs BEFORE
 // parsing -- a frame that fails to parse is the most valuable one to keep, so capture must not
 // depend on parsing succeeding. A MOS envelope carries exactly one operation, so the presence of
 // the element is sufficient to identify it.
-func isKeepAlive(utf8XML []byte) bool {
-	return bytes.Contains(utf8XML, []byte("<keepAlive"))
+func isLiveness(utf8XML []byte) bool {
+	return bytes.Contains(utf8XML, []byte("<keepAlive")) ||
+		bytes.Contains(utf8XML, []byte("<heartbeat"))
 }
 
-// Skipped reports how many frames were excluded by the keepAlive filter, so a quiet capture
+// Skipped reports how many frames were excluded by the liveness filter, so a quiet capture
 // directory can be distinguished from a broken recorder.
 func (r *Recorder) Skipped() int {
 	if r == nil {
