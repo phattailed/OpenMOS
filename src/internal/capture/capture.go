@@ -16,6 +16,7 @@
 package capture
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -44,10 +45,14 @@ type Recorder struct {
 	dir       string
 	maxFrames int
 
+	// KeepAlive records keepAlive frames when set. Off by default; see skipKeepAlive.
+	KeepAlive bool
+
 	mu       sync.Mutex
 	seq      int
 	manifest *os.File
 	stopped  bool
+	skipped  int
 }
 
 // Entry is one line of the manifest, describing a captured frame.
@@ -111,6 +116,11 @@ func (r *Recorder) Record(transport string, direction Direction, peer string, ut
 	if r.stopped {
 		return nil
 	}
+
+	if !r.KeepAlive && isKeepAlive(utf8XML) {
+		r.skipped++
+		return nil
+	}
 	if r.seq >= r.maxFrames {
 		r.stopped = true
 		return fmt.Errorf("capture stopped after %d frames", r.maxFrames)
@@ -159,4 +169,40 @@ func (r *Recorder) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.manifest.Close()
+}
+
+// isKeepAlive reports whether a frame is a bare keepAlive.
+//
+// keepAlive frames are excluded from capture by default, and the reason is arithmetic. A standing
+// passive appliance sends one every thirty seconds: about 2,880 a day against a 2,000-frame cap.
+// So capture would stop roughly overnight, and any real running-order delivery after that would
+// leave no evidence at all -- the exact failure that made a live passive delivery look like a
+// non-event in doc/interop §38. The least informative message we handle would consume the entire
+// budget.
+//
+// Excluding it is not a loss. keepAlive carries no protocol information beyond its own arrival:
+// MOS 4.0 §4.1.1 gives it no messageID because it is unsequenced, it requires no reply, and its
+// only purpose is holding a connection open through firewalls. Its arrival is already visible in
+// the service log. Nothing in a capture directory is learned from the 2,879th one.
+//
+// Raising the cap instead would only move the cliff. Set Recorder.KeepAlive when deliberately
+// debugging Profile 0 keep-alive behaviour and a short run is expected.
+//
+// The check is a substring test rather than a parse because Record deliberately runs BEFORE
+// parsing -- a frame that fails to parse is the most valuable one to keep, so capture must not
+// depend on parsing succeeding. A MOS envelope carries exactly one operation, so the presence of
+// the element is sufficient to identify it.
+func isKeepAlive(utf8XML []byte) bool {
+	return bytes.Contains(utf8XML, []byte("<keepAlive"))
+}
+
+// Skipped reports how many frames were excluded by the keepAlive filter, so a quiet capture
+// directory can be distinguished from a broken recorder.
+func (r *Recorder) Skipped() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.skipped
 }

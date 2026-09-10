@@ -174,7 +174,8 @@ func main() {
 			if closeErr := frames.Close(); closeErr != nil {
 				log.Errorf("Error closing frame capture: %v", closeErr)
 			}
-			log.Infof("Frame capture wrote %d frames to %s", frames.Count(), frames.Dir())
+			log.Infof("Frame capture wrote %d frames to %s (%d keepAlive frames skipped; keepAlive is excluded so a standing appliance cannot exhaust the cap on noise)",
+				frames.Count(), frames.Dir(), frames.Skipped())
 		}()
 	}
 

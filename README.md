@@ -81,7 +81,7 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Story and item order preserved | Yes | Unit tests, both backends | No | In-memory backend previously returned map order |
 | Spec-clean `heartbeat` with no invented attributes | Yes | Unit + live-frame tests | **Yes** | — |
 | MOS 4 authentication (HTTP Basic over TLS) | Yes | Unit tests | No | Live NCS cert is for an unrelated domain |
-| Raw frame capture for fixtures | Yes | Unit tests | **Yes** | Off unless a directory is configured |
+| Raw frame capture for fixtures | Yes | Unit tests | **Yes** | Off unless a directory is configured; `keepAlive` excluded so a standing appliance cannot exhaust the cap on noise (`doc/interop` §39) |
 | MOS 3.x WebService transport | **No** | — | — | Blocked on WSDL (#15) |
 | Profiles 1, 3, 4, 5, 6, 7 | **No** | — | — | Some message types parse, none exercised |
 | Multi-instance HA | **No** | — | — | Single process per identity |
