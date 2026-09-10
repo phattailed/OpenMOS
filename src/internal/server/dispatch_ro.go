@@ -52,6 +52,18 @@ type peerResponder interface {
 	canOriginate() bool
 }
 
+// originator sends a message the peer will treat as a REQUEST, on a lane that can carry one.
+//
+// It exists because the lane a message arrives on is not necessarily a lane that can answer back with
+// a request of our own. A device holding a passive connection learns about a divergence there, and must
+// repair it somewhere else -- so recovery cannot simply reply to the sender.
+type originator interface {
+	originate(ctx context.Context, msg mosxml.MOSMessage) error
+	// ready reports whether a request could be sent right now. A lane that is configured but not yet
+	// connected is not ready, and recovery should be reported as deferred rather than attempted.
+	ready() bool
+}
+
 // roDeps is what running-order handling needs beyond the responder.
 type roDeps struct {
 	service *service.MOSService
@@ -60,6 +72,9 @@ type roDeps struct {
 	resync *resyncGuard
 	// mosID is this device's configured identity, needed when applying a roList.
 	mosID string
+	// origin is a lane that can carry our requests, when the lane a message arrived on cannot.
+	// Nil means recovery is limited to the responding lane.
+	origin originator
 	// walk sequences roListAll -> roReq-per-running-order discovery. May be nil, in which
 	// case an inbound roListAll is reported and no follow-up is made.
 	walk *discoveryWalk
@@ -399,11 +414,27 @@ func sendDiscoveryReq(ctx context.Context, deps roDeps, r peerResponder, roID st
 // error would replace a recoverable disagreement with an outage.
 func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID string) {
 	if !r.canOriginate() {
-		// Nothing useful can be done from here, and trying does damage. Reported at warning level
-		// because the divergence is real and stays unrepaired: a passive-only device has no route to
-		// the normative recovery, and needs a second non-passive connection to recover at all.
-		logger.Warningf("Lost synchronisation on RO %s, but this lane cannot carry a request, so no "+
-			"roReq is sent. Recovery needs a non-passive connection (doc/interop §43).", roID)
+		// The lane that told us about the divergence cannot carry the request that repairs it. Use a
+		// lane that can, if one is configured.
+		if deps.origin == nil {
+			logger.Warningf("Lost synchronisation on RO %s, but this lane cannot carry a request and no "+
+				"request lane is configured, so no roReq is sent. Set WS_CLIENT_REQUEST_LANE to recover "+
+				"automatically (doc/interop §43).", roID)
+			return
+		}
+		if !deps.origin.ready() {
+			logger.Warningf("Lost synchronisation on RO %s; the request lane is not connected yet, so "+
+				"recovery is deferred rather than attempted.", roID)
+			return
+		}
+		if !deps.resync.shouldRequest(roID) {
+			return
+		}
+		logger.Infof("Lost synchronisation on RO %s, detected on a lane that cannot originate; "+
+			"requesting a rebuild on the request lane", roID)
+		if err := deps.origin.originate(ctx, mosxml.ROReq{ROID: roID}); err != nil {
+			logger.Errorf("Failed to send roReq for RO %s on the request lane: %v", roID, err)
+		}
 		return
 	}
 	if !deps.resync.shouldRequest(roID) {
