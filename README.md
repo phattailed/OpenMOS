@@ -46,14 +46,14 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | Recovery suppressed on a lane that cannot originate | Yes | Unit tests | **Yes** | A passive connection cannot carry a request, and NOM enters a permanent retry loop if one is sent (`doc/interop` §43) |
 | Story items and stories share one identity scheme | Yes | Unit tests | **Yes** | The element-action family used raw wire IDs as storage keys, so MOVE/DELETE/SWAP silently did nothing (`doc/interop` §42) |
 | Originate `roReqStoryAction` (Profile 7) | Yes | Spec-example tests | **Yes** | A live NCS applied a MOVE and pushed the change back; gated by the rundown's `AllowExternalMod` (`doc/interop` §41) |
-| Inbound `roList` rebuilds local state | Both transports | Integration tests | No | Does not yet delete stories absent from the list |
+| Inbound `roList` rebuilds local state | Both transports | Integration tests | **Yes** | Two running orders rebuilt from nothing, 23 stories (`doc/interop` §45) |
 | Authentic captured fixtures (Profile 0 and 2) | Yes | Live-frame tests | **Yes** | Sanitized; raw captures never committed |
 | Cross-vendor frames (4 other vendors) | Yes | Real-traffic tests | **Yes** | From ~90k logged messages, not synthesised |
 | `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
-| `roReq` answered with `roList` for one running order | Yes | Integration tests | No | Was inverted with `roReqAll`; see `doc/interop` §17 |
-| `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | No | Discovery only, as the spec requires |
-| Inbound `roListAll` drives `roReq` per running order | Yes | Unit tests, both transports | No | Sequential: one request outstanding at a time, per MOS 4.0 §4.1 |
-| One `roReq` outstanding per lane, recovery included | Yes | Unit tests | No | Recovery enqueues ahead of discovery rather than sending concurrently (`doc/interop` §34) |
+| `roReq` answered with `roList` for one running order | Yes | Integration tests | **Yes** | Was inverted with `roReqAll`; see `doc/interop` §17 |
+| `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | **Yes** | Discovery only, as the spec requires |
+| Inbound `roListAll` drives `roReq` per running order | Yes | Unit tests, both transports | **Yes** | Sequential: one request outstanding at a time, per MOS 4.0 §4.1 |
+| One `roReq` outstanding per lane, recovery included | Yes | Unit tests | **Yes** | Recovery enqueues ahead of discovery rather than sending concurrently (`doc/interop` §34) |
 | Every parseable message classified as handled or not | Yes | Inventory test reads the parser | — | Adding a message type fails the build until classified |
 | Frame splits, coalescing, misaligned terminators, junk | Yes | Unit tests, incl. odd-offset decoy | **Yes** | Bounded at 4 MiB; non-MOS roots refused, not discarded |
 | `roElementStat` parses, routes and acks on both | Yes | Real-traffic + loopback tests | Partly | `element` attribute now preserved; not yet acted on |
@@ -64,18 +64,22 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `messageID` counter persists across restart | Yes | Unit tests | No | Reserved in blocks, so a crash skips rather than repeats |
 | Multiple envelopes in one TCP read | Yes | Integration test | **Yes** | — |
 | `mosID` persisted on running orders and items | Yes | Integration test | **Yes** | — |
-| `mosExternalMetadata` preserved verbatim | Yes | Unit + integration tests | No | Opaque payload kept as raw XML at RO, story and item level |
+| `mosExternalMetadata` preserved verbatim | Yes | Unit + integration tests | **Yes** | Opaque payload kept as raw XML at RO, story and item level |
 | `mosExternalMetadata` survives the round trip to the wire | Yes | Round-trip test | No | Emission was dead code; storage was faithful, the wire was not (`doc/interop` §32) |
 | `mosScope` enforced per level on emission | Yes | Unit + round-trip tests | No | Hierarchy `OBJECT`⊂`STORY`⊂`PLAYLIST`; storage stays lenient |
 | MongoDB backing | Yes | Not covered in CI | **Yes** | No MongoDB in CI; in-memory used for tests |
-| Running orders persist across restart by default | Yes | Unit tests | No | File-backed snapshot wrapping the in-memory repositories (`doc/interop` §33) |
+| Running orders persist across restart by default | Yes | Unit tests | **Yes** | File-backed snapshot wrapping the in-memory repositories (`doc/interop` §33) |
 | MOS 4 channels `mom`, `ro`, `aux` | Yes | Unit + loopback tests | No | Object and search messages route correctly but are not implemented |
 | MOS 4 outbound client, standard mode | Yes | Loopback tests | **Yes** | Profile 0 completed against a live NCS; framing verified against two NOM versions |
 | OpenMOS runnable as a purely outbound client | Yes | — | **Yes** | Previously refused to start without a listener, contradicting passive mode |
 | Peer refusals (`mosAck`) parsed and reported | Yes | Unit tests | **Yes** | Accepted without a `messageID`, as real servers send them |
 | One message vocabulary across both transports | Yes | Envelope-reachability test | **Yes** | Sixteen messages were socket-unreachable; see `doc/interop` §28 |
 | MOS 4 outbound client, passive mode | Yes | Loopback tests | **Yes** | NOM 9.6 delivered unsolicited `roCreate`, `roStorySend` and `roReadyToAir` with distinct production-style IDs (`doc/interop` §35, §38) |
-| Two client lanes: passive delivery plus a request lane | Yes | Unit tests | No | Neither lane alone is a complete transport; recovery crosses from one to the other (`doc/interop` §44) |
+| Two client lanes: passive delivery plus a request lane | Yes | Unit tests | **Yes** | Neither lane alone is a complete transport; recovery crosses from one to the other (`doc/interop` §44) |
+| Pull on connect: `roReqAll` after Profile 0 | Yes | Unit tests | **Yes** | What real devices do; a device that only waits to be pushed to starts empty after every restart |
+| Discovery walk completes unaided | Yes | Unit tests | **Yes** | `roReqAll`→`roListAll`→`roReq` per RO→`roList` applied, against a live NCS (`doc/interop` §45) |
+| Item fields nested in `mosItem` | Yes | Live-frame tests | **Yes** | ENPS nests what the spec declares flat; one such item rejected a whole 13-story `roList` (`doc/interop` §45) |
+| `roElementAction` applied, not just acknowledged | Yes | Live-frame tests | **Yes** | A MOVE originated by us came back and converged our stored order (`doc/interop` §42) |
 | Pushed `roCreate` applied on the client path | Yes | Unit tests | **Yes** | Was unhandled, dropping the whole rundown; now shared (`doc/interop` §38) |
 | Story items persisted from `roStorySend` | Yes | Live-frame tests | **Yes** | Items were dropped three ways; a rundown without them is headlines only (`doc/interop` §40) |
 | `mosExternalMetadata` on items survives a resend | Yes | Live-frame tests | **Yes** | Set on create, not on update -- and update is the common path (`doc/interop` §40) |
