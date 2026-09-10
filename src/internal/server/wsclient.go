@@ -62,6 +62,26 @@ type WSClient struct {
 	// request lane's reconnect loop replaces it.
 	requestMu   sync.Mutex
 	requestConn *websocket.Conn
+
+	// lastFrame is when a frame last crossed the connection in either direction, used to decide
+	// whether a keepAlive is actually needed.
+	frameMu   sync.Mutex
+	lastFrame time.Time
+}
+
+// noteFrame records that the connection carried traffic.
+func (c *WSClient) noteFrame() {
+	c.frameMu.Lock()
+	c.lastFrame = time.Now()
+	c.frameMu.Unlock()
+}
+
+// lastFrameAt reports when the connection last carried traffic. A zero value means never, which reads
+// as "idle for a long time" and correctly allows the first keepAlive.
+func (c *WSClient) lastFrameAt() time.Time {
+	c.frameMu.Lock()
+	defer c.frameMu.Unlock()
+	return c.lastFrame
 }
 
 // originate sends a message the peer will treat as a request, on the request lane.
@@ -424,6 +444,10 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 		return false, fmt.Errorf("profile 0 handshake failed: %w", err)
 	}
 
+	// Pull on connect, as real devices do. Failure is not fatal: the lane is usable and the peer may
+	// still push, so a refused discovery should not tear down a working session.
+	c.beginDiscovery(ctx, conn, lane)
+
 	return true, c.readLoop(ctx, conn, lane)
 }
 
@@ -478,6 +502,37 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 
 	logger.Infof("MOS 4 client completed Profile 0 exchange with ncsID=%s", c.config.MOS.NCSID)
 	return nil
+}
+
+// beginDiscovery asks the peer what running orders it has, immediately after Profile 0.
+//
+// This is what real devices do. In a sampled corpus of live multi-vendor traffic, an automation
+// system's startup handshake is reqMachInfo followed by roReqAll within the same second, per port; a
+// prompter sent roReq twelve times across three days. Pulling on connect is ordinary behaviour, not a
+// recovery measure.
+//
+// It matters for us because a device that only ever waits to be pushed to starts empty after every
+// restart and stays empty until the NCS happens to change something. The answer -- roListAll, then one
+// roReq per running order through the discovery walk -- rebuilds local state without anyone touching
+// the rundown.
+//
+// Only on a lane that can originate. On a passive connection the request cannot be routed and is
+// consumed as the answer to whatever the NCS last sent (doc/interop §43).
+func (c *WSClient) beginDiscovery(ctx context.Context, conn *websocket.Conn, lane clientLane) {
+	if !lane.originates || c.deps == nil || c.deps.walk == nil {
+		return
+	}
+	inner, err := stdxml.Marshal(mosxml.ROReqAll{})
+	if err != nil {
+		logger.Errorf("Failed to build roReqAll: %v", err)
+		return
+	}
+	envelope := mosxml.WrapEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, c.messageID(), inner)
+	if err := c.writeFrame(ctx, conn, envelope); err != nil {
+		logger.Warningf("Failed to send roReqAll on the %s lane: %v", lane.name, err)
+		return
+	}
+	logger.Infof("Sent roReqAll on the %s lane to discover the peer's running orders", lane.name)
 }
 
 // readLoop mirrors the server's frame-handling contract: reads are fed through a
@@ -539,6 +594,24 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn, lane clie
 				msgID   string
 			)
 			if lane.passive {
+				// Send keepAlive only when the socket has actually been idle.
+				//
+				// The specification offers this explicitly -- "it is also acceptable to only send this
+				// message when an idle period of thirty seconds on the socket has been detected to
+				// reduce traffic" -- and against NOM it is not merely a traffic saving. NOM treats the
+				// next frame arriving on a passive connection as the RESPONSE to whatever it last sent,
+				// with no check of the message type. An unsolicited keepAlive therefore captures the
+				// response slot and is scored as "no answer", which makes NOM resend. On the live rig
+				// 96 of our keepAlives were logged as empty-Command responses, and the device's
+				// average response time read 0.1127s -- the cadence of our keepAlive, not of any ack we
+				// actually sent (doc/interop §43).
+				//
+				// Skipping it when the connection has just carried traffic removes the collision
+				// without abandoning the mechanism: a genuinely idle connection still gets one.
+				if time.Since(c.lastFrameAt()) < interval {
+					heartbeatTimer.Reset(interval)
+					continue
+				}
 				payload, label, msgID = mosxml.KeepAlive{}, "keepAlive", ""
 			} else {
 				payload, label, msgID = mosxml.CreateHeartbeat(), "heartbeat", c.messageID()
@@ -576,6 +649,7 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn, lane clie
 			//
 			// Recorded before parsing, deliberately: a frame we fail to parse is the most valuable
 			// one to have on disk.
+			c.noteFrame()
 			if err := c.frames.Record("mos4-ws-client", capture.Inbound, c.config.WSClient.PeerURL,
 				data, len(msg.data), wireEncoding(msg.msgType)); err != nil {
 				logger.Errorf("Frame capture failed: %v", err)
@@ -700,6 +774,7 @@ func (c *WSClient) readMessage(ctx context.Context, conn *websocket.Conn) (mosxm
 
 	// Capture before parsing. A frame we fail to parse is the most valuable one to
 	// have on disk: that is how the YES/NO listMachInfo defect was found.
+	c.noteFrame()
 	if err := c.frames.Record("mos4-ws-client", capture.Inbound, c.config.WSClient.PeerURL,
 		data, len(raw), wireEncoding(msgType)); err != nil {
 		logger.Errorf("Frame capture failed: %v", err)
@@ -742,6 +817,7 @@ func (c *WSClient) buildReqMachInfo(messageID string) ([]byte, error) {
 // client only ever emits binary frames: live ENPS closes text frames with
 // InvalidMessageType.
 func (c *WSClient) writeFrame(ctx context.Context, conn *websocket.Conn, utf8XML []byte) error {
+	c.noteFrame()
 	encoded, err := mosxml.EncodeUCS2BE(utf8XML)
 	if err != nil {
 		return fmt.Errorf("encode UCS-2BE: %w", err)
