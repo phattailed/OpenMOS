@@ -71,7 +71,9 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | OpenMOS runnable as a purely outbound client | Yes | — | **Yes** | Previously refused to start without a listener, contradicting passive mode |
 | Peer refusals (`mosAck`) parsed and reported | Yes | Unit tests | **Yes** | Accepted without a `messageID`, as real servers send them |
 | One message vocabulary across both transports | Yes | Envelope-reachability test | **Yes** | Sixteen messages were socket-unreachable; see `doc/interop` §28 |
-| MOS 4 outbound client, passive mode | Yes | Loopback tests | **Yes** | NOM 9.6 delivered unsolicited `roCreate`, `roStorySend` and `roReadyToAir` with distinct production-style IDs (`doc/interop` §35) |
+| MOS 4 outbound client, passive mode | Yes | Loopback tests | **Yes** | NOM 9.6 delivered unsolicited `roCreate`, `roStorySend` and `roReadyToAir` with distinct production-style IDs (`doc/interop` §35, §38) |
+| Pushed `roCreate` applied on the client path | Yes | Unit tests | **Yes** | Was unhandled, dropping the whole rundown; now shared (`doc/interop` §38) |
+| Inbound frames captured on the passive path | Yes | Unit tests | **Yes** | Capture ran only on the handshake reader, so passive recorded nothing (`doc/interop` §38) |
 | Device-initiated passive topology on NOM | — | — | **Yes** | Device row `MOSVersion=4.0`, `Passive=0`; the device connects with `passive=true` (`doc/interop` §35) |
 | Graceful shutdown, idempotent and race-free | Yes | Unit tests, incl. concurrent | **Yes** | Panicked on every run; `Shutdown` is called twice by design |
 | MOS booleans as `YES`/`NO` | Yes | Unit + live-frame tests | **Yes** | — |

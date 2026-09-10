@@ -85,6 +85,8 @@ func dispatchRunningOrder(ctx context.Context, deps roDeps, r peerResponder, msg
 		return true, handleList(ctx, deps, r, m)
 	case mosxml.ROListAll:
 		return true, handleListAll(ctx, deps, r, m)
+	case mosxml.RunningOrderInfo:
+		return true, handleCreate(ctx, deps, r, m)
 	default:
 		return false, nil
 	}
@@ -278,6 +280,34 @@ func handleList(ctx context.Context, deps roDeps, r peerResponder, m mosxml.ROLi
 		sendDiscoveryReq(ctx, deps, r, next)
 	}
 	return nil
+}
+
+// handleCreate applies a roCreate.
+//
+// This was per-transport for longer than it should have been, on the reasoning that dedup scope
+// differs between the transports. That reasoning confused two layers: deduplication happens in
+// the transport ABOVE dispatch, using that transport's scope, and only then is the message
+// applied. The application step itself is identical, so keeping it per-transport bought nothing
+// and cost the client entirely.
+//
+// The cost was concrete. The MOS 4 client had no roCreate handler at all, so on a live passive
+// connection ENPS delivered a running order and the client logged "received unhandled message
+// type roCreate" and dropped it. Every roStorySend that followed then had no running order to
+// attach to, and the appliance persisted nothing -- from a rundown that had arrived correctly.
+// The comment in the client's dispatch path already claimed a pushed roCreate would be applied;
+// this is what makes that true.
+func handleCreate(ctx context.Context, deps roDeps, r peerResponder, m mosxml.RunningOrderInfo) error {
+	logger.Infof("Received roCreate from %s for RO %s with %d stories",
+		r.peerLabel(), m.ID, len(m.Stories))
+
+	if err := deps.service.ProcessRunningOrderInfo(ctx, m, deps.mosID); err != nil {
+		logger.Errorf("Failed to apply roCreate for RO %s: %v", m.ID, err)
+		return r.respond(ctx, mosxml.CreateROAck(m.ID, "NACK: "+firstLine(err), nil))
+	}
+
+	// Ack only after persistence, per the ACK contract: an ACK asserts the metadata was saved.
+	logger.Infof("Applied roCreate for RO %s", m.ID)
+	return r.respond(ctx, mosxml.CreateROAck(m.ID, "OK", nil))
 }
 
 // handleListAll begins the second stage of discovery.
