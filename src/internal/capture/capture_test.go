@@ -286,3 +286,56 @@ func TestHeartbeatExcludedFromCapture(t *testing.T) {
 		t.Errorf("Skipped() moved to %d after enabling liveness capture; it should not", rec.Skipped())
 	}
 }
+
+// Capture must continue the sequence across restarts, not start again at one.
+//
+// Two failures otherwise, both seen on the standing appliance. Frame files are named by sequence, so a
+// restart reuses names and silently overwrites earlier frames -- destroying the evidence capture exists
+// to collect. And the frame cap then bounds a single run rather than the directory, so a process
+// restarted repeatedly grew it past the limit (measured at 2074 against a cap of 2000) while the README
+// claimed capture could not fill a disk.
+func TestSequenceContinuesAcrossRestarts(t *testing.T) {
+	dir := t.TempDir()
+	frame := []byte(`<mos><mosID>a</mosID><ncsID>b</ncsID><roAck><roID>RO-1</roID>` +
+		`<roStatus>OK</roStatus></roAck></mos>`)
+
+	first, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := first.Record("mos2-tcp", Inbound, "peer", frame, len(frame), "UTF-8"); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	// A new Recorder over the same directory stands in for a process restart.
+	second, err := New(dir)
+	if err != nil {
+		t.Fatalf("New after restart: %v", err)
+	}
+	if err := second.Record("mos2-tcp", Inbound, "peer", frame, len(frame), "UTF-8"); err != nil {
+		t.Fatalf("Record after restart: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var frames []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".xml") {
+			frames = append(frames, e.Name())
+		}
+	}
+	if len(frames) != 4 {
+		t.Errorf("directory holds %d frames after 3+1 records, want 4. Fewer means the restart "+
+			"overwrote earlier evidence: %v", len(frames), frames)
+	}
+
+	// The restarted recorder's count must reflect what is already there, or the cap bounds only the run.
+	if second.Count() <= 3 {
+		t.Errorf("Count() after restart = %d; it must include the frames already on disk, or the "+
+			"cap bounds a single run rather than the directory", second.Count())
+	}
+}
