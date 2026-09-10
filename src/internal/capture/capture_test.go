@@ -169,3 +169,67 @@ func readManifest(t *testing.T, dir string) []Entry {
 	}
 	return entries
 }
+
+// keepAlive is excluded from capture by default, because a standing passive appliance sends one
+// every thirty seconds -- roughly 2,880 a day against a 2,000-frame cap. Capture would stop
+// overnight and any real delivery afterwards would leave no evidence, which is the failure that
+// made a live passive delivery look like a non-event (doc/interop §38).
+func TestKeepAliveIsNotCaptured(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer rec.Close()
+
+	keepAlive := []byte(`<mos><mosID>a.mos</mosID><ncsID>N</ncsID><keepAlive></keepAlive></mos>`)
+	roCreate := []byte(`<mos><mosID>a.mos</mosID><ncsID>N</ncsID><roCreate><roID>RO-1</roID></roCreate></mos>`)
+
+	for i := 0; i < 50; i++ {
+		if err := rec.Record("mos4-ws-client", Outbound, "peer", keepAlive, len(keepAlive)*2, "UCS-2BE"); err != nil {
+			t.Fatalf("record keepAlive: %v", err)
+		}
+	}
+	if err := rec.Record("mos4-ws-client", Inbound, "peer", roCreate, len(roCreate)*2, "UCS-2BE"); err != nil {
+		t.Fatalf("record roCreate: %v", err)
+	}
+
+	if got := rec.Count(); got != 1 {
+		t.Errorf("captured %d frames, want 1: fifty keepAlive frames must not consume the budget", got)
+	}
+	if got := rec.Skipped(); got != 50 {
+		t.Errorf("Skipped() = %d, want 50; a quiet directory must be distinguishable from a "+
+			"broken recorder", got)
+	}
+
+	// The one frame that mattered must be on disk.
+	entries, _ := os.ReadDir(dir)
+	var xml int
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".xml") {
+			xml++
+		}
+	}
+	if xml != 1 {
+		t.Errorf("%d xml files on disk, want 1", xml)
+	}
+}
+
+// TestKeepAliveCapturableWhenExplicitlyRequested keeps the escape hatch honest.
+func TestKeepAliveCapturableWhenExplicitlyRequested(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer rec.Close()
+	rec.KeepAlive = true
+
+	ka := []byte(`<mos><mosID>a.mos</mosID><ncsID>N</ncsID><keepAlive></keepAlive></mos>`)
+	if err := rec.Record("mos4-ws-client", Outbound, "peer", ka, len(ka)*2, "UCS-2BE"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if rec.Count() != 1 || rec.Skipped() != 0 {
+		t.Errorf("with KeepAlive set: count=%d skipped=%d, want 1 and 0", rec.Count(), rec.Skipped())
+	}
+}

@@ -2677,3 +2677,39 @@ the queued-before-connect obstacle §37 predicts did **not** bite on 9.6, which 
 - The ingress rule permitting the appliance to reach the NCS was added **by hand to a
   CloudFormation-managed security group**. Template and reality now differ, so a stack update could
   revert it and the appliance would silently stop connecting.
+
+## 39. keepAlive is excluded from capture, because arithmetic
+
+The standing appliance from §38 produced hard numbers within an hour: **92 captured frames in 45
+minutes, every one of them an outbound `keepAlive`.**
+
+At one every thirty seconds that is roughly **2,880 a day against a 2,000-frame cap**. Capture would
+therefore have stopped some time overnight, and any real running-order delivery after that point
+would have left no evidence at all — the precise failure that made a genuine passive delivery look
+like a non-event in §38, reintroduced by a different route. The least informative message the
+protocol has would have consumed the entire evidence budget.
+
+`keepAlive` is now excluded by default.
+
+Excluding it costs nothing. MOS 4.0 §4.1.1 gives `keepAlive` no `messageID` because it is
+unsequenced, it requires no reply, and its only purpose is holding a connection open through
+firewalls. Its arrival is already visible in the service log. Nothing is learned from the 2,879th
+one on disk.
+
+Three details worth recording:
+
+- **The filter lives in the recorder, not at the call sites.** There are five `Record` call sites
+  across three files; filtering in five places is how one gets missed, which is the same mistake
+  that produced the transport divergence in §28 and the unhandled `roCreate` in §38. One rule in one
+  place applies everywhere by construction.
+- **It is a substring test, not a parse.** `Record` deliberately runs *before* parsing, because a
+  frame that fails to parse is the most valuable one to keep. Capture must not depend on parsing
+  succeeding, so the check cannot either. A MOS envelope carries exactly one operation, so the
+  element's presence identifies it.
+- **Skipped frames are counted and reported**, at shutdown and via `Recorder.Skipped()`. A quiet
+  capture directory must be distinguishable from a broken recorder — otherwise this fix recreates
+  the ambiguity it was meant to remove.
+
+Raising the cap was considered and rejected: a larger number moves the cliff without removing it.
+`Recorder.KeepAlive` re-enables capture for the rare case of deliberately debugging Profile 0
+keep-alive behaviour on a short run.
