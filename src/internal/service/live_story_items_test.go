@@ -210,3 +210,80 @@ func TestResentStorySendKeepsItemMetadata(t *testing.T) {
 			len(stored[0].ExternalMetadata))
 	}
 }
+
+// A customer's item shape: duration expressed as objDur plus objTB, with no itemEdDur at all.
+//
+// Structure taken from a production rundown where all 93 items carried objDur and objTB and only some
+// carried itemEdDur. Element order is the real one, which differs markedly from the specification's --
+// mosID and mosAbstract precede itemID, and objDur/objTB sit mid-element. Go does not care about order
+// when unmarshalling, but recording it here documents that the real order is not the declared one.
+//
+// This test exists because adding objDur and objTB to the wire types was not sufficient: the conversion
+// from the story-body form into ItemInfo dropped them, so every one of those durations stayed at zero
+// even with the fields present and parsed (doc/interop §48).
+const customerShapedStorySend = `<mos>
+<mosID>openmos.example.mos</mosID><ncsID>NCS-HOST</ncsID><messageID>91</messageID>
+<roStorySend>
+<roID>NCS-HOST;P_STORYTELLING\W;2D526A13</roID>
+<storyID>NCS-HOST;P_STORYTELLING\W\R_2D526A13;A0CEE368</storyID>
+<storySlug>Story with a vendor item</storySlug>
+<storyBody><p> </p>
+<storyItem><mosID>vendor.cg.example.mos</mosID><mosAbstract>CG element</mosAbstract>
+<itemID>2</itemID><mosPlugInID>vendor.plugin.1</mosPlugInID><objID>OBJ-77</objID>
+<objDur>600</objDur><objTB>59.94</objTB><abstract>CG element</abstract>
+<itemSlug>CG element</itemSlug></storyItem>
+<p> </p>
+</storyBody>
+</roStorySend>
+</mos>`
+
+func TestCustomerItemDurationFromObjDur(t *testing.T) {
+	svc, stories, items := newStoryTestService(t)
+	ctx := context.Background()
+
+	var env xml.Envelope
+	if err := stdxml.Unmarshal([]byte(customerShapedStorySend), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msg, err := env.Message()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	send := msg.(xml.ROStorySend)
+
+	if err := svc.ProcessRunningOrderInfo(ctx, xml.RunningOrderInfo{
+		ID: send.ROID, Slug: "customer",
+	}, "openmos.example.mos"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := svc.ProcessROStorySend(ctx, send); err != nil {
+		t.Fatalf("ProcessROStorySend: %v", err)
+	}
+
+	stored := itemsFor(t, ctx, stories, items, send.ROID)
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d items, want 1", len(stored))
+	}
+	item := stored[0]
+
+	// 600 samples at 59.94 samples per second is ten seconds.
+	if item.Duration != 10 {
+		t.Errorf("duration = %d seconds, want 10 (600 samples at 59.94). Zero here means objDur and "+
+			"objTB were parsed but not carried through the conversion into ItemInfo.", item.Duration)
+	}
+	if item.EditorialDuration != 600 {
+		t.Errorf("editorialDuration = %d, want the 600 samples preserved", item.EditorialDuration)
+	}
+	if item.TimeBase != 60 {
+		t.Errorf("timeBase = %d, want 59.94 rounded to 60", item.TimeBase)
+	}
+	// The exact rate must survive, since 59.94 does not round-trip through an int.
+	if got := item.Metadata["objTB"]; got != "59.94" {
+		t.Errorf("metadata objTB = %q, want the exact 59.94", got)
+	}
+	// The owning device is a different vendor from the receiving device, which is what makes
+	// redirection possible and must not be flattened.
+	if item.Metadata["mosID"] != "vendor.cg.example.mos" {
+		t.Errorf("owning mosID = %q, want the vendor device that owns the object", item.Metadata["mosID"])
+	}
+}

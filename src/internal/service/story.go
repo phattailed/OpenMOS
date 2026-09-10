@@ -195,6 +195,12 @@ func (s *MOSService) processStoryBody(ctx context.Context, story *model.Story, s
 		if f.ItemEdDur > 0 {
 			info.Duration = strconv.Itoa(f.ItemEdDur)
 		}
+		// The object's duration and time base, which for some estates are the ONLY timing an item
+		// carries: a production customer rundown supplied objDur and objTB on all 93 of its items and
+		// itemEdDur on only some (doc/interop §48). Adding the fields to the wire types without
+		// carrying them through this conversion left every one of those durations at zero.
+		info.ObjDur = f.ObjDur
+		info.ObjTB = f.ObjTB
 		infos = append(infos, info)
 	}
 
