@@ -3355,6 +3355,27 @@ decisions worth stating:
 Two existing tests asserted the old behaviour and were corrected rather than accommodated: they had
 encoded the units bug as the expectation.
 
+### The rundown carried two time bases, which settles the argument
+
+After the fix, the same 97 items resolved as:
+
+```
+timeBase 60 : 65 items      (59.94 rounded)
+timeBase 30 : 28 items      (29.97 rounded)
+timeBase  0 :  4 items      (no rate reported)
+3022 samples @ 60 ->  50s      6180 @ 60 -> 103s      5120 @ 60 -> 85s
+```
+
+**One rundown, two sampling rates**, with roughly a third of the items running at half the rate of the
+rest. Any single assumed frame rate would have been wrong for one group or the other, and wrong by a factor
+of two — which for a rundown's timing is not a rounding error.
+
+Nineteen items resolved to a non-zero duration in seconds. The remainder report a time base with a sample
+count of zero, which is correct rather than missing: a graphics template or lower third has no intrinsic
+duration, and the specification's own note that still stores and character generators run at one sample per
+second exists for exactly this class of object. A device that treated zero-length as an error would reject
+most of a real rundown.
+
 ### A malformed schema URI, carried verbatim
 
 One vendor's schema URI arrives as `http:'vendor.example/…` — an apostrophe where `//` belongs. It is like that
