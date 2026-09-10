@@ -85,7 +85,12 @@ func TestMOS28ROCreatePersistsAndAcknowledgesOnSameSocket(t *testing.T) {
 	if story := stories.value("RO-41/STORY-1"); story == nil || story.RawID != "STORY-1" || story.RunningOrderID != "RO-41" {
 		t.Fatalf("story was not persisted: %#v", story)
 	}
-	if item := items.value("RO-41/STORY-1/ITEM-1"); item == nil || item.RawID != "ITEM-1" || item.StoryID != "RO-41/STORY-1" || item.ObjectID != "OBJ-1" || item.Duration != 25 {
+	// itemEdDur is 25 SAMPLES in this fixture, and the fixture carries no objTB, so the duration in
+	// seconds is genuinely unknown -- 25 samples is two-fifths of a second at PAL and a quarter of a
+	// second at NTSC. The sample count is preserved and Duration stays zero rather than repeating the
+	// figure as though it were seconds, which is what this assertion used to require (doc/interop §48).
+	if item := items.value("RO-41/STORY-1/ITEM-1"); item == nil || item.RawID != "ITEM-1" ||
+		item.StoryID != "RO-41/STORY-1" || item.ObjectID != "OBJ-1" || item.EditorialDuration != 25 {
 		t.Fatalf("item was not persisted: %#v", item)
 	}
 	// An item's mosID names the MOS owning the referenced object, which can differ

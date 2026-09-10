@@ -469,8 +469,21 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 			UpdatedAt:        time.Now(),
 			ExternalMetadata: preserveExternalMetadata(info.MosExternalMetadata),
 		}
-		if info.Duration != "" {
-			item.Duration, _ = strconv.Atoi(info.Duration)
+		// Durations arrive in SAMPLES and need the time base to become seconds. Reading the figure as
+		// seconds recorded a 150-sample lower third -- two and a half seconds of air -- as 150 seconds
+		// (doc/interop §48).
+		timing := resolveItemTiming(info.Duration, info.ObjDur, info.ObjTB)
+		item.EditorialDuration = timing.Samples
+		item.TimeBase = timing.TimeBase
+		if timing.Known {
+			item.Duration = timing.Seconds
+		}
+		if raw := strings.TrimSpace(info.ObjTB); raw != "" {
+			if item.Metadata == nil {
+				item.Metadata = make(map[string]string, 2)
+			}
+			// The exact rate, because 59.94 does not survive rounding into TimeBase.
+			item.Metadata["objTB"] = raw
 		}
 		// An item's mosID identifies the MOS that owns the referenced object, which
 		// may differ from the MOS receiving the running order. That distinction is
@@ -496,6 +509,8 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 		existing.Slug = item.Slug
 		existing.ObjectID = item.ObjectID
 		existing.Duration = item.Duration
+		existing.EditorialDuration = item.EditorialDuration
+		existing.TimeBase = item.TimeBase
 		existing.Order = item.Order
 		// Carry external metadata across an update.
 		//
