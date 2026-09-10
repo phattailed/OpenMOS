@@ -152,8 +152,15 @@ func TestLiveENPSStoryItemPersists(t *testing.T) {
 	if item.ObjectID != "OM-T99124A" {
 		t.Errorf("objectID = %q, want OM-T99124A", item.ObjectID)
 	}
-	if item.Duration != 150 {
-		t.Errorf("duration = %d, want 150", item.Duration)
+	// itemEdDur is 150 SAMPLES, and this frame carries no objTB, so the duration in seconds is unknown:
+	// 150 samples is 2.5 seconds at NTSC and 3 at PAL. The sample count is preserved; Duration stays
+	// zero rather than repeating the figure as though it were seconds (doc/interop §48).
+	if item.EditorialDuration != 150 {
+		t.Errorf("editorialDuration = %d samples, want 150", item.EditorialDuration)
+	}
+	if item.Duration != 0 {
+		t.Errorf("duration = %d seconds; without a time base it cannot be computed and must not be "+
+			"guessed", item.Duration)
 	}
 	if item.Metadata["mosID"] != "openmos.example.mos" {
 		t.Errorf("owning mosID lost: %v", item.Metadata)

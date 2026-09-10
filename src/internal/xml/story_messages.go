@@ -71,14 +71,17 @@ type StoryParagraph struct {
 // StoryItemFields is the mosItem payload nested inside a storyItem, which is the shape a live
 // ENPS actually sends. Field names match StoryItem so the two forms are interchangeable.
 type StoryItemFields struct {
-	XMLName           xml.Name              `xml:"mosItem"`
-	ItemID            string                `xml:"itemID"`
-	ItemSlug          string                `xml:"itemSlug,omitempty"`
-	ObjID             string                `xml:"objID"`
-	MosID             string                `xml:"mosID"`
-	MosAbstract       string                `xml:"mosAbstract,omitempty"`
-	ItemEdStart       int                   `xml:"itemEdStart,omitempty"`
-	ItemEdDur         int                   `xml:"itemEdDur,omitempty"`
+	XMLName     xml.Name `xml:"mosItem"`
+	ItemID      string   `xml:"itemID"`
+	ItemSlug    string   `xml:"itemSlug,omitempty"`
+	ObjID       string   `xml:"objID"`
+	MosID       string   `xml:"mosID"`
+	MosAbstract string   `xml:"mosAbstract,omitempty"`
+	ItemEdStart int      `xml:"itemEdStart,omitempty"`
+	ItemEdDur   int      `xml:"itemEdDur,omitempty"`
+	// ObjDur and ObjTB carry duration when itemEdDur is absent. See ItemInfo.
+	ObjDur            string                `xml:"objDur,omitempty"`
+	ObjTB             string                `xml:"objTB,omitempty"`
 	ItemUserTimingDur int                   `xml:"itemUserTimingDur,omitempty"`
 	ItemChannel       string                `xml:"itemChannel,omitempty"`
 	MacroIn           string                `xml:"macroIn,omitempty"`
@@ -112,6 +115,8 @@ func (s StoryItem) ItemFields() *StoryItemFields {
 		ItemEdStart:       s.ItemEdStart,
 		ItemEdDur:         s.ItemEdDur,
 		ItemUserTimingDur: s.ItemUserTimingDur,
+		ObjDur:            s.ObjDur,
+		ObjTB:             s.ObjTB,
 		MacroIn:           s.MacroIn,
 		MacroOut:          s.MacroOut,
 		ExternalMeta:      s.ExternalMeta,
@@ -140,14 +145,17 @@ type StoryPresenter struct {
 // send it. MosItem carries the nested form, and ItemFields() returns whichever is populated
 // so callers do not have to know which shape arrived.
 type StoryItem struct {
-	XMLName           xml.Name              `xml:"storyItem"`
-	MosItem           *StoryItemFields      `xml:"mosItem,omitempty"`
-	ItemID            string                `xml:"itemID"`
-	ItemSlug          string                `xml:"itemSlug,omitempty"`
-	ObjID             string                `xml:"objID"`
-	MosID             string                `xml:"mosID"`
-	ItemEdStart       int                   `xml:"itemEdStart,omitempty"`
-	ItemEdDur         int                   `xml:"itemEdDur,omitempty"`
+	XMLName     xml.Name         `xml:"storyItem"`
+	MosItem     *StoryItemFields `xml:"mosItem,omitempty"`
+	ItemID      string           `xml:"itemID"`
+	ItemSlug    string           `xml:"itemSlug,omitempty"`
+	ObjID       string           `xml:"objID"`
+	MosID       string           `xml:"mosID"`
+	ItemEdStart int              `xml:"itemEdStart,omitempty"`
+	ItemEdDur   int              `xml:"itemEdDur,omitempty"`
+	// ObjDur and ObjTB carry duration when itemEdDur is absent. See ItemInfo.
+	ObjDur            string                `xml:"objDur,omitempty"`
+	ObjTB             string                `xml:"objTB,omitempty"`
 	ItemUserTimingDur int                   `xml:"itemUserTimingDur,omitempty"`
 	MacroIn           string                `xml:"macroIn,omitempty"`
 	MacroOut          string                `xml:"macroOut,omitempty"`

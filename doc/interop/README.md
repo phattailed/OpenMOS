@@ -3296,3 +3296,71 @@ The lesson is not "measure more". It is that a filter added for one purpose sile
 later measurement that passes through it, and the filter is invisible at the point of measuring. Where
 a subsystem deliberately discards data, a count taken from it needs to state what it excludes — or the
 count needs to come from the other end of the wire, which is what settled this.
+
+## 48. A real customer rundown, and durations that were never seconds
+
+A production rundown from a customer station was activated against the appliance: **45 stories, 93 items,
+one `roCreate` followed by 45 `roStorySend`, zero errors, zero unhandled messages.** Everything built to
+this point handled it without modification, which is the first time real third-party editorial structure
+has passed through OpenMOS end to end.
+
+It also carried three vendors' devices and two vendors' metadata schemas, so the item shapes are not
+ENPS's alone:
+
+| Owning `mosID` (device class) | Items | `mosSchema` |
+|---|---|---|
+| automation | 46 | a switcher vendor's MOS external schema |
+| character generator | 28 | *(none — no `mosExternalMetadata` at all)* |
+| news production / playout | 19 | a playout vendor's MOS schema |
+
+`mosScope` split PLAYLIST 74 / STORY 19, consistent with the specification. Payload structure was a
+generic property bag — `object`, `properties`, `property`, `name`, `value`, `type` — plus audio
+configuration (`additionalAudio`, `customLevel`, `overrideState`) and per-vendor keys such as `shotID`
+and `dbTemplate`. 85 distinct object identifiers across 93 items, so a few objects are referenced more
+than once, exactly as the specification permits.
+
+### Durations are in samples, and we had been storing them as seconds
+
+Every one of the 93 items stored a duration of **zero**, which exposed something larger.
+
+The customer's items carry `objDur` and `objTB` — object duration in samples and the sampling rate —
+on **all 93**, while `itemEdDur` appears on only some. We read neither `objDur` nor `objTB`, so that
+estate had no timing at all.
+
+Worse, where `itemEdDur` *was* read, it was read wrongly. The specification is consistent and easy to
+misread:
+
+> `objTB` — "Describes the sampling rate of the object in samples per second. For PAL Video this would be
+> 50. For NTSC it would be 59.94."
+>
+> `itemUserTimingDur` — "The value is in number of samples."
+
+`itemEdDur`, `itemUserTimingDur` and `objDur` are all **sample counts**. OpenMOS put the raw figure into a
+field documented as seconds, so a 150-sample lower third — two and a half seconds of air — was recorded as
+150 seconds. Every duration was wrong by the sample rate, roughly sixtyfold for NTSC, and any consumer
+computing rundown timing from it would have been nonsensically wrong.
+
+`resolveItemTiming` now prefers `itemEdDur`, falls back to `objDur`, and divides by `objTB`. Three
+decisions worth stating:
+
+- **An unknown duration is not a zero duration.** Without a time base the conversion is impossible, and
+  guessing a frame rate fabricates a figure that *looks* usable — which in a rundown is worse than an
+  absent one. `Samples` is preserved, `Seconds` stays zero, and `Known` reports the difference.
+- **The reported rate must be used, not assumed.** The specification makes still stores and character
+  generators one sample per second, so for a CG item the sample count already *is* the duration. Assuming
+  a video frame rate would divide it by sixty.
+- **The exact rate is kept alongside the rounded one**, because 59.94 does not survive rounding and the
+  sample count is the only lossless figure.
+
+Two existing tests asserted the old behaviour and were corrected rather than accommodated: they had
+encoded the units bug as the expectation.
+
+### A malformed schema URI, carried verbatim
+
+One vendor's schema URI arrives as `http:'vendor.example/…` — an apostrophe where `//` belongs. It is like that
+on the wire, not mangled by us.
+
+That is the right outcome. `mosSchema` is "implied to be a pointer or URL", and the payload is to be
+carried rather than interpreted, so a device that validated or normalised it would reject or silently
+alter production traffic. Worth recording as concrete evidence that these URIs cannot be assumed
+well-formed.

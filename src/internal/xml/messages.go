@@ -532,6 +532,14 @@ type ItemInfo struct {
 	ID       string `xml:"itemID"`
 	Slug     string `xml:"itemSlug,omitempty"`
 	Duration string `xml:"itemEdDur,omitempty"`
+	// ObjDur and ObjTB are the OBJECT's duration and time base, in samples and samples per second.
+	//
+	// The specification lists them on mosObj rather than on item, but a real customer rundown carried
+	// them on every one of 93 items while only some carried itemEdDur -- so for that estate they are
+	// the ONLY duration available (doc/interop §48). Both are strings because objTB is fractional:
+	// 59.94 for NTSC, 50 for PAL.
+	ObjDur   string `xml:"objDur,omitempty"`
+	ObjTB    string `xml:"objTB,omitempty"`
 	ObjectID string `xml:"objID"`
 	MosID    string `xml:"mosID"`
 	// ObjPath is emitted bare, whereas the specification nests paths inside an objPaths
