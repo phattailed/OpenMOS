@@ -167,7 +167,7 @@ func handleStorySend(ctx context.Context, deps roDeps, r peerResponder, m mosxml
 
 	var unknown *service.UnknownRunningOrderError
 	if errors.As(err, &unknown) {
-		logger.Warningf("Lost synchronisation on RO %s; requesting a rebuild", unknown.ROID)
+		logger.Warningf("Lost synchronisation on RO %s", unknown.ROID)
 		// The NACK goes first: the peer is waiting for an answer to THIS message and
 		// must know it was not applied. The roReq follows as a separate request.
 		if ackErr := r.respond(ctx, mosxml.CreateROAck(m.ROID,
@@ -204,7 +204,7 @@ func handleElementAction(ctx context.Context, deps roDeps, r peerResponder, m mo
 	// references an unknown roID, storyID or itemID, the MOS device will send an roReq".
 	var unknown *service.UnknownRunningOrderError
 	if errors.As(err, &unknown) {
-		logger.Warningf("Lost synchronisation on RO %s via roElementAction; requesting a rebuild", unknown.ROID)
+		logger.Warningf("Lost synchronisation on RO %s via roElementAction", unknown.ROID)
 		if ackErr := r.respond(ctx, mosxml.CreateROAck(m.ROID,
 			"NACK: running order not held by this device, requesting resync", nil)); ackErr != nil {
 			return ackErr
@@ -418,8 +418,13 @@ func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID strin
 	// earlier version branched here and sent directly, which bypassed the walk's one-request-at-a-time
 	// serialisation -- the very thing the walk exists to guarantee.
 	if !deps.resync.shouldRequest(roID) {
-		// Already asked recently. Declining is safe; asking on every refusal is how a
-		// loop starts.
+		// Already asked recently. Declining is safe; asking on every refusal is how a loop starts.
+		//
+		// This is the common case in practice, not the exception: a resynchronising NCS sends every
+		// story in the running order, so one divergence produces a dozen refusals within two seconds.
+		// Logged at debug volume rather than warning, because the interesting event -- the divergence
+		// itself -- has already been reported by the caller.
+		logger.Infof("Rebuild for RO %s already requested recently; not asking again", roID)
 		return
 	}
 

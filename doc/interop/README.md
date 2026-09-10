@@ -3159,3 +3159,24 @@ Whether atomicity is right here is a separate question. It is defensible: a part
 order is a sequence that disagrees with the NCS's, which §42 argues against. But the failure mode
 deserves recording, because "one bad item, no rundown" is a large blast radius for a parse gap, and the
 error surfaced only in a log line nobody was watching.
+
+### The loop closes: our write comes back and converges our state
+
+With the rundown populated, the assertion that had been missing all along:
+
+```
+order BEFORE:  1 New Row 8    2 New Row 7    3 shoe    4 hay    5 HAM
+   Sent roReqStoryAction operation=MOVE      (3rd story, before the 1st)
+   ACCEPTED roStatus="OK"                    <- ENPS applied it
+   Received roElementAction "MOVE"           <- ENPS notified the passive lane
+   Moved 1 stories … to position 0           <- we applied it
+order AFTER:   1 shoe    2 New Row 8    3 New Row 7    4 hay    5 HAM
+```
+
+OpenMOS asked a live newsroom system to reorder a rundown, the NCS did it, told us about it on a
+different connection, and our stored sequence converged on the NCS's. The rest of the order is
+undisturbed, which is the part a reorder gets wrong most easily.
+
+Every earlier run of this test was against an empty rundown, so the inbound half was correctly refused
+and never exercised. That is worth stating plainly: the write half was proven hours before the read half,
+and a passing `roStatus=OK` said nothing about whether we had applied anything.
