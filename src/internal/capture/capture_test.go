@@ -223,7 +223,7 @@ func TestKeepAliveCapturableWhenExplicitlyRequested(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer rec.Close()
-	rec.KeepAlive = true
+	rec.Liveness = true
 
 	ka := []byte(`<mos><mosID>a.mos</mosID><ncsID>N</ncsID><keepAlive></keepAlive></mos>`)
 	if err := rec.Record("mos4-ws-client", Outbound, "peer", ka, len(ka)*2, "UCS-2BE"); err != nil {
@@ -231,5 +231,58 @@ func TestKeepAliveCapturableWhenExplicitlyRequested(t *testing.T) {
 	}
 	if rec.Count() != 1 || rec.Skipped() != 0 {
 		t.Errorf("with KeepAlive set: count=%d skipped=%d, want 1 and 0", rec.Count(), rec.Skipped())
+	}
+}
+
+// heartbeat is excluded for the same reason keepAlive is, and the reason it had to be added later is
+// instructive: the exclusion was written when the only long-running lane was passive, which sends
+// keepAlive. Adding a standard request lane introduced heartbeat at the same 30-second cadence --
+// roughly 2,880 frames a day against a 2,000 frame cap -- so a standing appliance would again fill
+// its capture budget with traffic carrying no state, and evict the frames worth keeping.
+func TestHeartbeatExcludedFromCapture(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	beat := []byte(`<mos><mosID>a</mosID><ncsID>b</ncsID><messageID>7</messageID>` +
+		`<heartbeat><time>2026-09-10T18:00:00</time></heartbeat></mos>`)
+	for i := 0; i < 5; i++ {
+		if err := rec.Record("mos4-ws-client", Outbound, "peer", beat, len(beat)*2, "UCS-2BE"); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	if rec.Skipped() != 5 {
+		t.Errorf("skipped %d heartbeats, want 5", rec.Skipped())
+	}
+
+	// A frame that carries state must still be recorded, or the filter has gone too far.
+	real := []byte(`<mos><mosID>a</mosID><ncsID>b</ncsID><messageID>8</messageID>` +
+		`<roAck><roID>RO-1</roID><roStatus>OK</roStatus></roAck></mos>`)
+	if err := rec.Record("mos4-ws-client", Inbound, "peer", real, len(real)*2, "UCS-2BE"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var frames int
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".xml") {
+			frames++
+		}
+	}
+	if frames != 1 {
+		t.Errorf("wrote %d frame files, want exactly the one carrying state", frames)
+	}
+
+	// Liveness re-enables both, for a run that is deliberately studying Profile 0.
+	rec.Liveness = true
+	if err := rec.Record("mos4-ws-client", Outbound, "peer", beat, len(beat)*2, "UCS-2BE"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if rec.Skipped() != 5 {
+		t.Errorf("Skipped() moved to %d after enabling liveness capture; it should not", rec.Skipped())
 	}
 }
