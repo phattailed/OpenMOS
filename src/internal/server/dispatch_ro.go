@@ -402,7 +402,7 @@ func advanceWalk(ctx context.Context, deps roDeps, r peerResponder) {
 func sendDiscoveryReq(ctx context.Context, deps roDeps, r peerResponder, roID string) {
 	logger.Infof("Discovery walk: sending roReq for RO %s (%d remaining)",
 		roID, deps.walk.remaining())
-	if err := r.respond(ctx, mosxml.ROReq{ROID: roID}); err != nil {
+	if err := sendRequest(ctx, deps, r, mosxml.ROReq{ROID: roID}); err != nil {
 		logger.Errorf("Discovery walk: failed to send roReq for RO %s: %v", roID, err)
 	}
 }
@@ -413,30 +413,10 @@ func sendDiscoveryReq(ctx context.Context, deps roDeps, r peerResponder, roID st
 // it has already been answered, and turning a failed recovery attempt into a connection
 // error would replace a recoverable disagreement with an outage.
 func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID string) {
-	if !r.canOriginate() {
-		// The lane that told us about the divergence cannot carry the request that repairs it. Use a
-		// lane that can, if one is configured.
-		if deps.origin == nil {
-			logger.Warningf("Lost synchronisation on RO %s, but this lane cannot carry a request and no "+
-				"request lane is configured, so no roReq is sent. Set WS_CLIENT_REQUEST_LANE to recover "+
-				"automatically (doc/interop §43).", roID)
-			return
-		}
-		if !deps.origin.ready() {
-			logger.Warningf("Lost synchronisation on RO %s; the request lane is not connected yet, so "+
-				"recovery is deferred rather than attempted.", roID)
-			return
-		}
-		if !deps.resync.shouldRequest(roID) {
-			return
-		}
-		logger.Infof("Lost synchronisation on RO %s, detected on a lane that cannot originate; "+
-			"requesting a rebuild on the request lane", roID)
-		if err := deps.origin.originate(ctx, mosxml.ROReq{ROID: roID}); err != nil {
-			logger.Errorf("Failed to send roReq for RO %s on the request lane: %v", roID, err)
-		}
-		return
-	}
+	// No lane check here. sendRequest below picks a lane that can carry the request, so recovery
+	// works the same whether the divergence was noticed on a lane that can originate or not. An
+	// earlier version branched here and sent directly, which bypassed the walk's one-request-at-a-time
+	// serialisation -- the very thing the walk exists to guarantee.
 	if !deps.resync.shouldRequest(roID) {
 		// Already asked recently. Declining is safe; asking on every refusal is how a
 		// loop starts.
@@ -456,9 +436,36 @@ func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID strin
 		return
 	}
 	logger.Infof("Sending roReq for RO %s to recover local state", roID)
-	if err := r.respond(ctx, mosxml.ROReq{ROID: next}); err != nil {
+	if err := sendRequest(ctx, deps, r, mosxml.ROReq{ROID: next}); err != nil {
 		logger.Errorf("Failed to send roReq for RO %s: %v", next, err)
+		// The identifier stays queued, and the walk's deadline releases the slot, so a lane that
+		// recovers later can still make the request.
 	}
+}
+
+// sendRequest sends a message the peer must treat as a REQUEST, choosing a lane that can carry one.
+//
+// The lane a triggering message arrived on is not necessarily a lane that can carry a request back. A
+// device holding a passive connection learns about running orders there and must ASK about them
+// somewhere else, because the peer consumes anything arriving on a passive link as the answer to its
+// own last message (doc/interop §43).
+//
+// This is the single place that choice is made. Recovery and the discovery walk both route through it;
+// having the walk reply to the sender was why a roListAll naming two running orders produced a roReq
+// that was never answered, leaving the walk stalled behind an in-flight request that could not resolve.
+func sendRequest(ctx context.Context, deps roDeps, r peerResponder, msg mosxml.MOSMessage) error {
+	if r.canOriginate() {
+		return r.respond(ctx, msg)
+	}
+	if deps.origin == nil {
+		return fmt.Errorf("this lane cannot carry a %s and no request lane is configured; "+
+			"set WS_CLIENT_REQUEST_LANE", msg.GetMessageType())
+	}
+	if !deps.origin.ready() {
+		return fmt.Errorf("this lane cannot carry a %s and the request lane is not connected yet",
+			msg.GetMessageType())
+	}
+	return deps.origin.originate(ctx, msg)
 }
 
 // storyInfosFor converts stored stories, with their items, into the wire shape shared by
