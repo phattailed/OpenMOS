@@ -3061,3 +3061,53 @@ stay in sync.
   all of the above is never recorded.
 - Per-device MOS XML logs stamp in **UTC**; `EXCEP.LOG` stamps in **local time**. Comparing them
   without accounting for the four-hour offset will point at the wrong events.
+
+## 44. Two lanes, because neither one is a complete transport
+
+§41 and §43 arrived at the same conclusion from opposite directions, so the client now holds both
+connections on the `ro` channel:
+
+| Lane | `passive=true` | Receives unsolicited traffic | Can carry our requests |
+|---|---|---|---|
+| standard | no | **no** | **yes** |
+| passive | yes | **yes** | **no** |
+
+A passive-only device receives rundowns and can never ask for anything, so it has no route to the
+normative recovery from lost synchronisation. A standard-only device can ask for everything and will
+never be told about a change it did not request. Both statements are observed against NOM 9.6, not
+inferred.
+
+The lanes are configured independently rather than one implying the other, because the choice depends
+on the deployment:
+
+```yaml
+websocket:
+    client:
+        passive: true       # receive NCS-originated running orders
+        requestlane: true   # ALSO open a standard lane to carry our own requests
+```
+
+`WS_CLIENT_REQUEST_LANE` is ignored when `passive` is false, since a standard lane already carries
+requests. Most deployments are expected to be non-passive, where one lane suffices.
+
+### Recovery has to cross lanes
+
+The consequence for the dispatcher is that the lane which *reports* a divergence is not the lane that
+can *repair* it. `roDeps.origin` is an `originator`, consulted when the responding lane returns false
+from `canOriginate()`:
+
+- no request lane configured → warn, naming the setting that would fix it
+- configured but not connected → **defer**, rather than write to a dead socket or drop the attempt
+  silently
+- connected → send the `roReq` there, rate-limited by the same guard
+
+In every case the triggering message is still acknowledged. Being unable to recover is not being unable
+to answer, and withholding the ack would leave the NCS retrying a message we had in fact received.
+
+### What this does not fix
+
+The two lanes are separate WebSocket connections, so the NCS sees two devices' worth of sockets for one
+`mosID`. NOM tolerated that in testing -- the Profile 7 request and the passive delivery were serviced
+concurrently on the same second -- but its per-device log records `mosCommand` entries without a
+`LinkID`, so from the log alone it is not possible to attribute a request to a specific socket. If a
+future defect depends on which socket carried what, that attribution has to come from our side.

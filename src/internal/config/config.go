@@ -48,10 +48,21 @@ type Config struct {
 	// inbound ports need to be opened or exposed. Credentials are read here from
 	// config/env only and are never logged.
 	WSClient struct {
-		Enabled            bool
-		PeerURL            string
-		Channel            string
-		Passive            bool
+		Enabled bool
+		PeerURL string
+		Channel string
+		Passive bool
+		// RequestLane opens a SECOND, non-passive connection alongside the passive one, used to carry
+		// this device's own requests.
+		//
+		// It is separate from Passive because the two lanes do different jobs and neither implies the
+		// other. A passive connection cannot carry a request at all -- the reference NCS consumes one
+		// as the answer to its own last message and then retries that message forever
+		// (doc/interop §43) -- so a passive-only device has no route to the normative recovery from
+		// lost synchronisation. Enabling this restores it.
+		//
+		// Ignored when Passive is false, since a standard lane already carries requests.
+		RequestLane        bool
 		Username           string
 		Password           string
 		InsecureSkipVerify bool
@@ -236,6 +247,10 @@ func LoadConfig() (*Config, error) {
 	}
 	if envVal := getEnv("WS_CLIENT_CHANNEL", ""); envVal != "" || !yamlLoaded {
 		config.WSClient.Channel = getEnv("WS_CLIENT_CHANNEL", getDefaultString(config.WSClient.Channel, "ro"))
+	}
+	if envVal := getEnv("WS_CLIENT_REQUEST_LANE", ""); envVal != "" || !yamlLoaded {
+		config.WSClient.RequestLane = getEnvAsBool("WS_CLIENT_REQUEST_LANE",
+			getDefaultBool(config.WSClient.RequestLane, false))
 	}
 	if envVal := getEnv("WS_CLIENT_PASSIVE", ""); envVal != "" || !yamlLoaded {
 		config.WSClient.Passive = getEnvAsBool("WS_CLIENT_PASSIVE", getDefaultBool(config.WSClient.Passive, false))

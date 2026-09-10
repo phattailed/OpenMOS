@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"airshift/openmos/internal/config"
@@ -55,6 +56,47 @@ type WSClient struct {
 	// process reissuing 1, 2, 3 risks having them answered from a peer's deduplication
 	// cache rather than processed.
 	messageIDs *messageid.Sequence
+
+	// requestConn is the live connection of the lane that may carry our own requests, or nil when no
+	// such lane is currently up. Guarded because the passive lane's reader consults it while the
+	// request lane's reconnect loop replaces it.
+	requestMu   sync.Mutex
+	requestConn *websocket.Conn
+}
+
+// originate sends a message the peer will treat as a request, on the request lane.
+//
+// Separate from the responder path on purpose: a message arriving on the passive lane must not be
+// answered with a request there, because the peer files it as the answer to its own last message and
+// then retries that message indefinitely (doc/interop §43).
+func (c *WSClient) originate(ctx context.Context, msg mosxml.MOSMessage) error {
+	c.requestMu.Lock()
+	conn := c.requestConn
+	c.requestMu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("no request lane is connected")
+	}
+
+	inner, err := stdxml.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", msg.GetMessageType(), err)
+	}
+	envelope := mosxml.WrapEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, c.messageID(), inner)
+	return c.writeFrame(ctx, conn, envelope)
+}
+
+// ready reports whether the request lane is connected.
+func (c *WSClient) ready() bool {
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	return c.requestConn != nil
+}
+
+// setRequestConn publishes or clears the request lane's connection.
+func (c *WSClient) setRequestConn(conn *websocket.Conn) {
+	c.requestMu.Lock()
+	c.requestConn = conn
+	c.requestMu.Unlock()
 }
 
 // NewWSClient creates a new MOS 4 WebSocket client.
@@ -89,6 +131,10 @@ func NewWSClient(cfg *config.Config, frames *capture.Recorder, svc *service.MOSS
 			resync:  newResyncGuard(),
 			walk:    openDiscoveryWalk(stateSubdir(cfg.State.Dir, "mos4-client")),
 			mosID:   cfg.MOS.ID,
+			// The client is its own request lane. Set unconditionally: originate reports "no request
+			// lane is connected" until one is, which is the same answer a nil origin would give but
+			// without the dispatcher needing to know how lanes are configured.
+			origin: client,
 		}
 	}
 	return client
@@ -125,7 +171,10 @@ func parseSeq(value string) int64 {
 // query parameters the server validates, adding passive=true when configured.
 // Credentials are NEVER placed in the URL; they travel in the Authorization
 // header (see basicAuthHeader).
-func (c *WSClient) dialURL() (string, error) {
+// dialURL builds the peer URL for a lane. passive is explicit rather than read from config because
+// a device may hold BOTH lanes at once: a passive one to receive NCS-originated running orders, and a
+// standard one to carry its own requests. See Start.
+func (c *WSClient) dialURL(passive bool) (string, error) {
 	base := c.config.WSClient.PeerURL
 	if base == "" {
 		return "", fmt.Errorf("ws client peer URL is not configured")
@@ -146,7 +195,7 @@ func (c *WSClient) dialURL() (string, error) {
 	q.Set("channel", channel)
 	// Genuine passive mode: signal the peer that this device dialed out from
 	// inside the firewall.
-	if c.config.WSClient.Passive {
+	if passive {
 		q.Set("passive", "true")
 	}
 	u.RawQuery = q.Encode()
@@ -184,8 +233,67 @@ func (c *WSClient) dialOptions() *websocket.DialOptions {
 // Start dials the peer and runs the connect -> Profile 0 -> read/write loop,
 // reconnecting with backoff until ctx is cancelled. It only returns when ctx is
 // done, so it is meant to be run in its own goroutine.
+// Start runs the client's lanes until ctx is cancelled.
+//
+// A MOS 4.0 device may need two connections on the same channel, and which ones depend on what it has
+// to do:
+//
+//   - A STANDARD (non-passive) lane can carry our requests -- roReq, roReqAll, roReqStoryAction -- and
+//     receives the answers. What it does NOT get is unsolicited traffic: the reference NCS answers on
+//     an inbound connection but will not push a running order down it.
+//   - A PASSIVE lane receives NCS-originated traffic, and can carry nothing back. The NCS treats it as
+//     its own output; a request sent on it is consumed as the answer to the NCS's last message and
+//     wedges that message into a permanent retry loop (doc/interop §43).
+//
+// So passive alone cannot recover from lost synchronisation, and standard alone never receives a
+// rundown it did not ask for. Running both is the only combination that is fully functional, which is
+// why RequestLane exists rather than being implied by Passive.
 func (c *WSClient) Start(ctx context.Context) error {
-	dialURL, err := c.dialURL()
+	lanes := c.lanePlan()
+	if len(lanes) == 0 {
+		return fmt.Errorf("no MOS 4 client lanes configured")
+	}
+	if len(lanes) == 1 {
+		return c.runLane(ctx, lanes[0])
+	}
+
+	// Two lanes, each with its own reconnect state. The first to fail terminally ends the client;
+	// ordinary drops are handled inside runLane by reconnecting.
+	errs := make(chan error, len(lanes))
+	for _, lane := range lanes {
+		lane := lane
+		go func() { errs <- c.runLane(ctx, lane) }()
+	}
+	err := <-errs
+	return err
+}
+
+// clientLane describes one connection the client maintains.
+type clientLane struct {
+	name string
+	// passive sets the passive=true query parameter, which tells the peer to use this connection for
+	// messages TO this device.
+	passive bool
+	// originates records that this lane may carry our own requests. Exactly one lane should, and the
+	// dispatcher reaches it through the client's originate method.
+	originates bool
+}
+
+// lanePlan decides which connections to hold, from configuration.
+func (c *WSClient) lanePlan() []clientLane {
+	if !c.config.WSClient.Passive {
+		// Standard mode: one lane, which both sends and receives. This is the common deployment.
+		return []clientLane{{name: "standard", passive: false, originates: true}}
+	}
+	lanes := []clientLane{{name: "passive", passive: true, originates: false}}
+	if c.config.WSClient.RequestLane {
+		lanes = append(lanes, clientLane{name: "request", passive: false, originates: true})
+	}
+	return lanes
+}
+
+func (c *WSClient) runLane(ctx context.Context, lane clientLane) error {
+	dialURL, err := c.dialURL(lane.passive)
 	if err != nil {
 		return err
 	}
@@ -212,10 +320,10 @@ func (c *WSClient) Start(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		logger.Infof("MOS 4 client connecting to peer=%s mosID=%s ncsID=%s channel=%s passive=%t",
-			dialURL, c.config.MOS.ID, c.config.MOS.NCSID, channel, c.config.WSClient.Passive)
+		logger.Infof("MOS 4 client %s lane connecting to peer=%s mosID=%s ncsID=%s channel=%s passive=%t",
+			lane.name, dialURL, c.config.MOS.ID, c.config.MOS.NCSID, channel, lane.passive)
 
-		connected, runErr := c.runSession(ctx, dialURL)
+		connected, runErr := c.runSession(ctx, dialURL, lane)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -231,11 +339,11 @@ func (c *WSClient) Start(ctx context.Context) error {
 			// (doc/interop §28). The spec's "as quickly as possible" describes a healthy session
 			// dropping, not a peer that keeps saying no.
 			backoff = initial
-			logger.Infof("MOS 4 client session ended (ncsID=%s channel=%s): %v; reconnecting",
-				c.config.MOS.NCSID, channel, runErr)
+			logger.Infof("MOS 4 client %s lane ended (ncsID=%s channel=%s): %v; reconnecting",
+				lane.name, c.config.MOS.NCSID, channel, runErr)
 		} else {
-			logger.Warningf("MOS 4 client connect failed (ncsID=%s channel=%s): %v; retrying in %s",
-				c.config.MOS.NCSID, channel, runErr, backoff)
+			logger.Warningf("MOS 4 client %s lane connect failed (ncsID=%s channel=%s): %v; retrying in %s",
+				lane.name, c.config.MOS.NCSID, channel, runErr, backoff)
 		}
 
 		// Wait out the backoff, but wake immediately if the context is cancelled.
@@ -264,7 +372,7 @@ func (c *WSClient) Start(ctx context.Context) error {
 // A refused handshake returns false so the caller backs off: those are different outcomes, and
 // treating a refusal as an established session is what produced a one-per-second reconnect loop
 // against a live NCS.
-func (c *WSClient) runSession(ctx context.Context, dialURL string) (bool, error) {
+func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLane) (bool, error) {
 	conn, resp, err := websocket.Dial(ctx, dialURL, c.dialOptions())
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
@@ -273,6 +381,14 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string) (bool, error)
 		return false, err
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "client closing")
+
+	// Make this connection available to the dispatcher if it is the lane that carries requests, and
+	// withdraw it when the session ends so a divergence arriving during a reconnect is reported as
+	// deferred rather than written to a dead socket.
+	if lane.originates {
+		c.setRequestConn(conn)
+		defer c.setRequestConn(nil)
+	}
 
 	// Give binary frames room; MOS envelopes can exceed the small default.
 	conn.SetReadLimit(4 << 20)
