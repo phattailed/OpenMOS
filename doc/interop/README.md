@@ -2889,3 +2889,75 @@ ENPS client, per rundown, needing no `g_mos` edit and no NOM restart.
 
 Profile 7 still cannot be claimed regardless: it requires Profiles 0, 1 and 2, and Profile 1 is
 object workflow, which OpenMOS does not implement.
+
+## 42. The rundown silently diverged: two identity conventions in one service
+
+Enabling `AllowExternalMod` (§41) made the write succeed. ENPS applied the MOVE, answered
+`<roStatus>OK</roStatus>`, and pushed `roElementAction operation="MOVE"` back to the passive appliance
+in the same second. The full loop:
+
+```
+17:20:54  Sent roReqStoryAction operation=MOVE       -> non-passive connection
+17:20:54  ACCEPTED roStatus="OK"                     <- ENPS applied it
+17:20:54  Received roElementAction "MOVE"            <- ENPS notified the passive client
+```
+
+That is a running order changed in a live newsroom system by OpenMOS, and the change observed coming
+back on a second connection.
+
+**Our stored order did not change.** We acknowledged the notification, logged
+*"Moved 1 stories"*, and did nothing.
+
+### One root cause, three symptoms
+
+Stories and items are stored under a composite key, `storyPersistenceID(roID, storyID)`, because the
+protocol only guarantees a storyID is unique *within* a running order. The `roCreate` and
+`roStorySend` family used that composite. **The `roElementAction` family used the bare wire
+identifier** -- `element_action.go` referenced `storyPersistenceID` exactly zero times.
+
+So:
+
+1. **MOVE, DELETE and SWAP silently did nothing.** `moveSet` was built from wire IDs and tested
+   against `story.ID`, which is the composite. Nothing ever matched, so every story landed in
+   "remaining", the sequence was rebuilt identically, and `nil` was returned. An OK ack for work not
+   done.
+2. **Duplicates accumulated.** Creations minted a second record under the bare ID for a story already
+   held under the composite, so the live rundown carried phantom stories -- one with an empty `rawID`
+   -- and gapped ordering (`1, 3, 4, … 14`, no 2).
+3. **Ordering drifted** as those two populations were renumbered independently.
+
+The spec is at its most emphatic here:
+
+> it is absolutely critical that all messages be applied in the order they are received. If a message
+> in a sequence is not applied or "missed" then it is guaranteed that all subsequent messages will
+> cause the sequence in the MOS to be even further out of sequence.
+
+And there is a second obligation we were also failing: a device whose sequence no longer matches the
+NCS's must send `roElementStat` with status `DISCONNECTED`. Silently diverging while reporting OK is
+worse than either applying the change or admitting we cannot.
+
+Translation now happens in one place, `internal/service/identity.go`: `resolveStory`,
+`resolveStoryKeys`, `resolveItem`, `resolveItemKeys`, `storyKeyFor`. Each tries the composite key and
+falls back to scanning by `RawID`, so records written under the old convention remain addressable
+rather than being orphaned by the fix. Unresolvable identifiers are returned as `missing` rather than
+skipped, and a MOVE naming a story we do not hold is refused outright -- a partially applied reorder
+is the divergence this section is about.
+
+### Two further defects the fix exposed
+
+**MOVE inserted after the target, not before.** `element_target` is "a storyID specifying the story
+before which the source stories are moved". The old loop advanced past every story whose order was
+`<=` the target's, landing one position late -- so moving a story onto the one immediately following
+it was a no-op even once identities matched. Invisible without asserting on the resulting sequence,
+which is why the test does.
+
+**REPLACE was not idempotent.** It always called `Create`, which had previously succeeded only
+because each replacement invented an unused key. With keys colliding correctly it failed with
+"already exists". A live ENPS re-sends a story's replacement throughout an editing session, so
+in-place update is the normal path, not the exception.
+
+### Confirmed by reversion
+
+Rebuilding `moveSet` from wire identifiers reproduces the original symptom exactly: *"Moved 1
+stories"* in the log, `order = [first, has the graphics item, third]` unchanged, no error. The
+fixture is the captured frame from the live loop above.
