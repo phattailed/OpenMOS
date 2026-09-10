@@ -41,6 +41,20 @@ type StoryBody struct {
 	XMLName    xml.Name         `xml:"storyBody"`
 	ReadAsBody string           `xml:"Read1stMEMasBody,attr,omitempty"`
 	Paragraphs []StoryParagraph `xml:"p"`
+	// Items are storyItem elements that are DIRECT CHILDREN of storyBody, siblings of the
+	// paragraphs rather than nested inside one.
+	//
+	// This is what a real ENPS sends. Captured from a live NOM 9.6:
+	//
+	//	<storyBody><p> </p><p> </p>
+	//	  <storyItem><mosItem><itemID>1</itemID>...</mosItem></storyItem>
+	//	<p> </p>
+	//
+	// StoryParagraph also has an Items field, for peers that nest the item inside a
+	// paragraph. Only that nested form was modelled before, so encoding/xml silently
+	// discarded every item a live ENPS sent -- the element had nowhere to unmarshal into.
+	// Both shapes are now accepted; see MosItems for why there is a third.
+	Items []StoryItem `xml:"storyItem,omitempty"`
 }
 
 // StoryParagraph represents a paragraph in a story body
@@ -52,6 +66,56 @@ type StoryParagraph struct {
 	PresenterRRs []string         `xml:"storyPresenterRR,omitempty"`
 	Items        []StoryItem      `xml:"storyItem,omitempty"`
 	// Handle formatting tags like b, i, u if needed
+}
+
+// StoryItemFields is the mosItem payload nested inside a storyItem, which is the shape a live
+// ENPS actually sends. Field names match StoryItem so the two forms are interchangeable.
+type StoryItemFields struct {
+	XMLName           xml.Name              `xml:"mosItem"`
+	ItemID            string                `xml:"itemID"`
+	ItemSlug          string                `xml:"itemSlug,omitempty"`
+	ObjID             string                `xml:"objID"`
+	MosID             string                `xml:"mosID"`
+	MosAbstract       string                `xml:"mosAbstract,omitempty"`
+	ItemEdStart       int                   `xml:"itemEdStart,omitempty"`
+	ItemEdDur         int                   `xml:"itemEdDur,omitempty"`
+	ItemUserTimingDur int                   `xml:"itemUserTimingDur,omitempty"`
+	ItemChannel       string                `xml:"itemChannel,omitempty"`
+	MacroIn           string                `xml:"macroIn,omitempty"`
+	MacroOut          string                `xml:"macroOut,omitempty"`
+	ExternalMeta      []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+// ItemFields returns the item's fields regardless of which shape arrived, so callers do not
+// have to test for the nested form. Returns nil when the item carries no identifier at all.
+//
+// mosAbstract is used as a fallback slug: it is strictly an object field rather than an item
+// field, but a real ENPS populates both with the same text and some peers send only the
+// abstract. Preferring itemSlug and falling back costs nothing and avoids an item that
+// displays as blank.
+func (s StoryItem) ItemFields() *StoryItemFields {
+	if s.MosItem != nil && (s.MosItem.ItemID != "" || s.MosItem.ObjID != "") {
+		f := *s.MosItem
+		if f.ItemSlug == "" {
+			f.ItemSlug = f.MosAbstract
+		}
+		return &f
+	}
+	if s.ItemID == "" && s.ObjID == "" {
+		return nil
+	}
+	return &StoryItemFields{
+		ItemID:            s.ItemID,
+		ItemSlug:          s.ItemSlug,
+		ObjID:             s.ObjID,
+		MosID:             s.MosID,
+		ItemEdStart:       s.ItemEdStart,
+		ItemEdDur:         s.ItemEdDur,
+		ItemUserTimingDur: s.ItemUserTimingDur,
+		MacroIn:           s.MacroIn,
+		MacroOut:          s.MacroOut,
+		ExternalMeta:      s.ExternalMeta,
+	}
 }
 
 // StoryPI represents producer instructions in a story paragraph
@@ -66,9 +130,18 @@ type StoryPresenter struct {
 	Name    string   `xml:",chardata"`
 }
 
-// StoryItem represents a media item within a story paragraph
+// StoryItem represents a media item within a story.
+//
+// Real ENPS traffic nests the fields one level deeper, inside a mosItem element:
+//
+//	<storyItem><mosItem><itemID>1</itemID><objID>...</objID></mosItem></storyItem>
+//
+// The flat form is kept because the specification's own examples use it and other peers may
+// send it. MosItem carries the nested form, and ItemFields() returns whichever is populated
+// so callers do not have to know which shape arrived.
 type StoryItem struct {
 	XMLName           xml.Name              `xml:"storyItem"`
+	MosItem           *StoryItemFields      `xml:"mosItem,omitempty"`
 	ItemID            string                `xml:"itemID"`
 	ItemSlug          string                `xml:"itemSlug,omitempty"`
 	ObjID             string                `xml:"objID"`

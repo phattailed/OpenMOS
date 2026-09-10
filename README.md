@@ -73,6 +73,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | One message vocabulary across both transports | Yes | Envelope-reachability test | **Yes** | Sixteen messages were socket-unreachable; see `doc/interop` §28 |
 | MOS 4 outbound client, passive mode | Yes | Loopback tests | **Yes** | NOM 9.6 delivered unsolicited `roCreate`, `roStorySend` and `roReadyToAir` with distinct production-style IDs (`doc/interop` §35, §38) |
 | Pushed `roCreate` applied on the client path | Yes | Unit tests | **Yes** | Was unhandled, dropping the whole rundown; now shared (`doc/interop` §38) |
+| Story items persisted from `roStorySend` | Yes | Live-frame tests | **Yes** | Items were dropped three ways; a rundown without them is headlines only (`doc/interop` §40) |
+| `mosExternalMetadata` on items survives a resend | Yes | Live-frame tests | **Yes** | Set on create, not on update -- and update is the common path (`doc/interop` §40) |
 | Inbound frames captured on the passive path | Yes | Unit tests | **Yes** | Capture ran only on the handshake reader, so passive recorded nothing (`doc/interop` §38) |
 | Device-initiated passive topology on NOM | — | — | **Yes** | Device row `MOSVersion=4.0`, `Passive=0`; the device connects with `passive=true` (`doc/interop` §35) |
 | Graceful shutdown, idempotent and race-free | Yes | Unit tests, incl. concurrent | **Yes** | Panicked on every run; `Shutdown` is called twice by design |
