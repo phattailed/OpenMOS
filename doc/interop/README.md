@@ -2985,3 +2985,79 @@ The recovery is normative, and it names all three levels:
 We had implemented it for an unknown running order only. A missing story or item now reports the same
 lost-synchronisation error, from both the target lookup and the source set, so a NACK is always
 accompanied by a request for the full `roList`.
+
+## 43. A passive connection cannot carry a request, and trying wedges the NCS
+
+With recovery now firing (§42), the appliance sent an `roReq` down its passive connection to rebuild
+cleared state. Nothing came back. **Zero `roList` frames have ever arrived**, across the entire
+capture history.
+
+NOM did receive it. Its per-device log records the frame verbatim -- but as a `mosResponse`:
+
+```xml
+<mosResponse Command="roReq" Time="…5:34:11 PM" LinkID="70784232-…">
+  <mos>…<roReq><roID>NCS-HOST;P_STORYTELLING\W;2D526A13-…</roID></roReq></mos>
+</mosResponse>
+```
+
+That `LinkID` belongs to NOM's own immediately preceding `nomCommand roElementAction MOVE`. Our
+request was filed as **the answer to NOM's outstanding message**. All four `roReq` frames sent that day
+were classified `mosResponse`; never once `mosCommand`. The log grammar makes this unambiguous:
+`nomCommand`→`mosResponse` pairs carry a `LinkID`, `mosCommand`→`nomResponse` pairs do not.
+
+### Why, from the assemblies
+
+A `passive=true` connection becomes a `MOSSocketOut`, and its arrival handler does no type inspection
+at all:
+
+```csharp
+MOSWebSocketeOut_MessageArrival(...) {
+    int num = MOSSocketOut.IndexOf(sender as MOSSocket);
+    mobjSocket[num].ProcessMOS4MessageResponse(e.MOSMessage);
+}
+ProcessMOS4MessageResponse(string strResponse) {
+    mstrResponse = strResponse; ProcessDataArrival(); SendComplete();
+}
+```
+
+The inbound path, by contrast, calls `AddQueueIn` -- the request queue. So **no frame arriving on a
+passive connection can reach request dispatch.** `roReq` is not rejected or special-cased; the code
+path does not exist.
+
+### It is not merely futile, it is harmful
+
+`SendComplete()` leads to `RemoveQueueOut`, which threw `ArgumentOutOfRangeException`
+**371 times in one day** on the same ~30 second cadence as an endless `roElementAction MOVE` retry. The
+sequence: our `roReq` is consumed as the response → send-complete bookkeeping throws → the queue entry
+survives → NOM re-sends the same message (messageID 150) thirty seconds later, indefinitely.
+
+So a device that follows the specification's recovery rule on a passive connection puts the NCS into a
+permanent retry loop. `canOriginate()` on the responder now makes this a compile-time obligation:
+adding a transport forces an answer to whether its lane can carry a request.
+
+### The specification says the opposite
+
+> When the "external" device needs to originate a message sequence, **for example an `roReq` message to
+> the "internal" NCS**, it will use this "passive" connection for the specific port that it was
+> provided. — MOS 4.0 §1
+
+`roReq` is the document's own example of what a passive connection should carry, and the reference
+implementation cannot route it. We follow the implementation, because the implementation is what is on
+the other end.
+
+**The consequence for anyone building a MOS 4.0 device:** passive mode alone is not a complete
+transport. A passive-only device can receive unsolicited running orders but cannot ask for anything —
+no `roReq`, no `roReqAll`, no Profile 7 request — so it has no route to the normative recovery from
+lost synchronisation. It needs a second, non-passive connection, which is the same conclusion §41
+reached for writing. Two connections is not an optimisation; it is the minimum for a device that must
+stay in sync.
+
+### Also observed in NOM, unprompted
+
+- `NotImplementedException` in `frmMOS.MOSWebSocketIn_ConnectionClosed` (`mos.vb:262`) every time our
+  socket closes, preceded by "The remote party closed the WebSocket connection without completing the
+  close handshake". An inbound-socket lifecycle defect, unrelated to dispatch.
+- The string `passive` appears in **no** NOM log written that day. The classification that determines
+  all of the above is never recorded.
+- Per-device MOS XML logs stamp in **UTC**; `EXCEP.LOG` stamps in **local time**. Comparing them
+  without accounting for the four-hour offset will point at the wrong events.

@@ -24,9 +24,14 @@ import (
 type recordingResponder struct {
 	label string
 	sent  []mosxml.MOSMessage
+	// outputOnly models a MOS 4.0 passive connection, which the peer treats as its own output and
+	// which therefore cannot carry a request.
+	outputOnly bool
 }
 
 func (r *recordingResponder) peerLabel() string { return r.label }
+
+func (r *recordingResponder) canOriginate() bool { return !r.outputOnly }
 
 func (r *recordingResponder) respond(_ context.Context, msg mosxml.MOSMessage) error {
 	r.sent = append(r.sent, msg)

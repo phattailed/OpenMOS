@@ -165,3 +165,66 @@ func TestClientRecordsInboundFramesOnThePassivePath(t *testing.T) {
 		t.Error("no frame file was written alongside the manifest entry")
 	}
 }
+
+// A passive lane must not be used to send a request, even when recovery is genuinely needed.
+//
+// This is not an optimisation. Verified against NOM 9.6: a passive connection becomes an output
+// socket whose arrival handler feeds every frame to ProcessMOS4MessageResponse and never to the
+// inbound request queue. Our roReq was logged by NOM as a `mosResponse` -- filed as the answer to its
+// own outstanding roElementAction, sharing that message's LinkID. Its send-complete bookkeeping then
+// threw ArgumentOutOfRangeException (371 times in one day), the queue entry survived, and NOM re-sent
+// the same roElementAction every thirty seconds indefinitely.
+//
+// So sending here does not fail quietly; it wedges the NCS. See doc/interop §43.
+func TestPassiveLaneDoesNotSendRoReq(t *testing.T) {
+	svc, _, _, _ := newDispatchService(t)
+	ctx := context.Background()
+
+	passive := &recordingResponder{label: "passive client", outputOnly: true}
+	deps := roDeps{service: svc, resync: newResyncGuard(), walk: newDiscoveryWalk(), mosID: "openmos.example.mos"}
+
+	// A roElementAction for a running order we do not hold: the textbook trigger for recovery.
+	action := mosxml.ROElementAction{
+		Operation: "MOVE",
+		ROID:      "RO-not-held",
+		Target:    &mosxml.ElementTarget{StoryID: "story-a"},
+		Source:    mosxml.ElementSource{StoryIDs: []string{"story-b"}},
+	}
+	if _, err := dispatchRunningOrder(ctx, deps, passive, action); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	var acks, reqs int
+	for _, msg := range passive.sent {
+		switch msg.GetMessageType() {
+		case "roAck":
+			acks++
+		case "roReq", "roReqAll":
+			reqs++
+		}
+	}
+	if reqs != 0 {
+		t.Errorf("sent %d request(s) on a passive lane; NOM consumes them as responses and enters a "+
+			"permanent retry loop", reqs)
+	}
+	if acks == 0 {
+		t.Error("the message must still be acknowledged: refusing to recover is not refusing to answer")
+	}
+
+	// The same trigger on a lane that CAN originate must still recover, or this guard has simply
+	// disabled recovery everywhere.
+	active := &recordingResponder{label: "standard client"}
+	deps2 := roDeps{service: svc, resync: newResyncGuard(), walk: newDiscoveryWalk(), mosID: "openmos.example.mos"}
+	if _, err := dispatchRunningOrder(ctx, deps2, active, action); err != nil {
+		t.Fatalf("dispatch on active lane: %v", err)
+	}
+	var activeReqs int
+	for _, msg := range active.sent {
+		if msg.GetMessageType() == "roReq" {
+			activeReqs++
+		}
+	}
+	if activeReqs == 0 {
+		t.Error("a lane that can originate must still send roReq; the guard must not disable recovery")
+	}
+}

@@ -541,6 +541,17 @@ type wsClientResponder struct {
 	messageID string
 }
 
+// canOriginate is FALSE in passive mode.
+//
+// The reference NOM turns a passive connection into an output socket and feeds every arriving frame
+// to its response handler, never to its request queue, so a request sent here cannot be dispatched --
+// and worse, it is consumed as the answer to whatever the peer last sent, wedging that message into a
+// permanent thirty-second retry loop on the NCS (doc/interop §43).
+//
+// MOS 4.0 §1 says the opposite, naming roReq as the example of what a passive connection should
+// carry. This follows the implementation, because the implementation is what will be on the other end.
+func (w wsClientResponder) canOriginate() bool { return !w.client.config.WSClient.Passive }
+
 func (w wsClientResponder) peerLabel() string {
 	return "ncsID=" + w.client.config.MOS.NCSID + " (passive client)"
 }
