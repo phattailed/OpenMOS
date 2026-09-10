@@ -36,6 +36,20 @@ type peerResponder interface {
 	peerLabel() string
 	// respond sends a message back to the peer that sent the one being handled.
 	respond(ctx context.Context, msg mosxml.MOSMessage) error
+	// canOriginate reports whether this lane can carry a message the peer will treat as a REQUEST,
+	// as opposed to a response to something the peer sent us.
+	//
+	// It exists because a MOS 4.0 passive connection cannot. MOS 4.0 §1 says it can -- "when the
+	// 'external' device needs to originate a message sequence, for example an roReq message to the
+	// 'internal' NCS, it will use this 'passive' connection" -- and the reference NOM does not
+	// implement that. A passive connection becomes an output socket whose arrival handler feeds
+	// everything to ProcessMOS4MessageResponse and never to the inbound request queue, so no frame
+	// on it can reach request dispatch (doc/interop §43).
+	//
+	// Sending anyway is not merely futile, it is HARMFUL: the peer consumes the frame as the answer
+	// to its own outstanding message, its send-complete bookkeeping throws, the queue entry survives,
+	// and it re-sends that message every thirty seconds indefinitely.
+	canOriginate() bool
 }
 
 // roDeps is what running-order handling needs beyond the responder.
@@ -384,6 +398,14 @@ func sendDiscoveryReq(ctx context.Context, deps roDeps, r peerResponder, roID st
 // it has already been answered, and turning a failed recovery attempt into a connection
 // error would replace a recoverable disagreement with an outage.
 func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID string) {
+	if !r.canOriginate() {
+		// Nothing useful can be done from here, and trying does damage. Reported at warning level
+		// because the divergence is real and stays unrepaired: a passive-only device has no route to
+		// the normative recovery, and needs a second non-passive connection to recover at all.
+		logger.Warningf("Lost synchronisation on RO %s, but this lane cannot carry a request, so no "+
+			"roReq is sent. Recovery needs a non-passive connection (doc/interop §43).", roID)
+		return
+	}
 	if !deps.resync.shouldRequest(roID) {
 		// Already asked recently. Declining is safe; asking on every refusal is how a
 		// loop starts.
@@ -485,6 +507,11 @@ func (t tcpResponder) respond(ctx context.Context, msg mosxml.MOSMessage) error 
 	return t.conn.writeMessage(ctx, msg)
 }
 
+// canOriginate is true on the MOS 2.x socket. The NCS dials us, but the socket carries traffic in
+// both directions as requests: real multi-vendor traffic shows a prompter sending roReq twelve times
+// over three days on exactly this kind of link.
+func (t tcpResponder) canOriginate() bool { return true }
+
 // roDeps assembles the shared dependencies from a socket connection.
 func (c *ClientConnection) roDeps() roDeps {
 	return roDeps{
@@ -505,6 +532,12 @@ type wsResponder struct {
 	sess      *WSSession
 	messageID string
 }
+
+// canOriginate is true for a peer that connected to US in standard mode. The connection is the
+// MOS 4.0 equivalent of the 2.x socket above, and the peer's own request queue is fed from it.
+//
+// Not yet exercised live in this direction, so this is the spec's model rather than an observation.
+func (w wsResponder) canOriginate() bool { return true }
 
 func (w wsResponder) peerLabel() string {
 	return "ncsID=" + w.sess.ncsID + " channel=" + w.sess.channel

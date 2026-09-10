@@ -42,7 +42,10 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | `roReplace`, `roStorySend`, `roDelete` | Both transports | Integration + loopback tests | **Yes** (2.x) | Shared handlers, so the two cannot diverge |
 | `roMetadataReplace`, `roReadyToAir`, `roElementAction` | Both transports | Loopback tests | No | Routed through the same shared dispatcher |
 | `roStorySend` refuses an unknown `roID` | Yes | Integration test | **Yes** | Reports rather than fabricating a running order |
-| Pull recovery: unknown `roID` triggers `roReq` | Both transports | Integration + loopback tests | No | Rate-limited so recovery cannot loop |
+| Pull recovery: unknown `roID` triggers `roReq` | Both transports | Integration + loopback tests | **Yes** | Fires on unknown story and item too, not just running order (`doc/interop` §42) |
+| Recovery suppressed on a lane that cannot originate | Yes | Unit tests | **Yes** | A passive connection cannot carry a request, and NOM enters a permanent retry loop if one is sent (`doc/interop` §43) |
+| Story items and stories share one identity scheme | Yes | Unit tests | **Yes** | The element-action family used raw wire IDs as storage keys, so MOVE/DELETE/SWAP silently did nothing (`doc/interop` §42) |
+| Originate `roReqStoryAction` (Profile 7) | Yes | Spec-example tests | **Yes** | A live NCS applied a MOVE and pushed the change back; gated by the rundown's `AllowExternalMod` (`doc/interop` §41) |
 | Inbound `roList` rebuilds local state | Both transports | Integration tests | No | Does not yet delete stories absent from the list |
 | Authentic captured fixtures (Profile 0 and 2) | Yes | Live-frame tests | **Yes** | Sanitized; raw captures never committed |
 | Cross-vendor frames (4 other vendors) | Yes | Real-traffic tests | **Yes** | From ~90k logged messages, not synthesised |
