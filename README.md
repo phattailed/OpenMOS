@@ -56,7 +56,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | One `roReq` outstanding per lane, recovery included | Yes | Unit tests | **Yes** | Recovery enqueues ahead of discovery rather than sending concurrently (`doc/interop` §34) |
 | Every parseable message classified as handled or not | Yes | Inventory test reads the parser | — | Adding a message type fails the build until classified |
 | Frame splits, coalescing, misaligned terminators, junk | Yes | Unit tests, incl. odd-offset decoy | **Yes** | Bounded at 4 MiB; non-MOS roots refused, not discarded |
-| `roElementStat` parses, routes and acks on both | Yes | Real-traffic + loopback tests | Partly | `element` attribute now preserved; not yet acted on |
+| `roElementStat` parses, routes and acks on both | Yes | Real-traffic + loopback tests | **Yes** | `element` attribute preserved |
+| On-air story tracked from `roElementStat` | Yes | Live-frame tests | **Yes** | The timing bar; `PLAY`/`STOP` pairs maintain the running order's live position (`doc/interop` §46) |
 | Retry deduplication, original ack replayed | Yes | Unit + integration tests | **Yes** | — |
 | Dedup receipts persist across restart | Yes | Unit tests | No | Append log, compacted; no fsync per record, so a crash can lose the tail |
 | Unfinished discovery work persists across restart | Yes | Unit tests | No | An interrupted walk resumes rather than leaving state divergent |

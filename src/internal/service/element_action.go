@@ -750,40 +750,6 @@ func (s *MOSService) SetReadyToAir(ctx context.Context, roID, roAir string) erro
 	return nil
 }
 
-// ReportElementStatus records the status of an element in a running order (Profile 4)
-func (s *MOSService) ReportElementStatus(ctx context.Context, stat xml.ROElementStat) error {
-	// Update the item status if the item exists
-	if stat.ItemID != "" {
-		item, err := s.itemRepo.Get(ctx, stat.ItemID)
-		if err == nil {
-			item.Status = model.StatusType(stat.Status)
-			item.UpdatedAt = time.Now()
-			if item.Metadata == nil {
-				item.Metadata = make(map[string]string)
-			}
-			item.Metadata["lastStatusTime"] = stat.Time
-			if stat.ItemChannel != "" {
-				item.Metadata["itemChannel"] = stat.ItemChannel
-			}
-			if err := s.itemRepo.Update(ctx, item); err != nil {
-				return fmt.Errorf("failed to update item status: %w", err)
-			}
-		}
-	}
-
-	// Publish event for status change
-	if s.eventBus != nil {
-		s.eventBus.Publish(events.Event{
-			Type:    events.ItemChanged,
-			Payload: stat.ItemID,
-			Source:  "mos_service",
-		})
-	}
-
-	logger.Infof("Element status report: RO %s, item %s, status %s", stat.ROID, stat.ItemID, stat.Status)
-	return nil
-}
-
 // publishROUpdate publishes a running order update event
 func (s *MOSService) publishROUpdate(roID string) {
 	if s.eventBus != nil {

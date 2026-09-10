@@ -87,18 +87,27 @@ type Story struct {
 
 // RunningOrder represents the top-level running order (collection of stories)
 type RunningOrder struct {
-	ID           string            `bson:"_id" json:"id"`      // Unique Running Order ID
-	MosID        string            `bson:"mosID" json:"mosID"` // MOS ID for this running order
-	Slug         string            `bson:"slug" json:"slug"`
-	Status       StatusType        `bson:"status" json:"status"`
-	Duration     int               `bson:"duration" json:"duration"`                             // Total duration in seconds
-	FirstStoryID string            `bson:"firstStoryID,omitempty" json:"firstStoryID,omitempty"` // First story ID for linked list
-	LastStoryID  string            `bson:"lastStoryID,omitempty" json:"lastStoryID,omitempty"`   // Last story ID for linked list
-	AirTime      *time.Time        `bson:"airTime,omitempty" json:"airTime,omitempty"`
-	Channel      string            `bson:"channel,omitempty" json:"channel,omitempty"`
-	Metadata     map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
-	Version      int               `bson:"version" json:"version"`
-	CreatedBy    string            `bson:"createdBy,omitempty" json:"createdBy,omitempty"`
+	ID           string     `bson:"_id" json:"id"`      // Unique Running Order ID
+	MosID        string     `bson:"mosID" json:"mosID"` // MOS ID for this running order
+	Slug         string     `bson:"slug" json:"slug"`
+	Status       StatusType `bson:"status" json:"status"`
+	Duration     int        `bson:"duration" json:"duration"`                             // Total duration in seconds
+	FirstStoryID string     `bson:"firstStoryID,omitempty" json:"firstStoryID,omitempty"` // First story ID for linked list
+	LastStoryID  string     `bson:"lastStoryID,omitempty" json:"lastStoryID,omitempty"`   // Last story ID for linked list
+	AirTime      *time.Time `bson:"airTime,omitempty" json:"airTime,omitempty"`
+	// OnAirStoryID is the story currently on air, as the NCS last reported via roElementStat, or
+	// empty when nothing is. This is the running order's live position -- the timing bar.
+	//
+	// Held here rather than derived by scanning story statuses, because the two answer differently
+	// whenever a STOP is missed: a scan would report two stories on air, while this cannot.
+	OnAirStoryID string `bson:"onAirStoryID,omitempty" json:"onAirStoryID,omitempty"`
+	// OnAirSince is when the current story went on air, taken from the report's own time rather than
+	// arrival, so a delayed message does not misdate the transition.
+	OnAirSince *time.Time        `bson:"onAirSince,omitempty" json:"onAirSince,omitempty"`
+	Channel    string            `bson:"channel,omitempty" json:"channel,omitempty"`
+	Metadata   map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
+	Version    int               `bson:"version" json:"version"`
+	CreatedBy  string            `bson:"createdBy,omitempty" json:"createdBy,omitempty"`
 	// ExternalMetadata holds mosExternalMetadata blocks verbatim, because the
 	// specification requires the payload be carried rather than interpreted.
 	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
