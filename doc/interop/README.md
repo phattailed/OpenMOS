@@ -3111,3 +3111,51 @@ The two lanes are separate WebSocket connections, so the NCS sees two devices' w
 concurrently on the same second -- but its per-device log records `mosCommand` entries without a
 `LinkID`, so from the log alone it is not possible to attribute a request to a specific socket. If a
 future defect depends on which socket carried what, that attribution has to come from our side.
+
+## 45. One unparseable item denied a whole running order
+
+With a request lane in place (§44) the client sends `roReqAll` on connect, which is what real devices do
+-- in the sampled multi-vendor corpus an automation system's startup is `reqMachInfo` then `roReqAll`
+within the same second. The live NCS answered properly, and two firsts arrived together:
+
+```
+Sent roReqAll on the request lane to discover the peer's running orders
+Received roListAll from ncsID=… with 2 running orders
+Received roList from ncsID=… with 13 stories
+Failed to apply roList: story 12 item 1: itemID is required
+```
+
+Both `roListAll` and `roList` are things this repository had never received from a live NCS. And the
+`roList` was **rejected whole** for one item.
+
+### The same nesting, a third time
+
+ENPS wraps item fields one level deeper than the document declares:
+
+```xml
+<item><mosItem><itemID>1</itemID><objID>OM-T99124A</objID>…</mosItem></item>
+```
+
+against the specification's flat `<!ELEMENT item (itemID, itemSlug?, objID, mosID, …)>`.
+
+This was already known -- it was visible in a captured `roElementAction` frame and noted at the time --
+and only the `storyBody`/`storyItem` case was fixed (§40). The `<item>` path was left, so `roList`,
+`roCreate`, `roReplace` and `roElementAction` all still read every field as empty and failed validation
+on the missing `itemID`.
+
+`ItemInfo.UnmarshalXML` now accepts both shapes and flattens, so every message carrying an item is
+covered at once rather than at each call site. Where both levels carry a field the outer one wins, since
+that is the shape the document defines; `mosAbstract` stands in for a missing `itemSlug`, because ENPS
+populates both with the same text and some peers send only the abstract.
+
+### The amplification is the real lesson
+
+A single malformed item did not degrade the rundown, it denied it entirely: applying a `roList` is
+atomic, so thirteen stories were discarded because of one. The device then had no state, refused the
+`roStorySend` messages that followed, asked again, and repeated -- a stable loop that looks like a
+connectivity problem and is actually one missing element name.
+
+Whether atomicity is right here is a separate question. It is defensible: a partially applied running
+order is a sequence that disagrees with the NCS's, which §42 argues against. But the failure mode
+deserves recording, because "one bad item, no rundown" is a large blast radius for a parse gap, and the
+error surfaced only in a log line nobody was watching.
