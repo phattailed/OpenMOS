@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -88,7 +90,17 @@ func New(dir string) (*Recorder, error) {
 		return nil, fmt.Errorf("failed to open capture manifest: %w", err)
 	}
 
-	return &Recorder{dir: dir, maxFrames: defaultMaxFrames, manifest: manifest}, nil
+	// Continue the sequence from what is already on disk rather than restarting at zero.
+	//
+	// Two things go wrong otherwise, and both were observed on the standing appliance. Frame files are
+	// named by sequence, so a restart reuses names and SILENTLY OVERWRITES earlier frames -- destroying
+	// exactly the evidence capture exists to collect. And the cap then bounds a single run rather than
+	// the directory, so a process restarted through a day of testing grew it past 2000 (measured at
+	// 2074) while the README claimed capture "is bounded at 2000 frames so an enabled run cannot fill
+	// a disk".
+	seq := highestSequence(dir)
+
+	return &Recorder{dir: dir, seq: seq, maxFrames: defaultMaxFrames, manifest: manifest}, nil
 }
 
 // Dir reports where frames are being written. Empty when capture is off.
@@ -206,4 +218,38 @@ func (r *Recorder) Skipped() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.skipped
+}
+
+// highestSequence returns the largest frame number already present in dir.
+//
+// Read from filenames rather than from the manifest, because the manifest is append-only and could have
+// been truncated or rotated independently, whereas the files are what a new name would collide with.
+// A directory that cannot be read yields zero, which risks overwriting but is preferable to refusing to
+// capture at all -- and the caller has already logged that the directory is in use.
+func highestSequence(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	highest := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Frames are named "<seq>-<transport>-<direction>.xml"; anything else, such as the manifest,
+		// is skipped.
+		dash := strings.IndexByte(name, '-')
+		if dash <= 0 {
+			continue
+		}
+		n, convErr := strconv.Atoi(name[:dash])
+		if convErr != nil {
+			continue
+		}
+		if n > highest {
+			highest = n
+		}
+	}
+	return highest
 }
