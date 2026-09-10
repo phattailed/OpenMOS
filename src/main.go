@@ -191,9 +191,15 @@ func main() {
 	// Frame capture, off unless a directory is configured. Enabling it writes
 	// message payloads to disk, and roStorySend carries full story bodies, so warn
 	// clearly rather than letting it pass unnoticed.
+	// A capture failure must NOT stop the process. Capture is a diagnostic aid, off by default; MOS
+	// traffic handling is the job. Treating it as fatal put a standing appliance into a restart loop
+	// over an unwritable directory -- it stopped receiving running orders because it could not write a
+	// file it did not need. Every Recorder method already tolerates a nil receiver, so degrading is
+	// simply carrying on without it.
 	frames, err := capture.New(cfg.Capture.Dir)
 	if err != nil {
-		log.Fatalf("Failed to start frame capture: %v", err)
+		log.Errorf("Frame capture unavailable, continuing without it: %v", err)
+		frames = nil
 	}
 	if frames != nil {
 		log.Warningf("Frame capture ENABLED, writing raw MOS frames to %s. "+
