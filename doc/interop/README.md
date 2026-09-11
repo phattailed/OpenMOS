@@ -3355,26 +3355,38 @@ decisions worth stating:
 Two existing tests asserted the old behaviour and were corrected rather than accommodated: they had
 encoded the units bug as the expectation.
 
-### The rundown carried two time bases, which settles the argument
+### Timing splits by DEVICE CLASS, which settles the argument
 
-After the fix, the same 97 items resolved as:
+After the fix, the 93 items resolved along device lines rather than at random:
 
-```
-timeBase 60 : 65 items      (59.94 rounded)
-timeBase 30 : 28 items      (29.97 rounded)
-timeBase  0 :  4 items      (no rate reported)
-3022 samples @ 60 ->  50s      6180 @ 60 -> 103s      5120 @ 60 -> 85s
-```
+| Owning device class | Items | With a sample count | Time base |
+|---|---|---|---|
+| automation | 46 | 46 | 60 (59.94) |
+| character generator | 28 | **0** | 30 (29.97) |
+| news production / playout | 19 | 19 | 60 (59.94) |
 
-**One rundown, two sampling rates**, with roughly a third of the items running at half the rate of the
-rest. Any single assumed frame rate would have been wrong for one group or the other, and wrong by a factor
-of two — which for a rundown's timing is not a rounding error.
+**Two sampling rates in one rundown**, and they follow the device rather than the story: the character
+generator runs at half the rate of the video devices. Any single assumed frame rate would have been wrong
+for one group by a factor of two, which for a rundown's timing is not a rounding error.
 
-Nineteen items resolved to a non-zero duration in seconds. The remainder report a time base with a sample
-count of zero, which is correct rather than missing: a graphics template or lower third has no intrinsic
-duration, and the specification's own note that still stores and character generators run at one sample per
-second exists for exactly this class of object. A device that treated zero-length as an error would reject
-most of a real rundown.
+The CG items are the more interesting half. All 28 report a time base and a sample count of **zero** — so
+"has a time base" is not a proxy for "has a duration". That is correct rather than missing: a graphics
+template has no intrinsic length, and the specification's own note that still stores and character
+generators run at one sample per second exists for this class of object. A device treating zero-length as
+an error would reject a third of a real rundown.
+
+### Caveat: the media references were substituted
+
+The station's media pointers were replaced with generic sources on the test rig before activation, so the
+**specific duration values are not necessarily the customer's own.** What the substitution cannot explain
+is the structure: which field carries the duration, and the clean split of rate and sample count along
+device lines. Those come from the NCS's item construction and the device configuration, not from the media
+behind the reference. A substitution that happened to leave all 28 CG items at exactly zero samples and
+30, while giving all 65 video items a real sample count at 60, would be a remarkable coincidence.
+
+Stated plainly because the distinction matters for what this section is evidence FOR: the units bug, the
+`objDur`/`objTB` fallback and the device-class split are sound; any particular number of seconds is not
+offered as a fact about that station's rundown.
 
 ### A malformed schema URI, carried verbatim
 
