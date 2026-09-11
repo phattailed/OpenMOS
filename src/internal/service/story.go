@@ -157,6 +157,33 @@ func (s *MOSService) replaceStory(ctx context.Context, storySend xml.ROStorySend
 	return s.createNewStory(ctx, storySend)
 }
 
+// collectCues converts the body's non-MOS instructions into the storage model.
+//
+// The conversion is deliberately thin: this is the seam that silently dropped objDur/objTB and
+// then objPaths after both were correctly added to the wire types and correctly stored, with unit
+// tests passing on either side and nothing crossing (doc/interop §§48, 49). Keeping it to a direct
+// field-for-field copy is what makes that failure visible here rather than plausible.
+func collectCues(storyBody *xml.StoryBody) []model.StoryCue {
+	parsed := storyBody.Cues()
+	if len(parsed) == 0 {
+		return nil
+	}
+	cues := make([]model.StoryCue, 0, len(parsed))
+	for i, c := range parsed {
+		cues = append(cues, model.StoryCue{
+			Kind:      c.Kind,
+			Raw:       c.Raw,
+			Verb:      c.Verb,
+			Target:    c.Target,
+			Fields:    c.Fields,
+			Params:    c.Params,
+			Order:     i,
+			Paragraph: c.Paragraph,
+		})
+	}
+	return cues
+}
+
 // processStoryBody extracts the story's items and persists them.
 //
 // It used to build the item slice and then throw it away, with a comment saying persistence
@@ -177,6 +204,14 @@ func (s *MOSService) processStoryBody(ctx context.Context, story *model.Story, s
 		return nil
 	}
 
+	// Non-MOS instructions from the body text: production commands and legacy serial CG.
+	//
+	// Replaced wholesale rather than merged, which is the opposite of how item metadata is
+	// handled. Every roStorySend carries the complete body, so a cue the journalist deleted is
+	// absent from the resend and must disappear here too; merging would accumulate commands
+	// that no longer exist and put a stale graphic on air.
+	story.Cues = collectCues(storyBody)
+
 	infos := make([]xml.ItemInfo, 0, len(storyBody.Items))
 
 	appendItem := func(si xml.StoryItem) {
@@ -187,6 +222,7 @@ func (s *MOSService) processStoryBody(ctx context.Context, story *model.Story, s
 		info := xml.ItemInfo{
 			ID:                  f.ItemID,
 			Slug:                f.ItemSlug,
+			Abstract:            f.MosAbstract,
 			ObjectID:            f.ObjID,
 			MosID:               f.MosID,
 			Channel:             f.ItemChannel,

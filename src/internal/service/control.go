@@ -152,10 +152,18 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 
 	storyID := storyPersistenceID(storySend.ROID, storySend.StoryID)
 
-	// Get or create the story
+	// Get or build the story, derive everything the body carries, and only then persist.
+	//
+	// The order matters and it used to be wrong here. The story was written to the repository
+	// first and processStoryBody ran afterwards, which worked for items only because those go to
+	// the item repository directly. Anything processStoryBody sets ON THE STORY -- the body's
+	// production and serial CG cues -- was assigned to a struct that was never written again, so
+	// it vanished (doc/interop §51). createStory and updateStory in story.go already derive
+	// before persisting; this path now matches them, so body-derived data has one mechanism
+	// rather than one per call site.
 	story, err := s.storyRepo.Get(ctx, storyID)
-	if err != nil {
-		// Story doesn't exist yet; create it
+	existing := err == nil
+	if !existing {
 		story = &model.Story{
 			ID:             storyID,
 			RawID:          storySend.StoryID,
@@ -166,13 +174,7 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
 		}
-
-		_, err = s.storyRepo.Create(ctx, story)
-		if err != nil {
-			return fmt.Errorf("failed to create story from roStorySend: %w", err)
-		}
 	} else {
-		// Update existing story
 		story.RawID = storySend.StoryID
 		story.RunningOrderID = storySend.ROID
 		if storySend.StorySlug != "" {
@@ -182,13 +184,9 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 			story.Number = storySend.StoryNum
 		}
 		story.UpdatedAt = time.Now()
-
-		if err := s.storyRepo.Update(ctx, story); err != nil {
-			return fmt.Errorf("failed to update story from roStorySend: %w", err)
-		}
 	}
 
-	// Extract and persist the story's items.
+	// Extract the story's items and its body cues.
 	//
 	// This call was missing entirely, and it is the message that matters: roStorySend is how
 	// stories actually arrive from an NCS. Item extraction existed only on the roElementAction
@@ -196,10 +194,21 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 	// every item -- the objID, the channel, the graphics payload -- was dropped while the story
 	// itself persisted fine. A rundown without items is a list of headlines (doc/interop §40).
 	//
-	// Failures are reported rather than fatal: the story is already stored and acknowledged, and
-	// turning a partial application into an error would leave the NCS believing nothing landed.
+	// Failures are reported rather than fatal: the story is still stored and acknowledged below,
+	// and turning a partial application into an error would leave the NCS believing nothing
+	// landed.
 	if err := s.processStoryBody(ctx, story, &storySend.StoryBody); err != nil {
 		logger.Errorf("Stored story %s but failed to persist its items: %v", storySend.StoryID, err)
+	}
+
+	if !existing {
+		if _, err := s.storyRepo.Create(ctx, story); err != nil {
+			return fmt.Errorf("failed to create story from roStorySend: %w", err)
+		}
+	} else {
+		if err := s.storyRepo.Update(ctx, story); err != nil {
+			return fmt.Errorf("failed to update story from roStorySend: %w", err)
+		}
 	}
 
 	// Publish event

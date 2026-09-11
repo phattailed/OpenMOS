@@ -3458,3 +3458,216 @@ reason: resend is the common path, not the exception.
 
 The conversion from the story body was the seam that dropped `objDur` in §48, so the test crosses it
 end-to-end rather than checking either side.
+
+## 50. The graphics payload, the slug that summarises it, and three things §48 got wrong
+
+A graphics item describes itself twice: once as a human label in `itemSlug`, and once as a
+structured payload inside `mosExternalMetadata`. The label is a lossy rendering of the payload,
+and §48 drew conclusions from the label because it misread the payload as absent.
+
+### The slug is capped, and a live NCS truncates there
+
+Measured across 458 captured item blocks:
+
+| | |
+|---|---|
+| Longest `itemSlug` | **128 characters** |
+| Slugs at exactly 128 | 20 |
+| Slugs above 128 | **0** |
+| Longest `mosAbstract` | 233 characters |
+| Items where the abstract is longer than the slug | **272 of 458** |
+
+128 is the specification's cap on `itemSlug`. `mosAbstract` has no stated limit, and the NCS
+uses the extra room. The longest observed slug ends mid-word, in the middle of a proper noun.
+
+### The slug is the payload's fields, pipe-joined, in template order
+
+A CG item's payload holds named objects with typed properties:
+
+```xml
+<mosPayload>
+  <type>CG</type>  <scenename>Lower 3rd</scenename>  <sceneid>1</sceneid>
+  <channel>1</channel>  <layer>1000001</layer>
+  <objects>
+    <object><name>Line 1</name>
+      <properties><property name="Text" type="1"><value>…</value>
+    <object><name>Line 2</name>…
+    <object><name>Tab Text</name>…
+    <object><name>Live</name>…
+    <object><name>Courtesy Text</name>…
+```
+
+Against the same item's slug, the mapping is slot for slot:
+
+```
+Lower 3rd:PRESENTER NAME | ROLE AND ORGANISATION |  | No |  |
+          Line 1          Line 2                   Tab  Live  Courtesy  BUG
+```
+
+Every field gets a slot, **including the empty ones** — which is what the runs of `|  |` in a
+real slug are. So the label is decodable only by a consumer that already knows the template's
+field order, and only when the text fits in 128 characters. The payload names its fields, and is
+not truncated. A device rendering graphics should read the payload; the slug is a display label.
+
+Pipe counts across the corpus, showing that most items are not graphics at all and that those
+which are vary in field count: `{0: 346, 1: 36, 4: 12, 5: 60, 7: 4}`.
+
+### Correction: CG items DO carry a payload
+
+§48 recorded the CG device class as sending no `mosExternalMetadata` payload. That is wrong, and
+the error was in the instrument. The survey grouped items by `mosSchema` value; this vendor sends
+the element **empty**, so the grouping reported the blocks as absent when they were present and
+fully populated. 28 items were counted as having no metadata while carrying 113 payload elements
+each.
+
+### Correction: CG items DO carry a duration
+
+§48 recorded the CG class as having no sample counts. `objDur` is `0` and `itemEdDur` is `0` on
+these items, so `resolveItemTiming` correctly reports the duration as unknown from the item's own
+fields. But the payload carries it:
+
+```
+<duration>511</duration>  <framerate>30000</framerate>  <frameratediv>1001</frameratediv>
+```
+
+511 frames at 30000/1001 is 17.05 seconds. Note the rate: the item's `objTB` says `30`, rounded,
+while the payload says 29.97 exactly. The more precise figure is in the part of the message the
+specification tells us not to interpret.
+
+This is not fixed. Reading a duration out of a vendor payload means interpreting an opaque field,
+which is the opposite of what §32 established, and it would be wrong for a payload from any other
+vendor. Recorded as a known limitation: **item durations are unknown for the CG class even though
+the frame contains them.**
+
+### Correction: `mosSchema` cannot discriminate payload types
+
+Two vendors on one estate:
+
+```
+(empty)
+http:'vendor.example/schemas/MOS/external/1.0
+```
+
+The second is malformed at source — an apostrophe where `//` belongs, reproduced here with the
+vendor's own domain replaced. So `mosSchema` is neither reliably present nor reliably a URI, and
+must never be parsed as one or used to route a payload. The payload's own `<type>` element is the
+usable signal on this estate.
+
+### Open defect: `itemTrigger` is dropped
+
+All **166** CG items in the sampled rundown carry `<itemTrigger>CHAINED</itemTrigger>`, and no
+other device class carries a trigger at all. CHAINED is what makes a sequence of graphics fire off
+the element before it rather than independently.
+
+`itemTrigger` is declared on the object family's item type and **nowhere on the running-order
+item path** — not on `ItemInfo`, not on its nested `mosItem` shadow, not on `StoryItemFields`. So
+`encoding/xml` discards it on every route. `macroIn`/`macroOut` are declared on the story path but
+not the `roList` path, so those survive one route and not the other.
+
+This is the fifth instance of the same defect: `restoreExternalMetadata` (§32), `processStoryBody`
+(§40), `ReportElementStatus` (§46), `objPaths` (§49), and now `itemTrigger`. Every one was a field
+or function that looked implemented and had no caller or no declaration. The sweep for exported
+symbols with no non-test caller is now overdue.
+
+### What was fixed
+
+`mosAbstract` is preserved as a field of its own rather than used only as a fallback for a missing
+slug, so the complete text survives alongside the NCS's truncated label. Writing the test found a
+second defect: `StoryItem.ItemFields()` applied the slug←abstract fallback only on the nested
+branch, so an abstract-only item arriving in the flat shape came back with no label at all. The
+fallback now runs once for both shapes.
+
+The reverse fold is deliberately not done. An abstract is an object field, the slug is an item
+field, and collapsing them would discard the distinction between what the NCS chose to display and
+what the graphic actually says.
+
+## 51. Non-MOS instructions travel as story body text
+
+A newsroom drives equipment that has no MOS device: production commands read by automation or a
+director, and legacy serial character generators that predate MOS on this estate. The NCS carries
+them as **ordinary body text**. From its point of view they are indistinguishable from the script.
+
+They therefore arrive **only in `roStorySend`**, because that is the only message carrying a story
+body. A `roList` describes structure and never reaches this content — a device that rebuilds state
+from `roReq`/`roList` alone cannot see them at all.
+
+Measured across 449 captured `roStorySend` frames containing 2322 paragraphs:
+
+| Form | Count | Class |
+|---|---|---|
+| `[ … ]` | 219 | production commands and serial CG |
+| `{***…***}` | 351 | prompter markers |
+| `<pi>` | **0** | the specification's own production-instruction element |
+
+The specification defines `<pi>` for exactly this purpose and `StoryParagraph` has always modelled
+it. This NCS does not use it. Both are now supported; only one is populated.
+
+### The grammar, from the corpus
+
+```
+[TAKE VO]                                        verb + target
+[TAKE :FULLSCREEN]                               target with a leading colon
+[TAKE SOT / DURATION:0:18]                       trailing KEY:VALUE parameter
+[CG :#Lower Third\Line one\Line two]             serial CG, named template
+[AUTOMATION:CG\00001\f1\f2\f3\\\\\\AUTOMATIC]    serial CG, routed via automation
+{***VO***}                                       prompter marker
+```
+
+208 of 219 commands lead with `TAKE`. Targets appear both bare (`VO`, `PKG`, `SOT`) and
+colon-prefixed (`:ANIMATION`, `:VO CONT`); nothing in the traffic establishes what the colon
+means, so it is preserved rather than stripped. `DURATION` is the only parameter observed.
+
+**A backslash is what marks a serial CG command** — it never appeared in any other command in the
+corpus. Classifying on the delimiter rather than the verb keeps the two dialects together, which
+matters because the same estate emits both. The backslash fields are positional with empty slots
+significant, the same convention as the pipe-joined slug in §50.
+
+The prompter markers pair one-for-one with the commands — `{***VO***}` 52 times against
+`[TAKE VO]` 52 times, `{***PKG***}` 10 against `[TAKE PKG]` 10 — and additionally name the
+presenter, which has no command counterpart. They are not machine commands and are classified
+separately rather than discarded, because the pairing is how a consumer can tell an operator cue
+from an automation cue.
+
+### A command can span a paragraph boundary
+
+This is the one thing that will silently break a parser. ENPS breaks the line **inside the
+brackets**:
+
+```xml
+</storyItem><p>[TAKE SOT</p>
+<p>DURATION:0:19]</p>
+```
+
+**28 of 219 commands arrive this way**, and **no paragraph in the corpus contains a newline of its
+own** — so the paragraph break is the only separator, and it is inside the delimiters. A parser
+that scans one paragraph at a time finds an unterminated `[`, produces no command, and loses the
+duration with no error. Nothing else in the frame marks the continuation.
+
+So paragraphs are joined before scanning. Confirmed by deliberate reversion: restricting a match
+to a single paragraph drops the command entirely — 0 cues at the parser and 3 of 4 through the
+service, with the `TAKE` missing.
+
+Also worth noting from that fragment: **the command sits immediately after the `</storyItem>` it
+acts on.** Position in the body is the only thing relating a cue to an item.
+
+The remaining shapes were checked and are benign: brackets were always balanced, never nested, and
+no command shared a paragraph with prose. An unterminated delimiter is skipped rather than guessed
+at, so a stray bracket typed into a script cannot swallow the rest of the story.
+
+### The seam defect this exposed
+
+The parser worked and storage held nothing. `ProcessROStorySend` wrote the story to the repository
+**first** and called `processStoryBody` afterwards. That worked for items only because items go to
+the item repository directly; anything `processStoryBody` set *on the story* was assigned to a
+struct that was never written again. `createStory` and `updateStory` on the `roElementAction` path
+already derived before persisting, so the two routes disagreed about ordering.
+
+That is the third time this exact seam has swallowed correct work — `objDur`/`objTB` (§48), then
+`objPaths` (§49), now the cues — with unit tests passing on both sides and nothing crossing. This
+time the ordering was made uniform rather than the field re-copied, so the two paths cannot
+disagree again.
+
+Cues are replaced wholesale on a resend rather than merged, which is the opposite of how item
+metadata is treated. Every `roStorySend` carries the complete body, so a cue the journalist deleted
+is absent from the resend and must disappear; merging would keep firing a command that no longer
+exists.

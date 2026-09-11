@@ -421,3 +421,294 @@ func TestMediaPointersSurviveAResendWithoutThem(t *testing.T) {
 		t.Error("a resend that omits objPaths must not erase the pointers already held")
 	}
 }
+
+// The graphics text is truncated in itemSlug and complete in mosAbstract.
+//
+// itemSlug is capped at 128 characters by the specification; mosAbstract has no stated limit. A live NCS
+// truncates the slug at exactly that cap -- 20 captured items sit at 128 characters, none above, and the
+// longest ends mid-word -- while the abstract carries the full string, longer than the slug on 272 of 458
+// captured items (doc/interop §50).
+//
+// Graphics items encode their template name and field values in that text, pipe-delimited, so rendering
+// from the slug would put visibly truncated text on air: a five-field lower third loses its last field.
+func TestGraphicsAbstractIsNotTruncatedLikeTheSlug(t *testing.T) {
+	svc, stories, items := newStoryTestService(t)
+	ctx := context.Background()
+
+	// The complete graphics text, and the slug derived from it the way the NCS derives it: truncated at
+	// the specification's 128-character cap, which lands mid-word.
+	//
+	// The shape is the live convention -- template name, then the template's field values joined with
+	// pipes in template order, empty fields included, which is why real slugs contain runs of "|  |"
+	// (doc/interop §§50, 51). Field values here are invented; the shape and the truncation are what the
+	// live traffic showed. Measured over 458 captured item blocks: 20 slugs at exactly 128 characters,
+	// none longer, and an abstract reaching 233.
+	const full = "FS BULLETS WRAP:FIRST FIELD VALUE HERE | SECOND FIELD | NO | " +
+		"THIRD FIELD VALUE IS LONGER HERE AND WIDER | FOURTH FIELD VALUE HERE | " +
+		"FIFTH FIELD VALUE COMPLETE"
+	const slugCap = 128
+	truncated := full[:slugCap]
+	if len(full) <= slugCap {
+		t.Fatalf("fixture is only %d characters; it must exceed the %d-character cap to be truncated",
+			len(full), slugCap)
+	}
+	if strings.HasSuffix(truncated, " ") || strings.HasPrefix(full[slugCap:], " ") {
+		t.Fatalf("fixture truncates on a word boundary; the point is that a real NCS cuts mid-word")
+	}
+
+	frame := `<mos><mosID>openmos.example.mos</mosID><ncsID>NCS-HOST</ncsID><messageID>93</messageID>
+<roStorySend>
+<roID>NCS-HOST;P_STORYTELLING\W;2D526A13</roID>
+<storyID>NCS-HOST;P_STORYTELLING\W\R_2D526A13;A0CEE368</storyID>
+<storySlug>Graphics story</storySlug>
+<storyBody><p> </p>
+<storyItem><mosID>vendor.cg.example.mos</mosID><itemID>5</itemID><objID>CG-1</objID>
+<itemSlug>` + truncated + `</itemSlug>
+<mosAbstract>` + full + `</mosAbstract>
+<objTB>29.97</objTB><objDur>0</objDur>
+</storyItem>
+<p> </p>
+</storyBody>
+</roStorySend>
+</mos>`
+
+	var env xml.Envelope
+	if err := stdxml.Unmarshal([]byte(frame), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msg, err := env.Message()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	send := msg.(xml.ROStorySend)
+
+	if err := svc.ProcessRunningOrderInfo(ctx, xml.RunningOrderInfo{ID: send.ROID, Slug: "gfx"},
+		"openmos.example.mos"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := svc.ProcessROStorySend(ctx, send); err != nil {
+		t.Fatalf("ProcessROStorySend: %v", err)
+	}
+
+	stored := itemsFor(t, ctx, stories, items, send.ROID)
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d items, want 1", len(stored))
+	}
+	item := stored[0]
+
+	// Both must survive, and they must remain DISTINCT. Folding one into the other loses either the
+	// NCS's own label or the complete text.
+	if item.Slug != truncated {
+		t.Errorf("slug = %q, want the NCS's own truncated label preserved as sent", item.Slug)
+	}
+	if item.Abstract != full {
+		t.Errorf("abstract = %q, want the complete text", item.Abstract)
+	}
+	if item.Abstract == item.Slug {
+		t.Error("slug and abstract collapsed into one value; the distinction between the truncated " +
+			"label and the complete text is the whole point")
+	}
+	// The complete text must still contain the final field the slug lost.
+	if !strings.Contains(item.Abstract, "FIFTH FIELD VALUE COMPLETE") {
+		t.Errorf("the field the slug truncated is missing from the abstract: %q", item.Abstract)
+	}
+	if strings.Contains(item.Slug, "FIFTH FIELD VALUE COMPLETE") {
+		t.Error("fixture is wrong: the slug should be missing the final field")
+	}
+}
+
+// An item with only an abstract still gets a usable label, so a caller wanting a name always has one.
+func TestAbstractStandsInForAMissingSlug(t *testing.T) {
+	svc, stories, items := newStoryTestService(t)
+	ctx := context.Background()
+
+	frame := `<mos><mosID>openmos.example.mos</mosID><ncsID>NCS-HOST</ncsID><messageID>94</messageID>
+<roStorySend><roID>NCS-HOST;P_STORYTELLING\W;2D526A13</roID>
+<storyID>NCS-HOST;P_STORYTELLING\W\R_2D526A13;A0CEE368</storyID>
+<storyBody><storyItem><mosID>m</mosID><itemID>6</itemID><objID>CG-2</objID>
+<mosAbstract>  Lower 3rd:NAME | TITLE  </mosAbstract></storyItem></storyBody>
+</roStorySend></mos>`
+
+	var env xml.Envelope
+	_ = stdxml.Unmarshal([]byte(frame), &env)
+	msg, _ := env.Message()
+	send := msg.(xml.ROStorySend)
+	if err := svc.ProcessRunningOrderInfo(ctx, xml.RunningOrderInfo{ID: send.ROID, Slug: "gfx"},
+		"openmos.example.mos"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := svc.ProcessROStorySend(ctx, send); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	stored := itemsFor(t, ctx, stories, items, send.ROID)
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d items, want 1", len(stored))
+	}
+	if stored[0].Slug == "" {
+		t.Error("an item with only an abstract must still present a label")
+	}
+	if stored[0].Abstract == "" {
+		t.Error("the abstract must be kept in its own right, not only borrowed for the slug")
+	}
+}
+
+// Non-MOS instructions in the story body, in the shape a live ENPS sends them.
+//
+// A newsroom drives equipment that has no MOS device: production commands read by automation or a
+// director, and legacy serial character generators. ENPS carries both as ordinary body text, so
+// they arrive only in roStorySend -- a roList describes structure and never carries a body.
+//
+// Structure is verbatim from a captured frame, with editorial text replaced. Two details are
+// reproduced exactly because they are what a parser gets wrong:
+//
+//  1. The production command follows immediately after the </storyItem> it acts on.
+//  2. [TAKE SOT / DURATION:0:18] is SPLIT ACROSS TWO PARAGRAPHS. 28 of 219 captured commands
+//     arrive that way, and no paragraph carries a newline of its own, so the paragraph break is
+//     the only separator. Reading one paragraph at a time loses the duration entirely.
+const liveENPSStoryWithCues = `<mos><mosID>openmos.example.mos</mosID><ncsID>example.test</ncsID><messageID>412</messageID>
+<roStorySend><roID>RO-CUES</roID><storyID>RO-CUES;STORY-1</storyID><storySlug>PRESS CONFERENCE-SOTVO</storySlug>
+<storyBody><p>{***PRESENTER***}</p>
+<p>Anchor intro line.</p>
+<storyItem><mosItem><itemID>1</itemID><itemSlug>Lower 3rd:NAME | TITLE |  | No |  | </itemSlug><objID>{05895714-40FC}</objID><mosID>openmos.cg.example.mos</mosID><itemChannel>1</itemChannel></mosItem></storyItem>
+<p>[TAKE SOT</p>
+<p>DURATION:0:18]</p>
+<p>{***SOT FULL***}</p>
+<p>[CG :#Lower Third\Presenter Name\Saw it all]</p>
+</storyBody></roStorySend></mos>`
+
+// The seam test. The parser is proven in internal/xml; this asserts the cues actually reach
+// storage, because the two defects before this one (objDur/objTB, then objPaths) were each correct
+// at both ends of this conversion with passing unit tests on either side and nothing crossing
+// (doc/interop §§48, 49).
+func TestBodyCuesReachStorage(t *testing.T) {
+	svc, stories, _ := newStoryTestService(t)
+	ctx := context.Background()
+
+	var env xml.Envelope
+	if err := stdxml.Unmarshal([]byte(liveENPSStoryWithCues), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msg, _ := env.Message()
+	send := msg.(xml.ROStorySend)
+
+	if err := svc.ProcessRunningOrderInfo(ctx, xml.RunningOrderInfo{
+		ID: send.ROID, Slug: "cue-test",
+	}, "openmos.example.mos"); err != nil {
+		t.Fatalf("seed running order: %v", err)
+	}
+	if err := svc.ProcessROStorySend(ctx, send); err != nil {
+		t.Fatalf("ProcessROStorySend: %v", err)
+	}
+
+	stored, err := stories.ListByRunningOrder(ctx, send.ROID)
+	if err != nil {
+		t.Fatalf("list stories: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d stories, want 1", len(stored))
+	}
+	cues := stored[0].Cues
+	if len(cues) != 4 {
+		t.Fatalf("persisted %d cues, want 4 (2 prompter, 1 production, 1 serial CG): %+v",
+			len(cues), cues)
+	}
+
+	// Document order across all three classes, because a consumer sequencing playout depends
+	// on it and Order is what carries it into storage.
+	for i, c := range cues {
+		if c.Order != i {
+			t.Errorf("cue %d has Order %d", i, c.Order)
+		}
+	}
+
+	if cues[0].Kind != xml.CuePrompter || cues[0].Target != "PRESENTER" {
+		t.Errorf("cue 0 = %q/%q, want PROMPTER/PRESENTER", cues[0].Kind, cues[0].Target)
+	}
+
+	take := cues[1]
+	if take.Kind != xml.CueProduction || take.Verb != "TAKE" || take.Target != "SOT" {
+		t.Errorf("cue 1 = %q %q/%q, want PRODUCTION TAKE/SOT", take.Kind, take.Verb, take.Target)
+	}
+	if got := take.Params["DURATION"]; got != "0:18" {
+		t.Errorf("DURATION = %q, want 0:18. The parameter is in the NEXT paragraph, so a "+
+			"per-paragraph scan drops it and leaves an unterminated bracket.", got)
+	}
+
+	cg := cues[3]
+	if cg.Kind != xml.CueSerialCG {
+		t.Errorf("cue 3 kind = %q, want %q", cg.Kind, xml.CueSerialCG)
+	}
+	if cg.Verb != "CG" || cg.Target != ":#Lower Third" {
+		t.Errorf("cue 3 = %q/%q, want CG/:#Lower Third", cg.Verb, cg.Target)
+	}
+	if len(cg.Fields) != 2 || cg.Fields[0] != "Presenter Name" {
+		t.Errorf("cue 3 fields = %q, want two values", cg.Fields)
+	}
+	// Raw survives regardless of how well the parse went, so an unrecognised dialect is still
+	// forwardable -- the same reason mosExternalMetadata is kept verbatim.
+	if !strings.Contains(cg.Raw, `\Presenter Name\`) {
+		t.Errorf("cue 3 lost its raw text: %q", cg.Raw)
+	}
+
+	// The MOS item is unaffected: cues are a separate class, not a competing interpretation of
+	// the same body.
+	if len(stored[0].Cues) > 0 && stored[0].Slug != "PRESS CONFERENCE-SOTVO" {
+		t.Errorf("story slug = %q", stored[0].Slug)
+	}
+}
+
+// A resend with a cue removed must drop it. This is the opposite of how item metadata is treated,
+// where an absent field leaves the stored value alone (TestMediaPointersSurviveAResendWithoutThem):
+// every roStorySend carries the COMPLETE body, so absence here is deletion, and a merge would keep
+// firing a command the journalist deleted.
+func TestRemovedCuesDisappearOnResend(t *testing.T) {
+	svc, stories, _ := newStoryTestService(t)
+	ctx := context.Background()
+
+	var env xml.Envelope
+	if err := stdxml.Unmarshal([]byte(liveENPSStoryWithCues), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msg, _ := env.Message()
+	send := msg.(xml.ROStorySend)
+
+	if err := svc.ProcessRunningOrderInfo(ctx, xml.RunningOrderInfo{
+		ID: send.ROID, Slug: "cue-test",
+	}, "openmos.example.mos"); err != nil {
+		t.Fatalf("seed running order: %v", err)
+	}
+	if err := svc.ProcessROStorySend(ctx, send); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+
+	// The journalist deletes the serial CG line and resends.
+	trimmed := strings.Replace(liveENPSStoryWithCues,
+		`<p>[CG :#Lower Third\Presenter Name\Saw it all]</p>`+"\n", "", 1)
+	if trimmed == liveENPSStoryWithCues {
+		t.Fatal("fixture did not change; the replace target is wrong")
+	}
+	var env2 xml.Envelope
+	if err := stdxml.Unmarshal([]byte(trimmed), &env2); err != nil {
+		t.Fatalf("unmarshal resend: %v", err)
+	}
+	msg2, _ := env2.Message()
+	if err := svc.ProcessROStorySend(ctx, msg2.(xml.ROStorySend)); err != nil {
+		t.Fatalf("resend: %v", err)
+	}
+
+	stored, err := stories.ListByRunningOrder(ctx, send.ROID)
+	if err != nil {
+		t.Fatalf("list stories: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d stories, want 1", len(stored))
+	}
+	for _, c := range stored[0].Cues {
+		if c.Kind == xml.CueSerialCG {
+			t.Fatalf("deleted serial CG survived the resend: %+v", c)
+		}
+	}
+	if len(stored[0].Cues) != 3 {
+		t.Errorf("cues after resend = %d, want 3", len(stored[0].Cues))
+	}
+}
