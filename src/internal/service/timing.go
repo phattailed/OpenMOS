@@ -4,6 +4,9 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"airshift/openmos/internal/model"
+	"airshift/openmos/internal/xml"
 )
 
 // Item durations are in SAMPLES, not seconds.
@@ -101,4 +104,45 @@ func parseTimeBase(value string) (float64, bool) {
 		return 0, false
 	}
 	return rate, true
+}
+
+// mediaPathsFrom converts the wire objPaths structure into the storage model.
+//
+// bare is the non-standard flat objPath some senders emit; it is folded in as an essence path rather than
+// discarded, because a pointer is a pointer regardless of which shape carried it.
+func mediaPathsFrom(paths *xml.ObjPaths, bare string) *model.MediaPaths {
+	out := &model.MediaPaths{}
+	if paths != nil {
+		out.Essence = convertPaths(paths.ObjPath)
+		out.Proxy = convertPaths(paths.ObjProxyPath)
+		out.Metadata = convertPaths(paths.ObjMetadataPath)
+	}
+	if bare = strings.TrimSpace(bare); bare != "" {
+		out.Essence = append(out.Essence, model.MediaPath{URL: bare})
+	}
+	if len(out.Essence) == 0 && len(out.Proxy) == 0 && len(out.Metadata) == 0 {
+		// Nil rather than an empty struct, so "no pointers" is one representation instead of two.
+		return nil
+	}
+	return out
+}
+
+func convertPaths(in []xml.ObjPath) []model.MediaPath {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]model.MediaPath, 0, len(in))
+	for _, p := range in {
+		url := strings.TrimSpace(p.Value)
+		if url == "" {
+			// An empty pointer is not a pointer. Dropping it keeps a consumer from constructing a
+			// request to nowhere.
+			continue
+		}
+		out = append(out, model.MediaPath{URL: url, TechDescription: strings.TrimSpace(p.TechDescription)})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

@@ -80,8 +80,10 @@ type StoryItemFields struct {
 	ItemEdStart int      `xml:"itemEdStart,omitempty"`
 	ItemEdDur   int      `xml:"itemEdDur,omitempty"`
 	// ObjDur and ObjTB carry duration when itemEdDur is absent. See ItemInfo.
-	ObjDur            string                `xml:"objDur,omitempty"`
-	ObjTB             string                `xml:"objTB,omitempty"`
+	ObjDur string `xml:"objDur,omitempty"`
+	ObjTB  string `xml:"objTB,omitempty"`
+	// ObjPaths holds the media pointers. See ItemInfo.
+	ObjPaths          *ObjPaths             `xml:"objPaths,omitempty"`
 	ItemUserTimingDur int                   `xml:"itemUserTimingDur,omitempty"`
 	ItemChannel       string                `xml:"itemChannel,omitempty"`
 	MacroIn           string                `xml:"macroIn,omitempty"`
@@ -117,6 +119,7 @@ func (s StoryItem) ItemFields() *StoryItemFields {
 		ItemUserTimingDur: s.ItemUserTimingDur,
 		ObjDur:            s.ObjDur,
 		ObjTB:             s.ObjTB,
+		ObjPaths:          s.ObjPaths,
 		MacroIn:           s.MacroIn,
 		MacroOut:          s.MacroOut,
 		ExternalMeta:      s.ExternalMeta,
@@ -154,8 +157,10 @@ type StoryItem struct {
 	ItemEdStart int              `xml:"itemEdStart,omitempty"`
 	ItemEdDur   int              `xml:"itemEdDur,omitempty"`
 	// ObjDur and ObjTB carry duration when itemEdDur is absent. See ItemInfo.
-	ObjDur            string                `xml:"objDur,omitempty"`
-	ObjTB             string                `xml:"objTB,omitempty"`
+	ObjDur string `xml:"objDur,omitempty"`
+	ObjTB  string `xml:"objTB,omitempty"`
+	// ObjPaths holds the media pointers. See ItemInfo.
+	ObjPaths          *ObjPaths             `xml:"objPaths,omitempty"`
 	ItemUserTimingDur int                   `xml:"itemUserTimingDur,omitempty"`
 	MacroIn           string                `xml:"macroIn,omitempty"`
 	MacroOut          string                `xml:"macroOut,omitempty"`
