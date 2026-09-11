@@ -3615,7 +3615,30 @@ it. This NCS does not use it. Both are now supported; only one is populated.
 
 208 of 219 commands lead with `TAKE`. Targets appear both bare (`VO`, `PKG`, `SOT`) and
 colon-prefixed (`:ANIMATION`, `:VO CONT`); nothing in the traffic establishes what the colon
-means, so it is preserved rather than stripped. `DURATION` is the only parameter observed.
+means, so it is preserved rather than stripped.
+
+Two parameter keys occur, and the live deployment found the second one after this section was
+first written:
+
+```
+[TAKE SOT / DURATION:0:18]     a duration
+[TAKE : / NAME:2XB]            the target itself, carried as a parameter
+```
+
+The `NAME` form leaves the inline target **empty** — a bare `:` — with the real target in the
+parameter. So a consumer cannot assume the target is on the first line, and a cue whose target
+parses as `:` is not malformed.
+
+`DURATION` values are **not consistently formatted**. Both appear in the same rundown:
+
+```
+DURATION:28      bare seconds
+DURATION:0:18    minutes and seconds
+```
+
+Neither is wrong and nothing distinguishes them but the presence of a colon, so a consumer must
+accept both. This is the same lesson as `roStatus` being free prose rather than an enum: a field a
+human types is a field a human types.
 
 **A backslash is what marks a serial CG command** — it never appeared in any other command in the
 corpus. Classifying on the delimiter rather than the verb keeps the two dialects together, which
@@ -3671,3 +3694,21 @@ Cues are replaced wholesale on a resend rather than merged, which is the opposit
 metadata is treated. Every `roStorySend` carries the complete body, so a cue the journalist deleted
 is absent from the resend and must disappear; merging would keep firing a command that no longer
 exists.
+
+### Proven live
+
+Deployed to the standing appliance against the reference NCS. After restart the discovery walk
+rebuilt three running orders from `roList` and stored **no cues at all** — which is the claim above
+demonstrating itself, since `roList` carries no story bodies. 85 `roStorySend` messages then
+arrived and produced:
+
+| | |
+|---|---|
+| Stories carrying cues | 50 |
+| `PROMPTER` | 95 |
+| `PRODUCTION` | 64 |
+| `SERIAL_CG` | 3 |
+| Cues carrying a parameter | 8 (6 `DURATION`, 2 `NAME`) |
+
+Both serial CG dialects landed from live traffic, including the paragraph-spanning
+`[TAKE SOT / DURATION:…]` commands that a per-paragraph parser loses.

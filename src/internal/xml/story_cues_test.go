@@ -212,3 +212,51 @@ func TestAScriptWithoutCuesYieldsNone(t *testing.T) {
 		t.Errorf("expected no cues, got %+v", cues)
 	}
 }
+
+// The target is not always on the first line. Found in live traffic AFTER the first version of
+// this parser shipped: a command can leave the inline target empty -- a bare ':' -- and carry the
+// real target in a NAME parameter. So a cue whose Target parses as ":" is not malformed, and a
+// consumer must not assume the first line names what to take (doc/interop §51).
+func TestATargetCarriedInAParameterRatherThanInline(t *testing.T) {
+	const frame = `<storyBody><p>[TAKE :</p><p>NAME:2XB]</p></storyBody>`
+
+	var body StoryBody
+	if err := xml.Unmarshal([]byte(frame), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	cues := body.Cues()
+	if len(cues) != 1 {
+		t.Fatalf("expected 1 cue, got %d: %+v", len(cues), cues)
+	}
+	if cues[0].Verb != "TAKE" {
+		t.Errorf("verb = %q, want TAKE", cues[0].Verb)
+	}
+	if cues[0].Target != ":" {
+		t.Errorf("target = %q, want the bare colon preserved as sent", cues[0].Target)
+	}
+	if got := cues[0].Params["NAME"]; got != "2XB" {
+		t.Errorf("NAME = %q, want 2XB", got)
+	}
+}
+
+// A duration is whatever a human typed. Both forms occur in one rundown and nothing distinguishes
+// them but the colon, so the value is carried verbatim rather than normalised into a unit the
+// sender never committed to -- the same reasoning as roStatus being free prose.
+func TestDurationValuesAreCarriedVerbatimInBothFormats(t *testing.T) {
+	for _, want := range []string{"28", "0:18"} {
+		frame := `<storyBody><p>[TAKE SOT</p><p>DURATION:` + want + `]</p></storyBody>`
+
+		var body StoryBody
+		if err := xml.Unmarshal([]byte(frame), &body); err != nil {
+			t.Fatalf("unmarshal %q: %v", want, err)
+		}
+		cues := body.Cues()
+		if len(cues) != 1 {
+			t.Fatalf("%q: expected 1 cue, got %d", want, len(cues))
+		}
+		if got := cues[0].Params["DURATION"]; got != want {
+			t.Errorf("DURATION = %q, want %q", got, want)
+		}
+	}
+}
