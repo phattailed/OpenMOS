@@ -46,10 +46,16 @@ type MOSObject struct {
 
 // Item represents a single item within a story
 type Item struct {
-	ID                string `bson:"_id" json:"id"`                                // Unique Item ID
-	RawID             string `bson:"rawID" json:"rawID"`                           // Original itemID from MOS
-	ObjectID          string `bson:"objectID,omitempty" json:"objectID,omitempty"` // Reference to MOS Object
-	Slug              string `bson:"slug" json:"slug"`
+	ID       string `bson:"_id" json:"id"`                                // Unique Item ID
+	RawID    string `bson:"rawID" json:"rawID"`                           // Original itemID from MOS
+	ObjectID string `bson:"objectID,omitempty" json:"objectID,omitempty"` // Reference to MOS Object
+	Slug     string `bson:"slug" json:"slug"`
+	// Abstract is mosAbstract: usually the same text as Slug but NOT truncated.
+	//
+	// itemSlug is capped at 128 characters and a live NCS truncates it there, mid-word; mosAbstract has
+	// no such limit. Graphics items encode their template and field values in that text, pipe-delimited,
+	// so the slug is the wrong field to render from (doc/interop §50).
+	Abstract          string `bson:"abstract,omitempty" json:"abstract,omitempty"`
 	Duration          int    `bson:"duration" json:"duration"` // Duration in seconds
 	EditorialDuration int    `bson:"editorialDuration,omitempty" json:"editorialDuration,omitempty"`
 	TimeBase          int    `bson:"timeBase,omitempty" json:"timeBase,omitempty"`
@@ -88,8 +94,39 @@ type Story struct {
 	// ExternalMetadata holds mosExternalMetadata blocks verbatim, because the
 	// specification requires the payload be carried rather than interpreted.
 	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
-	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
-	UpdatedAt        time.Time          `bson:"updatedAt" json:"updatedAt"`
+	// Cues holds the non-MOS instructions carried as plain text in the story body:
+	// production commands and legacy serial CG commands. They are a separate class from
+	// Items -- they have no MOS device, no objID and no acknowledgement -- but they drive
+	// equipment on air just the same, and they arrive only in roStorySend because that is
+	// the only message with a body (doc/interop §51).
+	Cues      []StoryCue `bson:"cues,omitempty" json:"cues,omitempty"`
+	CreatedAt time.Time  `bson:"createdAt" json:"createdAt"`
+	UpdatedAt time.Time  `bson:"updatedAt" json:"updatedAt"`
+}
+
+// StoryCue is one non-MOS instruction from a story body.
+//
+// Raw is retained alongside the parsed fields because the grammar is a vendor convention rather
+// than a specified format: a consumer that does not recognise a verb can still show or forward the
+// original text.
+type StoryCue struct {
+	// Kind is PRODUCTION, SERIAL_CG or PROMPTER.
+	Kind string `bson:"kind" json:"kind"`
+	// Raw is the instruction exactly as it arrived, without its delimiters.
+	Raw string `bson:"raw" json:"raw"`
+	// Verb is the leading token, upper-cased: TAKE, CG, AUTOMATION.
+	Verb string `bson:"verb,omitempty" json:"verb,omitempty"`
+	// Target is what the verb acts on, verbatim including any leading ':' or '#'.
+	Target string `bson:"target,omitempty" json:"target,omitempty"`
+	// Fields holds a serial CG command's values in template order, empty slots included.
+	Fields []string `bson:"fields,omitempty" json:"fields,omitempty"`
+	// Params holds trailing KEY:VALUE lines, keyed upper-case. DURATION is the only one seen.
+	Params map[string]string `bson:"params,omitempty" json:"params,omitempty"`
+	// Order is the cue's position in the body relative to other cues, from zero.
+	Order int `bson:"order" json:"order"`
+	// Paragraph is the body paragraph the cue starts in. Cues and Items are ordered within
+	// their own kinds; this is what relates a cue to its position in the script.
+	Paragraph int `bson:"paragraph" json:"paragraph"`
 }
 
 // RunningOrder represents the top-level running order (collection of stories)

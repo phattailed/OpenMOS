@@ -52,6 +52,8 @@ Full evidence, reproduction scripts and the remaining defect list are in
 | A production customer rundown, unmodified | Yes | Live-frame tests | **Yes** | 45 stories, 93 items, three vendors' devices, zero unhandled (`doc/interop` §48) |
 | Item durations converted from samples to seconds | Yes | Unit tests | **Yes** | `objDur`/`objTB` fallback; samples were previously stored as seconds (`doc/interop` §48) |
 | Media pointers (`objPaths`) parsed and persisted | Yes | Live-frame tests | **Yes** | Essence, proxies and object metadata; every pointer was previously discarded (`doc/interop` §49) |
+| `mosAbstract` kept distinct from a truncated `itemSlug` | Yes | Live-frame tests | **Yes** | The NCS truncates the slug at the spec's 128 chars, mid-word; the abstract carries the complete graphics text (`doc/interop` §50) |
+| Production commands and serial CG parsed from body text | Yes | Live-frame tests | **Yes** | A separate class from MOS items: no device, no `objID`, no ack. Only `roStorySend` carries them. Item-level `itemTrigger` is still dropped (`doc/interop` §§50, 51) |
 | `listMachInfo` flat **and** container profiles | Yes | Real-traffic tests | **Yes** | Same NCS uses each on a different transport |
 | `roReq` answered with `roList` for one running order | Yes | Integration tests | **Yes** | Was inverted with `roReqAll`; see `doc/interop` §17 |
 | `roReqAll` answered with `roListAll` summaries | Yes | Integration tests | **Yes** | Discovery only, as the spec requires |

@@ -462,6 +462,7 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 			RawID:            info.ID,
 			StoryID:          storyID,
 			Slug:             info.Slug,
+			Abstract:         strings.TrimSpace(info.Abstract),
 			ObjectID:         info.ObjectID,
 			Status:           model.StatusPending,
 			Order:            order + 1,
@@ -510,6 +511,11 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 		existing.StoryID = item.StoryID
 		existing.RawID = item.RawID
 		existing.Slug = item.Slug
+		// Only overwrite when the incoming message carries one, so a peer that omits mosAbstract cannot
+		// replace the complete text with nothing.
+		if item.Abstract != "" {
+			existing.Abstract = item.Abstract
+		}
 		existing.ObjectID = item.ObjectID
 		existing.Duration = item.Duration
 		existing.EditorialDuration = item.EditorialDuration

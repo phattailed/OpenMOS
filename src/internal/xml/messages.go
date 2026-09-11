@@ -529,8 +529,20 @@ type StoryInfo struct {
 
 // ItemInfo represents an item within a story
 type ItemInfo struct {
-	ID       string `xml:"itemID"`
-	Slug     string `xml:"itemSlug,omitempty"`
+	ID   string `xml:"itemID"`
+	Slug string `xml:"itemSlug,omitempty"`
+	// Abstract is mosAbstract, and for graphics items it is the FULLER text.
+	//
+	// itemSlug is capped at 128 characters by the specification; mosAbstract has no stated limit
+	// ("Length is unlimited but reasonable use is suggested"). A live NCS truncates the slug at exactly
+	// that limit -- 20 captured items sit at 128 characters, none above, and the longest ends mid-word --
+	// while the abstract carries the complete string, up to 233 characters and longer than the slug on
+	// 272 of 458 captured items.
+	//
+	// Graphics items encode their template and field values in that text, pipe-delimited, so reading the
+	// slug alone would put visibly truncated text on air (doc/interop §50). Both are kept: the slug is
+	// what the NCS displays, the abstract is what is complete.
+	Abstract string `xml:"mosAbstract,omitempty"`
 	Duration string `xml:"itemEdDur,omitempty"`
 	// ObjDur and ObjTB are the OBJECT's duration and time base, in samples and samples per second.
 	//

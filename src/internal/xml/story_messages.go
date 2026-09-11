@@ -99,31 +99,44 @@ type StoryItemFields struct {
 // abstract. Preferring itemSlug and falling back costs nothing and avoids an item that
 // displays as blank.
 func (s StoryItem) ItemFields() *StoryItemFields {
-	if s.MosItem != nil && (s.MosItem.ItemID != "" || s.MosItem.ObjID != "") {
-		f := *s.MosItem
-		if f.ItemSlug == "" {
-			f.ItemSlug = f.MosAbstract
+	var f *StoryItemFields
+	switch {
+	case s.MosItem != nil && (s.MosItem.ItemID != "" || s.MosItem.ObjID != ""):
+		copied := *s.MosItem
+		f = &copied
+	case s.ItemID != "" || s.ObjID != "":
+		f = &StoryItemFields{
+			ItemID:            s.ItemID,
+			ItemSlug:          s.ItemSlug,
+			MosAbstract:       s.MosAbstract,
+			ObjID:             s.ObjID,
+			MosID:             s.MosID,
+			ItemEdStart:       s.ItemEdStart,
+			ItemEdDur:         s.ItemEdDur,
+			ItemUserTimingDur: s.ItemUserTimingDur,
+			ObjDur:            s.ObjDur,
+			ObjTB:             s.ObjTB,
+			ObjPaths:          s.ObjPaths,
+			MacroIn:           s.MacroIn,
+			MacroOut:          s.MacroOut,
+			ExternalMeta:      s.ExternalMeta,
 		}
-		return &f
-	}
-	if s.ItemID == "" && s.ObjID == "" {
+	default:
 		return nil
 	}
-	return &StoryItemFields{
-		ItemID:            s.ItemID,
-		ItemSlug:          s.ItemSlug,
-		ObjID:             s.ObjID,
-		MosID:             s.MosID,
-		ItemEdStart:       s.ItemEdStart,
-		ItemEdDur:         s.ItemEdDur,
-		ItemUserTimingDur: s.ItemUserTimingDur,
-		ObjDur:            s.ObjDur,
-		ObjTB:             s.ObjTB,
-		ObjPaths:          s.ObjPaths,
-		MacroIn:           s.MacroIn,
-		MacroOut:          s.MacroOut,
-		ExternalMeta:      s.ExternalMeta,
+
+	// A missing slug borrows the abstract, so a caller wanting a label always has one. Applied here
+	// rather than inside either branch because it was previously only on the nested one, and an
+	// abstract-only item in the flat shape came back with no label at all.
+	//
+	// The reverse is deliberately NOT done: the abstract is not folded into the slug when both exist.
+	// The slug is capped at 128 characters and a live NCS truncates it there, mid-word, while the
+	// abstract is not capped -- so they are different values carrying different information, and
+	// collapsing them in either direction loses some of it (doc/interop §50).
+	if f.ItemSlug == "" {
+		f.ItemSlug = f.MosAbstract
 	}
+	return f
 }
 
 // StoryPI represents producer instructions in a story paragraph
@@ -152,6 +165,7 @@ type StoryItem struct {
 	MosItem     *StoryItemFields `xml:"mosItem,omitempty"`
 	ItemID      string           `xml:"itemID"`
 	ItemSlug    string           `xml:"itemSlug,omitempty"`
+	MosAbstract string           `xml:"mosAbstract,omitempty"`
 	ObjID       string           `xml:"objID"`
 	MosID       string           `xml:"mosID"`
 	ItemEdStart int              `xml:"itemEdStart,omitempty"`
