@@ -201,6 +201,9 @@ func (s *MOSService) processStoryBody(ctx context.Context, story *model.Story, s
 		// carrying them through this conversion left every one of those durations at zero.
 		info.ObjDur = f.ObjDur
 		info.ObjTB = f.ObjTB
+		// And the media pointers. This is the same seam that dropped objDur and objTB after they were
+		// added to the wire types (doc/interop §48): work correct at both ends, nothing crossing.
+		info.ObjPaths = f.ObjPaths
 		infos = append(infos, info)
 	}
 

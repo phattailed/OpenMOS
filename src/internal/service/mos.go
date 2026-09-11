@@ -478,6 +478,9 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 		if timing.Known {
 			item.Duration = timing.Seconds
 		}
+		// Media pointers. Converted rather than referenced so the storage model stays independent of
+		// the wire package.
+		item.Media = mediaPathsFrom(info.ObjPaths, info.ObjPath)
 		if raw := strings.TrimSpace(info.ObjTB); raw != "" {
 			if item.Metadata == nil {
 				item.Metadata = make(map[string]string, 2)
@@ -511,6 +514,12 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 		existing.Duration = item.Duration
 		existing.EditorialDuration = item.EditorialDuration
 		existing.TimeBase = item.TimeBase
+		// Only overwrite the pointers when the incoming message actually carries some, so a peer that
+		// omits objPaths on an update cannot erase what is held -- the same rule external metadata
+		// follows, and for the same reason: update is the common path.
+		if !item.Media.Empty() {
+			existing.Media = item.Media
+		}
 		existing.Order = item.Order
 		// Carry external metadata across an update.
 		//

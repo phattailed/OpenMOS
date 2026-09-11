@@ -46,17 +46,24 @@ type MOSObject struct {
 
 // Item represents a single item within a story
 type Item struct {
-	ID                string            `bson:"_id" json:"id"`                                // Unique Item ID
-	RawID             string            `bson:"rawID" json:"rawID"`                           // Original itemID from MOS
-	ObjectID          string            `bson:"objectID,omitempty" json:"objectID,omitempty"` // Reference to MOS Object
-	Slug              string            `bson:"slug" json:"slug"`
-	Duration          int               `bson:"duration" json:"duration"` // Duration in seconds
-	EditorialDuration int               `bson:"editorialDuration,omitempty" json:"editorialDuration,omitempty"`
-	TimeBase          int               `bson:"timeBase,omitempty" json:"timeBase,omitempty"`
-	Status            StatusType        `bson:"status" json:"status"`
-	Order             int               `bson:"order" json:"order"`     // Order within the story
-	StoryID           string            `bson:"storyID" json:"storyID"` // Parent story ID
-	Metadata          map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
+	ID                string `bson:"_id" json:"id"`                                // Unique Item ID
+	RawID             string `bson:"rawID" json:"rawID"`                           // Original itemID from MOS
+	ObjectID          string `bson:"objectID,omitempty" json:"objectID,omitempty"` // Reference to MOS Object
+	Slug              string `bson:"slug" json:"slug"`
+	Duration          int    `bson:"duration" json:"duration"` // Duration in seconds
+	EditorialDuration int    `bson:"editorialDuration,omitempty" json:"editorialDuration,omitempty"`
+	TimeBase          int    `bson:"timeBase,omitempty" json:"timeBase,omitempty"`
+	// Media holds the pointers to the item's essence, proxies and object metadata.
+	//
+	// Structured rather than flattened into Metadata because both essence and proxy paths are
+	// REPEATABLE and each carries its own technical description -- a real rundown sends one essence
+	// path plus separate proxies for a video preview and a still thumbnail, and collapsing that to a
+	// single string would discard the distinction a consumer needs (doc/interop §49).
+	Media    *MediaPaths       `bson:"media,omitempty" json:"media,omitempty"`
+	Status   StatusType        `bson:"status" json:"status"`
+	Order    int               `bson:"order" json:"order"`     // Order within the story
+	StoryID  string            `bson:"storyID" json:"storyID"` // Parent story ID
+	Metadata map[string]string `bson:"metadata,omitempty" json:"metadata,omitempty"`
 	// ExternalMetadata holds mosExternalMetadata blocks verbatim, because the
 	// specification requires the payload be carried rather than interpreted.
 	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
@@ -113,4 +120,33 @@ type RunningOrder struct {
 	ExternalMetadata []ExternalMetadata `bson:"externalMetadata,omitempty" json:"externalMetadata,omitempty"`
 	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
 	UpdatedAt        time.Time          `bson:"updatedAt" json:"updatedAt"`
+}
+
+// MediaPaths holds an item's media pointers, as carried in objPaths.
+//
+// A copy rather than a reference to the wire type, so the storage model does not depend on the XML
+// package -- the same separation every other field here observes.
+type MediaPaths struct {
+	Essence  []MediaPath `bson:"essence,omitempty" json:"essence,omitempty"`
+	Proxy    []MediaPath `bson:"proxy,omitempty" json:"proxy,omitempty"`
+	Metadata []MediaPath `bson:"metadata,omitempty" json:"metadata,omitempty"`
+}
+
+// MediaPath is one pointer with the sender's description of its technical form.
+type MediaPath struct {
+	// URL is the pointer. Named for what it holds rather than "path", since UNC, HTTP and FTP forms all
+	// appear here and only one is a path in any local sense.
+	URL string `bson:"url" json:"url"`
+	// TechDescription is the sender's free-text description, such as "MPEG2 Video", "Proxy" or "JPG".
+	// Required by the specification and observed empty in practice, so never load-bearing.
+	TechDescription string `bson:"techDescription,omitempty" json:"techDescription,omitempty"`
+}
+
+// Empty reports whether no pointer of any kind is held. Tolerates a nil receiver so callers need not
+// distinguish "absent" from "present but empty".
+func (m *MediaPaths) Empty() bool {
+	if m == nil {
+		return true
+	}
+	return len(m.Essence) == 0 && len(m.Proxy) == 0 && len(m.Metadata) == 0
 }

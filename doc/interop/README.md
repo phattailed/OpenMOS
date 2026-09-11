@@ -3397,3 +3397,64 @@ That is the right outcome. `mosSchema` is "implied to be a pointer or URL", and 
 carried rather than interpreted, so a device that validated or normalised it would reject or silently
 alter production traffic. Worth recording as concrete evidence that these URIs cannot be assumed
 well-formed.
+
+## 49. Every media pointer was being discarded
+
+`objID` names an object on a device. `objPaths` says where the bytes are. A rundown display needs the
+thumbnail, a preview needs the proxy, a playout or bridge needs the essence — and none of that is derivable
+from `objID`.
+
+Fifty-seven captured frames carried `objPaths`, and **not one URL was stored.** The item's stored metadata
+held exactly two keys, `mosID` and `objTB`.
+
+### The structure existed and the item never referenced it
+
+`ObjPaths` and `ObjPath` were already modelled, for the object family. What was missing was any reference to
+them from the item: `ItemInfo` declared a **bare** `objPath` string, while the specification nests the paths
+one level down.
+
+```
+<!ELEMENT objPaths (objPath*, objProxyPath*, objMetadataPath*)>
+```
+
+So the bare tag never matched the real shape. The same class of defect as the nested `mosItem` in §40 and
+§45 — correct at one end of the codebase, unreferenced at the other — and the fourth time this pattern has
+cost time here.
+
+### The real shape, and why plurality matters
+
+```xml
+<objPaths>
+  <objPath      techDescription="">…/essence/clip.mxf</objPath>
+  <objProxyPath techDescription="Proxy">…/proxy/clip.mp4</objProxyPath>
+  <objProxyPath techDescription="JPG">…/thumb/clip.jpg</objProxyPath>
+  <objMetadataPath>…/meta/clip.xml</objMetadataPath>
+</objPaths>
+```
+
+`objPath` and `objProxyPath` are **both repeatable**, and the traffic uses that: one essence path plus two
+proxies serving different purposes. A single-valued field would silently keep whichever arrived last, which
+for a consumer choosing between a video preview and a still thumbnail is the whole distinction.
+
+The proxies are told apart **only** by `techDescription`, a free-text attribute. `ProxyMatching` therefore
+does a case-insensitive substring match and falls back to the first proxy, because expressing a preference
+the protocol does not model is better done explicitly than by index.
+
+### techDescription is required and arrives empty
+
+The specification makes `techDescription` a **required** attribute on `objPath` and `objProxyPath`. The live
+NCS sends it **empty on the essence path** while populating it on both proxies.
+
+So it is treated as advisory: never used to decide whether a path is *usable*, only to choose between paths
+that are. A device that rejected a path for a missing description would discard the essence pointer of every
+item in this rundown.
+
+### Stored structured, and not erased by a resend
+
+`model.Item.Media` keeps essence, proxy and metadata pointers as lists with their descriptions, rather than
+flattening to strings — the distinction between two proxies is exactly what a consumer needs. An update that
+omits `objPaths` leaves what is held intact, the same rule external metadata follows in §40 and for the same
+reason: resend is the common path, not the exception.
+
+The conversion from the story body was the seam that dropped `objDur` in §48, so the test crosses it
+end-to-end rather than checking either side.

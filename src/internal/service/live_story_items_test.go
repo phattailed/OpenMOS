@@ -287,3 +287,137 @@ func TestCustomerItemDurationFromObjDur(t *testing.T) {
 		t.Errorf("owning mosID = %q, want the vendor device that owns the object", item.Metadata["mosID"])
 	}
 }
+
+// Media pointers, in the shape a live NCS sends them.
+//
+// objID names an object on a device; objPaths says where the bytes are. A rundown display needs the
+// thumbnail, a preview needs the proxy, and a playout or bridge needs the essence — none derivable from
+// objID. Fifty-seven captured frames carried objPaths and not one URL was stored, because ItemInfo
+// declared a BARE objPath while the specification nests the paths one level down (doc/interop §49).
+//
+// Both essence and proxy are REPEATABLE, and the real traffic uses that: one essence path plus separate
+// proxies distinguished only by a free-text techDescription — "Proxy" for a video preview, "JPG" for a
+// still. Note also that the essence path's techDescription arrives EMPTY even though the specification
+// makes the attribute required.
+const mediaPathStorySend = `<mos>
+<mosID>openmos.example.mos</mosID><ncsID>NCS-HOST</ncsID><messageID>92</messageID>
+<roStorySend>
+<roID>NCS-HOST;P_STORYTELLING\W;2D526A13</roID>
+<storyID>NCS-HOST;P_STORYTELLING\W\R_2D526A13;A0CEE368</storyID>
+<storySlug>Story with media</storySlug>
+<storyBody><p> </p>
+<storyItem><mosID>vendor.video.example.mos</mosID><itemID>4</itemID>
+<objID>OBJ-99</objID><objDur>1200</objDur><objTB>59.94</objTB>
+<itemSlug>Package</itemSlug>
+<objPaths>
+<objPath techDescription="">https://media.example.test/essence/clip99.mxf</objPath>
+<objProxyPath techDescription="Proxy">https://media.example.test/proxy/clip99.mp4</objProxyPath>
+<objProxyPath techDescription="JPG">https://media.example.test/thumb/clip99.jpg</objProxyPath>
+<objMetadataPath>https://media.example.test/meta/clip99.xml</objMetadataPath>
+</objPaths>
+</storyItem>
+<p> </p>
+</storyBody>
+</roStorySend>
+</mos>`
+
+func TestMediaPointersArePersisted(t *testing.T) {
+	svc, stories, items := newStoryTestService(t)
+	ctx := context.Background()
+
+	var env xml.Envelope
+	if err := stdxml.Unmarshal([]byte(mediaPathStorySend), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msg, err := env.Message()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	send := msg.(xml.ROStorySend)
+
+	if err := svc.ProcessRunningOrderInfo(ctx, xml.RunningOrderInfo{ID: send.ROID, Slug: "media"},
+		"openmos.example.mos"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := svc.ProcessROStorySend(ctx, send); err != nil {
+		t.Fatalf("ProcessROStorySend: %v", err)
+	}
+
+	stored := itemsFor(t, ctx, stories, items, send.ROID)
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d items, want 1", len(stored))
+	}
+	media := stored[0].Media
+	if media == nil {
+		t.Fatal("no media pointers stored. Nil here means objPaths was parsed but not carried across " +
+			"the conversion into ItemInfo, which is the seam that dropped objDur.")
+	}
+
+	if len(media.Essence) != 1 || media.Essence[0].URL != "https://media.example.test/essence/clip99.mxf" {
+		t.Errorf("essence = %+v, want the single objPath", media.Essence)
+	}
+	// Both proxies must survive. Keeping only one would discard the distinction a consumer needs.
+	if len(media.Proxy) != 2 {
+		t.Fatalf("stored %d proxies, want 2 (a video preview and a still)", len(media.Proxy))
+	}
+	if media.Proxy[0].TechDescription != "Proxy" || media.Proxy[1].TechDescription != "JPG" {
+		t.Errorf("proxy descriptions = %q/%q, want Proxy and JPG in order",
+			media.Proxy[0].TechDescription, media.Proxy[1].TechDescription)
+	}
+	if len(media.Metadata) != 1 {
+		t.Errorf("stored %d metadata paths, want 1", len(media.Metadata))
+	}
+	// An empty techDescription must not disqualify the path: the specification requires the attribute and
+	// a live NCS sends it empty anyway.
+	if media.Essence[0].TechDescription != "" {
+		t.Errorf("essence techDescription = %q, want the empty value preserved as sent",
+			media.Essence[0].TechDescription)
+	}
+
+	// The accessors a consumer would actually use.
+	paths := send.StoryBody.Items[0].ItemFields().ObjPaths
+	if got := paths.Essence(); got != "https://media.example.test/essence/clip99.mxf" {
+		t.Errorf("Essence() = %q", got)
+	}
+	if got := paths.ProxyMatching("jpg"); got != "https://media.example.test/thumb/clip99.jpg" {
+		t.Errorf("ProxyMatching(jpg) = %q, want the still", got)
+	}
+	if got := paths.ProxyMatching("nothing-like-this"); got != "https://media.example.test/proxy/clip99.mp4" {
+		t.Errorf("ProxyMatching should fall back to the first proxy, got %q", got)
+	}
+}
+
+// A resend without objPaths must not erase pointers already held: update is the common path.
+func TestMediaPointersSurviveAResendWithoutThem(t *testing.T) {
+	svc, stories, items := newStoryTestService(t)
+	ctx := context.Background()
+
+	var env xml.Envelope
+	_ = stdxml.Unmarshal([]byte(mediaPathStorySend), &env)
+	msg, _ := env.Message()
+	send := msg.(xml.ROStorySend)
+	if err := svc.ProcessRunningOrderInfo(ctx, xml.RunningOrderInfo{ID: send.ROID, Slug: "media"},
+		"openmos.example.mos"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := svc.ProcessROStorySend(ctx, send); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+
+	// The same story again, with the pointers stripped.
+	stripped := send
+	body := *send.StoryBody.Items[0].ItemFields()
+	body.ObjPaths = nil
+	stripped.StoryBody = xml.StoryBody{Items: []xml.StoryItem{{MosItem: &body}}}
+	if err := svc.ProcessROStorySend(ctx, stripped); err != nil {
+		t.Fatalf("resend: %v", err)
+	}
+
+	stored := itemsFor(t, ctx, stories, items, send.ROID)
+	if len(stored) != 1 {
+		t.Fatalf("persisted %d items, want 1", len(stored))
+	}
+	if stored[0].Media == nil || len(stored[0].Media.Essence) != 1 {
+		t.Error("a resend that omits objPaths must not erase the pointers already held")
+	}
+}

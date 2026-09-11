@@ -542,10 +542,13 @@ type ItemInfo struct {
 	ObjTB    string `xml:"objTB,omitempty"`
 	ObjectID string `xml:"objID"`
 	MosID    string `xml:"mosID"`
-	// ObjPath is emitted bare, whereas the specification nests paths inside an objPaths
-	// structure: objPaths?(objPath*, objProxyPath*, objMetadataPath*). Recorded rather
-	// than changed here, since altering it touches the object family too.
-	ObjPath             string                `xml:"objPath,omitempty"`
+	// ObjPath is the BARE form, which the specification does not define for an item -- paths belong
+	// inside objPaths. Kept because it costs nothing and a sender may emit it, but ObjPaths below is
+	// the shape a real NCS uses.
+	ObjPath string `xml:"objPath,omitempty"`
+	// ObjPaths holds the media pointers: essence, proxies and object metadata. Declaring only the bare
+	// field above meant every pointer in 57 captured frames was dropped (doc/interop §49).
+	ObjPaths            *ObjPaths             `xml:"objPaths,omitempty"`
 	Channel             string                `xml:"itemChannel,omitempty"`
 	MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
 }
