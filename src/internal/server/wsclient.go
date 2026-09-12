@@ -607,6 +607,36 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn, lane clie
 		}
 	}()
 
+	if lane.passive && c.config.Source.Transport == "ws-client" && c.deps != nil && committedSource(c.deps.service) != nil {
+		pingDone := make(chan struct{})
+		defer func() { cancelRead(); <-pingDone }()
+		go func() {
+			defer close(pingDone)
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-readCtx.Done():
+					return
+				case <-ticker.C:
+				}
+				// Control Pongs are consumed inside the library reader. Wait alongside
+				// the dispatch loop so a burst of MOS messages cannot block that reader.
+				pingCtx, cancel := context.WithTimeout(readCtx, c.config.MOS.ClientTimeout)
+				err := conn.Ping(pingCtx)
+				cancel()
+				if err != nil {
+					select {
+					case msgCh <- readResult{err: fmt.Errorf("passive source ping: %w", err)}:
+					case <-readCtx.Done():
+					}
+					return
+				}
+				c.deps.service.Source.RefreshSession(sourceSession(conn))
+			}
+		}()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

@@ -68,6 +68,11 @@ malformed frames or rejected identities on an owned source connection, unsupport
 mutations and failed recovery invalidate coverage. They never turn an
 old file or an exhausted discovery walk into proof of completeness.
 
+For a committed `ws-client` source, the passive lane checks control Ping/Pong at the existing
+heartbeat interval. A matching Pong renews only a validated, unexpired current session. It
+does not register a connection, change the source revision or restore roster/body freshness.
+A failed Ping ends the connection; normal reconnect and fresh-coverage rules still apply.
+
 The source retains current raw XML even when it exceeds the receiver's publication limits.
 It then publishes `complete:false` with `stories:[]` and records the reason in the checkpoint's
 `source.state.problem`. This suspends preparation while the receiver preserves its prior
