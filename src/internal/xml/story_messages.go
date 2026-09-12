@@ -2,6 +2,8 @@ package xml
 
 import (
 	"encoding/xml"
+	"strconv"
+	"strings"
 )
 
 // NCSReqStoryAction represents a request from NCS to perform an action on a story
@@ -54,7 +56,9 @@ type StoryBody struct {
 	// paragraph. Only that nested form was modelled before, so encoding/xml silently
 	// discarded every item a live ENPS sent -- the element had nowhere to unmarshal into.
 	// Both shapes are now accepted; see MosItems for why there is a third.
-	Items []StoryItem `xml:"storyItem,omitempty"`
+	Items     []StoryItem `xml:"storyItem,omitempty"`
+	sourceXML *string
+	sourceErr error
 }
 
 // StoryParagraph represents a paragraph in a story body
@@ -89,6 +93,29 @@ type StoryItemFields struct {
 	MacroIn           string                `xml:"macroIn,omitempty"`
 	MacroOut          string                `xml:"macroOut,omitempty"`
 	ExternalMeta      []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+func (s *StoryItemFields) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	type Fields StoryItemFields
+	raw := struct {
+		*Fields
+		Duration string `xml:"itemEdDur"`
+	}{Fields: (*Fields)(s)}
+	if err := d.DecodeElement(&raw, &start); err != nil {
+		return err
+	}
+	// Keep the existing integer projection when the supplied value can represent one.
+	s.XMLName = start.Name
+	s.ItemEdDur = legacyStoryDuration(raw.Duration)
+	return nil
+}
+
+func legacyStoryDuration(raw string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 // ItemFields returns the item's fields regardless of which shape arrived, so callers do not
@@ -161,6 +188,7 @@ type StoryPresenter struct {
 // send it. MosItem carries the nested form, and ItemFields() returns whichever is populated
 // so callers do not have to know which shape arrived.
 type StoryItem struct {
+	Source      *SourceItem      `xml:"-"`
 	XMLName     xml.Name         `xml:"storyItem"`
 	MosItem     *StoryItemFields `xml:"mosItem,omitempty"`
 	ItemID      string           `xml:"itemID"`
@@ -179,4 +207,20 @@ type StoryItem struct {
 	MacroIn           string                `xml:"macroIn,omitempty"`
 	MacroOut          string                `xml:"macroOut,omitempty"`
 	ExternalMeta      []MosExternalMetadata `xml:"mosExternalMetadata,omitempty"`
+}
+
+func (s *StoryItem) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	type Fields StoryItem
+	raw := struct {
+		*Fields
+		Duration string `xml:"itemEdDur"`
+		Inner    string `xml:",innerxml"`
+	}{Fields: (*Fields)(s)}
+	if err := d.DecodeElement(&raw, &start); err != nil {
+		return err
+	}
+	s.XMLName = start.Name
+	s.ItemEdDur = legacyStoryDuration(raw.Duration)
+	s.Source = decodeSourceItem(raw.Inner)
+	return nil
 }

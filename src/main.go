@@ -26,6 +26,7 @@ func main() {
 	// Define command-line flags
 	generateConfig := flag.String("generate-config", "", "Generate a default configuration file at the specified path and exit")
 	configPath := flag.String("config", "", "Path to the configuration file (default: search for config.yaml)")
+	initializeSource := flag.Bool("initialize-source-state", false, "Provision a new committed source directory and exit; refuses existing or legacy data")
 
 	// One-shot Profile 7 mode. This does not start a server: it opens a single non-passive MOS 4
 	// connection, sends one roReqStoryAction, reports the answer and exits.
@@ -87,6 +88,29 @@ func main() {
 	if err != nil {
 		standardLogger.Fatalf("Failed to load configuration: %v", err)
 	}
+	sourceBinding := repository.SourceBinding{SourceID: cfg.Source.ID, RundownID: cfg.Source.RundownID, MosID: cfg.MOS.ID, NCSID: cfg.MOS.NCSID, Transport: cfg.Source.Transport, Destination: cfg.Source.URL}
+	if cfg.Source.Enabled || *initializeSource {
+		if !cfg.Source.Enabled || strings.ToLower(cfg.Storage.Backend) != "file" {
+			standardLogger.Fatal("Committed source requires SOURCE_ENABLED and file storage")
+		}
+		if err := service.ValidateSourceBinding(sourceBinding); err != nil {
+			standardLogger.Fatalf("Invalid committed source configuration: %v", err)
+		}
+		if cfg.Source.Transport == "tcp" && !cfg.Server.Enabled || cfg.Source.Transport == "ws-server" && !cfg.WebSocket.Enabled || cfg.Source.Transport == "ws-client" && !cfg.WSClient.Enabled {
+			standardLogger.Fatal("Configured committed source transport is disabled")
+		}
+	}
+	if *initializeSource {
+		state, err := repository.OpenCommitted(cfg.State.Dir, sourceBinding, true)
+		if err != nil {
+			standardLogger.Fatalf("Cannot initialize committed source: %v", err)
+		}
+		if err := state.Close(); err != nil {
+			standardLogger.Fatalf("Cannot release initialized source: %v", err)
+		}
+		standardLogger.Info("Committed source initialized; normal startup will require a fresh roster and story bodies")
+		return
+	}
 
 	// Configure log level
 	logLevel, exists := logger.LevelValues[strings.ToLower(cfg.Logging.Level)]
@@ -140,6 +164,7 @@ func main() {
 		storyRepo        repository.StoryRepository
 		itemRepo         repository.ItemRepository
 		objectRepo       repository.ObjectRepository
+		committed        *repository.Durable
 	)
 
 	switch strings.ToLower(cfg.Storage.Backend) {
@@ -167,7 +192,20 @@ func main() {
 		// which left OpenMOS silently disagreeing with the NCS about what it holds. The NCS has
 		// no reason to say again, so the divergence is invisible until something breaks -- which
 		// is exactly how the roStorySend defect in doc/interop §13 stayed hidden.
-		durable := repository.OpenDurable(cfg.State.Dir)
+		var durable *repository.Durable
+		if cfg.Source.Enabled {
+			durable, err = repository.OpenCommitted(cfg.State.Dir, sourceBinding, false)
+			if err != nil {
+				log.Fatalf("Cannot open committed source: %v", err)
+			}
+			committed = durable
+			defer durable.Close()
+		} else {
+			durable = repository.OpenDurable(cfg.State.Dir)
+			if err := durable.OpenError(); err != nil {
+				log.Fatalf("Cannot open running-order state: %v", err)
+			}
+		}
 		if durable.Degraded() {
 			log.Warning("Running orders are NOT durable: state directory unavailable, " +
 				"continuing in memory")
@@ -220,6 +258,15 @@ func main() {
 	// One shared service and message core behind every transport. Transports own
 	// framing only; they must not own message semantics.
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
+	if committed != nil {
+		mosService.Source, err = service.NewCommittedSource(ctx, committed, sourceBinding, cfg.Source.Token, cfg.MOS.ClientTimeout)
+		if err != nil {
+			log.Fatalf("Cannot start committed source: %v", err)
+		}
+		publisherDone := make(chan struct{})
+		go func() { defer close(publisherDone); mosService.Source.RunPublisher(ctx) }()
+		defer func() { cancel(); <-publisherDone }()
+	}
 
 	// The outbound MOS 4 client counts as a transport. A device that only dials out is a
 	// legitimate and, for MOS 4.0, an important configuration: passive mode exists precisely so

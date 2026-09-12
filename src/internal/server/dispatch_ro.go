@@ -87,6 +87,9 @@ type roDeps struct {
 // caller, which knows what its transport should say about it -- the socket transport
 // tolerates silence in places where MOS 4.0 requires a NACK.
 func dispatchRunningOrder(ctx context.Context, deps roDeps, r peerResponder, msg mosxml.MOSMessage) (handled bool, err error) {
+	if handled, err := dispatchCommittedSource(ctx, deps, r, msg); handled {
+		return true, err
+	}
 	// Any inbound traffic is an opportunity to unstick a discovery walk whose answer never
 	// arrived. See discoveryWalk.nudge for why this is opportunistic rather than timer-driven.
 	advanceWalk(ctx, deps, r)

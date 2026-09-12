@@ -529,8 +529,9 @@ type StoryInfo struct {
 
 // ItemInfo represents an item within a story
 type ItemInfo struct {
-	ID   string `xml:"itemID"`
-	Slug string `xml:"itemSlug,omitempty"`
+	Source *SourceItem `xml:"-"`
+	ID     string      `xml:"itemID"`
+	Slug   string      `xml:"itemSlug,omitempty"`
 	// Abstract is mosAbstract, and for graphics items it is the FULLER text.
 	//
 	// itemSlug is capped at 128 characters by the specification; mosAbstract has no stated limit

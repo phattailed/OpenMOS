@@ -226,6 +226,9 @@ func (s *WSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		logger.Errorf("WebSocket upgrade failed: %v", err)
 		return
 	}
+	if committedSource(s.service) != nil {
+		conn.SetReadLimit(4 << 20)
+	}
 
 	sess := &WSSession{
 		conn:      conn,
@@ -254,6 +257,9 @@ func (s *WSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 func (s *WSServer) handleSession(sess *WSSession) {
 	defer func() {
 		sess.close()
+		if source := committedSource(s.service); source != nil {
+			source.Disconnected(sourceSession(sess))
+		}
 		s.sessionsMu.Lock()
 		key := sess.ncsID + ":" + sess.channel
 		if s.sessions[key] == sess {
@@ -325,6 +331,9 @@ func (s *WSServer) handleSession(sess *WSSession) {
 			case websocket.MessageBinary:
 				decoded, err := mosxml.DecodeUCS2BE(msg.data)
 				if err != nil {
+					if source := committedSource(s.service); source != nil {
+						source.Uncertain(sourceSession(sess))
+					}
 					logger.Errorf("Failed to decode UCS-2BE frame from ncsID=%s: %v", sess.ncsID, err)
 					continue
 				}
@@ -359,6 +368,9 @@ func (s *WSServer) handleSession(sess *WSSession) {
 func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []byte) {
 	env, msg, innerOpXML, err := mosxml.ParseEnvelope(data)
 	if err != nil {
+		if source := committedSource(s.service); source != nil {
+			source.Uncertain(sourceSession(sess))
+		}
 		// Say what was actually wrong. A bare "invalid envelope" gives a vendor
 		// nothing to debug against, and since inbound messageID format is no longer
 		// policed, the rejections that remain are real structural faults worth
@@ -381,17 +393,43 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 		// Empty body envelope - nothing to process
 		return
 	}
+	if source := committedSource(s.service); source != nil {
+		if env.MosID != s.config.MOS.ID || env.NcsID != sess.ncsID {
+			source.Uncertain(sourceSession(sess))
+			s.sendNack(ctx, sess, env.MessageID, "NACK", "source envelope identity mismatch")
+			return
+		}
+		operation, err := operationBytes(data)
+		if err != nil {
+			source.Uncertain(sourceSession(sess))
+			s.sendNack(ctx, sess, env.MessageID, "NACK", "invalid source operation")
+			return
+		}
+		input := service.SourceInput{Transport: "ws-server", Scope: "ws:" + sess.channel, NCSID: env.NcsID, MessageID: env.MessageID, Session: sourceSession(sess), Content: operation}
+		if err := source.Observe(ctx, input); err != nil {
+			s.sendNack(ctx, sess, env.MessageID, "NACK", "committed source is unavailable")
+			return
+		}
+		ctx = context.WithValue(ctx, sourceInputKey{}, input)
+	}
 
 	// Reject messages that arrived on the wrong channel. Channel selection is how
 	// a MOS 4 peer signals intent, and the spec keeps traffic on the two ports
 	// independent of each other, so honouring the separation matters.
 	family := classifyMessage(msg)
 	if ok, why := channelAccepts(sess.channel, family); !ok {
+		if source := committedSource(s.service); source != nil {
+			source.Uncertain(sourceSession(sess))
+		}
 		logger.Errorf("Wrong channel from ncsID=%s: %s (%s)", sess.ncsID, msg.GetMessageType(), why)
 		s.sendNack(ctx, sess, env.MessageID, "NACK", why)
 		return
 	}
 
+	if m, ok := msg.(mosxml.RunningOrderInfo); ok && committedSource(s.service) == nil {
+		s.handleRoCreate(ctx, sess, env, m, innerOpXML)
+		return
+	}
 	switch m := msg.(type) {
 	case mosxml.KeepAlive:
 		// MOS 4 Profile 0: keepAlive produces NO response.
@@ -400,10 +438,6 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 
 	case mosxml.ReqMachInfo:
 		s.handleReqMachInfo(ctx, sess, env)
-		return
-
-	case mosxml.RunningOrderInfo:
-		s.handleRoCreate(ctx, sess, env, m, innerOpXML)
 		return
 
 	default:
@@ -530,19 +564,26 @@ func (s *WSServer) sendNack(ctx context.Context, sess *WSSession, messageID, sta
 // endpoints reject text frames with InvalidMessageType, so OpenMOS never emits
 // text frames — only binary.
 func (s *WSServer) writeMessage(ctx context.Context, sess *WSSession, utf8XML []byte) {
+	if err := s.writeSourceMessage(ctx, sess, utf8XML); err != nil {
+		logger.Errorf("WebSocket response write failed: %v", err)
+	}
+}
+
+func (s *WSServer) writeSourceMessage(ctx context.Context, sess *WSSession, utf8XML []byte) error {
 	encoded, err := mosxml.EncodeUCS2BE(utf8XML)
 	if err != nil {
 		logger.Errorf("Failed to encode UCS-2BE frame for ncsID=%s: %v", sess.ncsID, err)
 		sess.close()
-		return
+		return err
 	}
 	if err := sess.conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
 		logger.Errorf("Write failed to ncsID=%s: %v", sess.ncsID, err)
 		sess.close()
-		return
+		return err
 	}
 
 	s.recordFrame(capture.Outbound, sess, utf8XML, len(encoded), "UCS-2BE")
+	return nil
 }
 
 // wireEncoding names the encoding a received frame type implies.

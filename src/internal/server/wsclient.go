@@ -448,6 +448,9 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 		return false, err
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "client closing")
+	if c.deps != nil && committedSource(c.deps.service) != nil {
+		defer c.deps.service.Source.Disconnected(sourceSession(conn))
+	}
 
 	// Make this connection available to the dispatcher if it is the lane that carries requests, and
 	// withdraw it when the session ends so a divergence arriving during a reconnect is reported as
@@ -667,6 +670,9 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn, lane clie
 			}
 			data, err := c.decodeFrame(msg.msgType, msg.data)
 			if err != nil {
+				if c.deps != nil && committedSource(c.deps.service) != nil {
+					c.deps.service.Source.Uncertain(sourceSession(conn))
+				}
 				logger.Errorf("MOS 4 client failed to decode frame from ncsID=%s: %v", c.config.MOS.NCSID, err)
 				continue
 			}
@@ -701,6 +707,9 @@ func (c *WSClient) readLoop(ctx context.Context, conn *websocket.Conn, lane clie
 func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8XML []byte, lane clientLane) {
 	var env mosxml.Envelope
 	if err := stdxml.Unmarshal(utf8XML, &env); err != nil {
+		if c.deps != nil && committedSource(c.deps.service) != nil {
+			c.deps.service.Source.Uncertain(sourceSession(conn))
+		}
 		logger.Errorf("MOS 4 client envelope parse error from ncsID=%s: %v", c.config.MOS.NCSID, err)
 		return
 	}
@@ -709,8 +718,23 @@ func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8
 	// is accepted during first contact. expectedMosID is our own configured ID.
 	msg, err := mosxml.ValidateEnvelope(env, mosxml.Gen4x, c.config.MOS.ID, "")
 	if err != nil {
+		if c.deps != nil && committedSource(c.deps.service) != nil {
+			c.deps.service.Source.Uncertain(sourceSession(conn))
+		}
 		logger.Errorf("MOS 4 client rejected envelope from ncsID=%s: %v", c.config.MOS.NCSID, err)
 		return
+	}
+	if c.deps != nil && committedSource(c.deps.service) != nil {
+		operation, err := operationBytes(utf8XML)
+		if err != nil {
+			c.deps.service.Source.Uncertain(sourceSession(conn))
+			return
+		}
+		input := service.SourceInput{Transport: "ws-client", Scope: "ws-client:" + c.config.WSClient.Channel + ":" + lane.name, NCSID: env.NcsID, MessageID: env.MessageID, Session: sourceSession(conn), Content: operation}
+		if err := c.deps.service.Source.Observe(ctx, input); err != nil {
+			return
+		}
+		ctx = context.WithValue(ctx, sourceInputKey{}, input)
 	}
 
 	switch msg.(type) {

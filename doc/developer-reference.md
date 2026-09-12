@@ -2,6 +2,10 @@
 
 This document provides a comprehensive guide to the OpenMOS codebase, including architecture, project structure, and feature roadmap.
 
+For the opt-in one-rundown file-backed publisher, see [Committed rundown source](committed-source.md).
+It documents durable retention, fresh-body coverage, neutral local HTTP and the synthetic evidence
+boundary; the [capability table](../README.md) remains authoritative for protocol claims.
+
 ## Overview
 
 OpenMOS is an implementation of the Media Object Server (MOS) Protocol 4.0 using TCP socket communication. It is designed to manage running orders, stories, items, and media objects for broadcast and media environments, with the goal of achieving compliance with MOS Profile 7.

@@ -31,6 +31,7 @@ import (
 func (i *ItemInfo) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	// A shadow type with BOTH shapes. Reusing ItemInfo here would recurse into this method.
 	var raw struct {
+		Inner               string                `xml:",innerxml"`
 		ID                  string                `xml:"itemID"`
 		Slug                string                `xml:"itemSlug"`
 		Abstract            string                `xml:"mosAbstract"`
@@ -65,6 +66,7 @@ func (i *ItemInfo) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	if err := d.DecodeElement(&raw, &start); err != nil {
 		return err
 	}
+	i.Source = decodeSourceItem(raw.Inner)
 
 	i.ID = raw.ID
 	i.Slug = raw.Slug
