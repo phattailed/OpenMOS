@@ -33,22 +33,29 @@ func (i *ItemInfo) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var raw struct {
 		ID                  string                `xml:"itemID"`
 		Slug                string                `xml:"itemSlug"`
+		Abstract            string                `xml:"mosAbstract"`
 		Duration            string                `xml:"itemEdDur"`
+		ObjDur              string                `xml:"objDur"`
+		ObjTB               string                `xml:"objTB"`
 		ObjectID            string                `xml:"objID"`
 		MosID               string                `xml:"mosID"`
 		ObjPath             string                `xml:"objPath"`
+		ObjPaths            *ObjPaths             `xml:"objPaths"`
 		Channel             string                `xml:"itemChannel"`
 		MosExternalMetadata []MosExternalMetadata `xml:"mosExternalMetadata"`
 
 		// Nested is the ENPS shape. A pointer so its absence is distinguishable from an empty one.
 		Nested *struct {
-			ID       string `xml:"itemID"`
-			Slug     string `xml:"itemSlug"`
-			Duration string `xml:"itemEdDur"`
-			ObjectID string `xml:"objID"`
-			MosID    string `xml:"mosID"`
-			ObjPath  string `xml:"objPath"`
-			Channel  string `xml:"itemChannel"`
+			ID       string    `xml:"itemID"`
+			Slug     string    `xml:"itemSlug"`
+			Duration string    `xml:"itemEdDur"`
+			ObjDur   string    `xml:"objDur"`
+			ObjTB    string    `xml:"objTB"`
+			ObjectID string    `xml:"objID"`
+			MosID    string    `xml:"mosID"`
+			ObjPath  string    `xml:"objPath"`
+			ObjPaths *ObjPaths `xml:"objPaths"`
+			Channel  string    `xml:"itemChannel"`
 			// Abstract is not an item field in the specification -- it belongs to the object -- but
 			// ENPS populates it with the same text as itemSlug and some peers send only this.
 			Abstract            string                `xml:"mosAbstract"`
@@ -61,10 +68,14 @@ func (i *ItemInfo) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 
 	i.ID = raw.ID
 	i.Slug = raw.Slug
+	i.Abstract = raw.Abstract
 	i.Duration = raw.Duration
+	i.ObjDur = raw.ObjDur
+	i.ObjTB = raw.ObjTB
 	i.ObjectID = raw.ObjectID
 	i.MosID = raw.MosID
 	i.ObjPath = raw.ObjPath
+	i.ObjPaths = raw.ObjPaths
 	i.Channel = raw.Channel
 	i.MosExternalMetadata = raw.MosExternalMetadata
 
@@ -85,8 +96,17 @@ func (i *ItemInfo) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	if i.Slug == "" {
 		i.Slug = strings.TrimSpace(n.Abstract)
 	}
+	if i.Abstract == "" {
+		i.Abstract = n.Abstract
+	}
 	if i.Duration == "" {
 		i.Duration = n.Duration
+	}
+	if i.ObjDur == "" {
+		i.ObjDur = n.ObjDur
+	}
+	if i.ObjTB == "" {
+		i.ObjTB = n.ObjTB
 	}
 	if i.ObjectID == "" {
 		i.ObjectID = n.ObjectID
@@ -96,6 +116,10 @@ func (i *ItemInfo) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	}
 	if i.ObjPath == "" {
 		i.ObjPath = n.ObjPath
+	}
+	// Prefer a populated outer container as a whole; never merge competing role lists.
+	if i.ObjPaths.Empty() {
+		i.ObjPaths = n.ObjPaths
 	}
 	if i.Channel == "" {
 		i.Channel = n.Channel
