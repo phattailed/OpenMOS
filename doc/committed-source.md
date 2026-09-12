@@ -67,8 +67,11 @@ retention ACK always means the accepted content is durably owned by OpenMOS.
 
 Incoming messages with an identifier retain their input hash and original response without
 eviction. Identical retries replay the original transport response and cannot refresh body
-coverage. Changed content under the same input identifier is rejected. MOS 2.x permits no
-message identifier; those inputs get atomic replacement but cannot claim retry deduplication.
+coverage. Peer requests and responses to device requests have separate identifier sequences;
+the same numeric ID may occur in both directions. New MOS 4 device requests use the transport's
+own sequence; native MOS 2.x requests omit the ID. Responses echo a supplied request ID.
+Changed content under the same identifier within either direction is rejected. MOS 2.x inputs
+without a message identifier get atomic replacement but cannot claim retry deduplication.
 Receipts accumulate while repository and raw source data keep only their latest state. The
 checkpoint therefore has linear storage and rewrite cost in receipt count. An indexed receipt
 store is deferred until measured volume justifies it; there is no automatic retirement,

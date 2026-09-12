@@ -33,9 +33,10 @@ type SourceMedia struct {
 	TechDescription *string
 }
 
-// SourceElement is one item or cue in story-body order.
+// SourceElement is one item or cue in story-body order. Items use the same decoder as the
+// running-order lists; Item.Source retains presence and raw values alongside that projection.
 type SourceElement struct {
-	Item *SourceItem
+	Item *ItemInfo
 	Cue  *BodyCue
 }
 
@@ -126,7 +127,7 @@ func (b StoryBody) OrderedSource() ([]SourceElement, error) {
 					paragraphs = append(paragraphs, span)
 				case "storyItem":
 					pending = ""
-					var item StoryItem
+					var item ItemInfo
 					if err := d.DecodeElement(&item, &token); err != nil {
 						return err
 					}
@@ -137,7 +138,7 @@ func (b StoryBody) OrderedSource() ([]SourceElement, error) {
 						return fmt.Errorf("duplicate source itemID")
 					}
 					seenItems[item.Source.ID] = true
-					anchor(SourceElement{Item: item.Source})
+					anchor(SourceElement{Item: &item})
 				case "pi":
 					pending = ""
 					var instruction sourceXMLNode

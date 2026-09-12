@@ -332,9 +332,13 @@ func (s *CommittedSource) Apply(ctx context.Context, input SourceInput, msg mosx
 	sum := sha256.Sum256(input.Content)
 	hash := hex.EncodeToString(sum[:])
 	conflict := false
+	// The peer's requests and responses to our requests have independent messageID sequences.
+	// roList is the only retained response and is silent; every retained peer request has an ACK.
+	// That existing receipt distinction preserves direction without changing the checkpoint format.
+	_, response := msg.(mosxml.ROList)
 	if input.MessageID != "" {
 		for _, receipt := range cp.Receipts {
-			if receipt.Scope != input.Scope || receipt.NCSID != input.NCSID || receipt.MessageID != input.MessageID {
+			if receipt.Scope != input.Scope || receipt.NCSID != input.NCSID || receipt.MessageID != input.MessageID || (len(receipt.Response) == 0) != response {
 				continue
 			}
 			if receipt.Hash == hash {
@@ -517,7 +521,7 @@ func (s *CommittedSource) applyBody(ctx context.Context, staged *MOSService, sta
 	ambiguous := false
 	for _, element := range elements {
 		if element.Item != nil {
-			item := element.Item
+			item := element.Item.Source
 			if item.ID == "" || ids[item.ID] {
 				return errors.New("source body item identity is invalid or repeated")
 			}

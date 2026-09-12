@@ -13,6 +13,7 @@ import (
 	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/config"
 	"airshift/openmos/internal/events"
+	"airshift/openmos/internal/messageid"
 	"airshift/openmos/internal/service"
 	mosxml "airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
@@ -37,8 +38,9 @@ type WSServer struct {
 	// resync rate-limits outbound roReq so pull recovery cannot loop, exactly as on the
 	// socket transport. Separate from the TCP server's guard because the two transports
 	// hold independent conversations with independent state.
-	resync *resyncGuard
-	walk   *discoveryWalk
+	resync     *resyncGuard
+	walk       *discoveryWalk
+	messageIDs *messageid.Sequence
 	// httpServer is assigned by Start and read by Shutdown, which run on different goroutines
 	// and can overlap: Start spawns a goroutine that calls Shutdown on context cancellation
 	// while main also calls it directly. The mutex is not decorative -- the race detector
@@ -69,7 +71,15 @@ type WSSession struct {
 
 // NewWSServer creates a new WebSocket server.
 func NewWSServer(cfg *config.Config, mosService *service.MOSService, eventBus *events.EventBus, dedup DedupStore, frames *capture.Recorder) *WSServer {
+	seq, err := messageid.Open(stateSubdir(cfg.State.Dir, "mos4"), cfg.MOS.ID)
+	if err != nil {
+		logger.Warningf("MOS 4 server request messageID sequence is not durable: %v", err)
+	}
+	if seq == nil {
+		seq = messageid.NewInMemory()
+	}
 	return &WSServer{
+		messageIDs: seq,
 		config:     cfg,
 		service:    mosService,
 		eventBus:   eventBus,

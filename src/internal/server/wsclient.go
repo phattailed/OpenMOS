@@ -834,6 +834,11 @@ func (w wsClientResponder) respond(ctx context.Context, msg mosxml.MOSMessage) e
 	return w.client.writeFrame(ctx, w.conn, env)
 }
 
+func (w wsClientResponder) originate(ctx context.Context, msg mosxml.MOSMessage) error {
+	w.messageID = w.client.messageID()
+	return w.respond(ctx, msg)
+}
+
 // readMessage reads one frame, decodes it, and returns the validated payload.
 func (c *WSClient) readMessage(ctx context.Context, conn *websocket.Conn) (mosxml.MOSMessage, error) {
 	msgType, raw, err := conn.Read(ctx)

@@ -46,7 +46,7 @@ func TestSourceItemPreservesWireValues(t *testing.T) {
 			if err != nil || len(ordered) != 1 {
 				t.Fatalf("ordered item = %+v, %v", ordered, err)
 			}
-			for _, item := range []*SourceItem{list.Source, ordered[0].Item} {
+			for _, item := range []*SourceItem{list.Source, ordered[0].Item.Source} {
 				if err := item.Validate(); err != nil {
 					t.Fatal(err)
 				}
@@ -98,7 +98,7 @@ func TestSourceItemDistinguishesAbsentAndEmpty(t *testing.T) {
 		if err != nil || len(ordered) != 1 {
 			t.Fatalf("ordered item = %+v, %v", ordered, err)
 		}
-		for _, item := range []*SourceItem{list.Source, ordered[0].Item} {
+		for _, item := range []*SourceItem{list.Source, ordered[0].Item.Source} {
 			if err := item.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +158,7 @@ func TestOrderedSourcePreservesMixedBodyOrder(t *testing.T) {
 	if ordered[3].Cue.Raw != "TAKE :SECOND" || ordered[3].Cue.Verb != "TAKE" || ordered[6].Cue.Raw != "TAKE :THIRD" || ordered[7].Cue.Kind != CuePrompter {
 		t.Errorf("instruction or prompter interpretation changed: %+v", ordered)
 	}
-	if *ordered[4].Item.ItemEdDur != "0x10" {
+	if *ordered[4].Item.Source.ItemEdDur != "0x10" {
 		t.Fatal("ordered item duration lost its raw value")
 	}
 	if len(story.StoryBody.Items) != 1 || len(story.StoryBody.Paragraphs[0].Items) != 1 {

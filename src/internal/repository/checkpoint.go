@@ -236,10 +236,15 @@ func validateCheckpoint(state SourceCheckpoint, binding SourceBinding) error {
 		return errors.New("committed source payload does not match its binding and revision")
 	}
 	// Retain receipts without eviction, but never accept a malformed or conflicting replay key.
+	// Silent roList receipts belong to our request sequence; ACK-bearing receipts belong to the
+	// peer's independent request sequence. This direction is already present in version 1 data.
 	// The per-message bounds exceed a decoded transport frame; they are not a lifetime capacity.
-	seen := make(map[[3]string]bool, len(state.Receipts))
+	seen := make(map[[4]string]bool, len(state.Receipts))
 	for _, receipt := range state.Receipts {
-		key := [3]string{receipt.Scope, receipt.NCSID, receipt.MessageID}
+		key := [4]string{receipt.Scope, receipt.NCSID, receipt.MessageID, "request"}
+		if len(receipt.Response) == 0 {
+			key[3] = "response"
+		}
 		hash, err := hex.DecodeString(receipt.Hash)
 		if seen[key] || receipt.Scope == "" || !utf8.ValidString(receipt.Scope) || utf8.RuneCountInString(receipt.Scope) > 512 || receipt.NCSID != binding.NCSID || receipt.MessageID == "" || !utf8.ValidString(receipt.MessageID) || utf8.RuneCountInString(receipt.MessageID) > 4<<20 || err != nil || len(hash) != sha256.Size || len(receipt.Response) > 8<<20 || !utf8.Valid(receipt.Response) {
 			return errors.New("invalid committed source input receipt")

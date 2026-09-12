@@ -36,6 +36,8 @@ type peerResponder interface {
 	peerLabel() string
 	// respond sends a message back to the peer that sent the one being handled.
 	respond(ctx context.Context, msg mosxml.MOSMessage) error
+	// originate sends a new request with this transport's envelope and identifier rules.
+	originate(ctx context.Context, msg mosxml.MOSMessage) error
 	// canOriginate reports whether this lane can carry a message the peer will treat as a REQUEST,
 	// as opposed to a response to something the peer sent us.
 	//
@@ -483,7 +485,7 @@ func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID strin
 // that was never answered, leaving the walk stalled behind an in-flight request that could not resolve.
 func sendRequest(ctx context.Context, deps roDeps, r peerResponder, msg mosxml.MOSMessage) error {
 	if r.canOriginate() {
-		return r.respond(ctx, msg)
+		return r.originate(ctx, msg)
 	}
 	if deps.origin == nil {
 		return fmt.Errorf("this lane cannot carry a %s and no request lane is configured; "+
@@ -573,6 +575,16 @@ func (t tcpResponder) respond(ctx context.Context, msg mosxml.MOSMessage) error 
 	return t.conn.writeMessage(ctx, msg)
 }
 
+func (t tcpResponder) originate(ctx context.Context, msg mosxml.MOSMessage) error {
+	envelope, ok := ctx.Value(envelopeContextKey{}).(mosxml.Envelope)
+	if !ok {
+		return fmt.Errorf("MOS envelope context required")
+	}
+	// Native MOS 2.x has no request messageID. Do not copy an optional peer ID from its ACK.
+	envelope.MessageID = ""
+	return t.conn.writeMessage(context.WithValue(ctx, envelopeContextKey{}, envelope), msg)
+}
+
 // canOriginate is true on the MOS 2.x socket. The NCS dials us, but the socket carries traffic in
 // both directions as requests: real multi-vendor traffic shows a prompter sending roReq twelve times
 // over three days on exactly this kind of link.
@@ -617,6 +629,11 @@ func (w wsResponder) respond(ctx context.Context, msg mosxml.MOSMessage) error {
 	w.server.writeMessage(ctx, w.sess,
 		mosxml.WrapEnvelope(w.server.config.MOS.ID, w.sess.ncsID, w.messageID, inner))
 	return nil
+}
+
+func (w wsResponder) originate(ctx context.Context, msg mosxml.MOSMessage) error {
+	w.messageID = w.server.messageIDs.Next()
+	return w.respond(ctx, msg)
 }
 
 // roDeps assembles the shared dependencies from a WebSocket server.
