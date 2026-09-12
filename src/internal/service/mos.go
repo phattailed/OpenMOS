@@ -543,6 +543,12 @@ func (s *MOSService) storeItems(ctx context.Context, storyID string, infos []xml
 			}
 			existing.Metadata["mosID"] = info.MosID
 		}
+		if raw := item.Metadata["objTB"]; raw != "" {
+			if existing.Metadata == nil {
+				existing.Metadata = make(map[string]string, 1)
+			}
+			existing.Metadata["objTB"] = raw
+		}
 		if err := s.itemRepo.Update(ctx, existing); err != nil {
 			return fmt.Errorf("failed to update item %s: %w", info.ID, err)
 		}
