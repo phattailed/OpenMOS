@@ -97,6 +97,7 @@ type Config struct {
 	// never written by configuration generation or included in the source checkpoint.
 	Source struct {
 		Enabled   bool
+		StateDir  string // Committed checkpoint directory; empty uses State.Dir.
 		ID        string
 		RundownID string
 		Transport string
@@ -298,6 +299,7 @@ func LoadConfig() (*Config, error) {
 		config.Storage.Backend = getEnv("STORAGE_BACKEND", getDefaultString(config.Storage.Backend, "file"))
 	}
 	config.Source.Enabled = getEnvAsBool("SOURCE_ENABLED", config.Source.Enabled)
+	config.Source.StateDir = getEnv("SOURCE_STATE_DIR", config.Source.StateDir)
 	config.Source.ID = getEnv("SOURCE_ID", config.Source.ID)
 	config.Source.RundownID = getEnv("SOURCE_RUNDOWN_ID", config.Source.RundownID)
 	config.Source.Transport = getEnv("SOURCE_TRANSPORT", config.Source.Transport)
