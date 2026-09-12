@@ -45,9 +45,13 @@ func applyItemXML(t *testing.T, svc *MOSService, body string) {
 
 func TestRunningOrderItemXML(t *testing.T) {
 	for _, message := range []string{"roCreate", "roList"} {
-		for _, shape := range []string{"flat", "nested"} {
+		for _, shape := range []string{"flat", "nested", "mixed"} {
 			t.Run(message+"/"+shape, func(t *testing.T) {
 				svc, stories, items := newStoryTestService(t)
+				metadataPath := `<objMetadataPath techDescription=" Data "> https://media.example.test/clip.xml </objMetadataPath>`
+				if shape == "mixed" {
+					metadataPath = ""
+				}
 				fields := `<itemID>item-1</itemID><itemSlug>Short label</itemSlug>` +
 					`<objID>object-1</objID><mosID>media.example.test</mosID>` +
 					`<mosAbstract>  Complete item description  </mosAbstract><objDur> 600 </objDur>` +
@@ -55,12 +59,22 @@ func TestRunningOrderItemXML(t *testing.T) {
 					`<objPaths><objPath techDescription=""> https://media.example.test/clip.mxf </objPath>` +
 					`<objPath> </objPath><objProxyPath techDescription=" Preview "> https://media.example.test/clip.mp4 </objProxyPath>` +
 					`<objProxyPath techDescription=" Still ">https://media.example.test/clip.jpg</objProxyPath>` +
-					`<objMetadataPath techDescription=" Data "> https://media.example.test/clip.xml </objMetadataPath></objPaths>` +
+					metadataPath + `</objPaths>` +
 					`<objPath> https://media.example.test/alternate.mxf </objPath>` +
 					`<mosExternalMetadata><mosScope>STORY</mosScope><mosSchema>not-a-uri</mosSchema>` +
 					`<mosPayload><value format="opaque">  untouched  </value><duration>unread</duration></mosPayload></mosExternalMetadata>`
 				if shape == "nested" {
 					fields = `<mosItem>` + fields + `</mosItem>`
+				} else if shape == "mixed" {
+					fields += `<mosItem><itemID>nested-item</itemID><itemSlug>Nested label</itemSlug>` +
+						`<objID>nested-object</objID><mosID>nested.example.test</mosID>` +
+						`<mosAbstract> Nested description </mosAbstract><objDur>1200</objDur><objTB>25</objTB>` +
+						`<objPaths><objPath>https://media.example.test/nested.mxf</objPath>` +
+						`<objProxyPath>https://media.example.test/nested.mp4</objProxyPath>` +
+						`<objMetadataPath>https://media.example.test/nested.xml</objMetadataPath></objPaths>` +
+						`<objPath>https://media.example.test/nested-alternate.mxf</objPath>` +
+						`<mosExternalMetadata><mosScope>STORY</mosScope><mosSchema/>` +
+						`<mosPayload><value>nested</value></mosPayload></mosExternalMetadata></mosItem>`
 				}
 				applyItemXML(t, svc, fmt.Sprintf(`<%s><roID>rundown-1</roID><roSlug>Rundown</roSlug>`+
 					`<story><storyID>story-1</storyID><storySlug>Story</storySlug><item>%s</item></story></%s>`,
@@ -87,6 +101,10 @@ func TestRunningOrderItemXML(t *testing.T) {
 						{URL: "https://media.example.test/clip.jpg", TechDescription: "Still"},
 					},
 					Metadata: []model.MediaPath{{URL: "https://media.example.test/clip.xml", TechDescription: "Data"}},
+				}
+				if shape == "mixed" {
+					// The populated outer container wins even for a role only the nested one carries.
+					wantMedia.Metadata = nil
 				}
 				if !reflect.DeepEqual(item.Media, wantMedia) {
 					t.Errorf("media = %+v, want %+v", item.Media, wantMedia)
