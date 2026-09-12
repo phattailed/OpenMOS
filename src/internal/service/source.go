@@ -126,6 +126,24 @@ func (s *CommittedSource) Observe(ctx context.Context, input SourceInput) error 
 	return nil
 }
 
+// RefreshSession records transport liveness only for a validated, unexpired owner.
+// A late reply cannot revive a lease, and health never makes source content fresh.
+func (s *CommittedSource) RefreshSession(session string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	seen, exists := s.sessions[session]
+	if !exists || now.Sub(seen) > s.timeout {
+		return
+	}
+	for _, owner := range s.owners {
+		if owner == session {
+			s.sessions[session] = now
+			return
+		}
+	}
+}
+
 func (s *CommittedSource) Disconnected(session string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
