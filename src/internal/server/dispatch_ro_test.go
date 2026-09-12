@@ -33,6 +33,10 @@ func (r *recordingResponder) peerLabel() string { return r.label }
 
 func (r *recordingResponder) canOriginate() bool { return !r.outputOnly }
 
+func (r *recordingResponder) originate(ctx context.Context, msg mosxml.MOSMessage) error {
+	return r.respond(ctx, msg)
+}
+
 func (r *recordingResponder) respond(_ context.Context, msg mosxml.MOSMessage) error {
 	r.sent = append(r.sent, msg)
 	return nil

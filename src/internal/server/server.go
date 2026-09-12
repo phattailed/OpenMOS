@@ -70,14 +70,13 @@ func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *
 
 // Start begins accepting connections
 func (s *TCPServer) Start(ctx context.Context) error {
-	defer s.wg.Done()
-	s.wg.Add(1)
-
 	address := s.listener.Addr().String()
 	logger.Infof("Server listening on %s", address)
 
 	// Accept connections in a loop
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -139,11 +138,15 @@ func (s *TCPServer) Shutdown(ctx context.Context) error {
 	}
 
 	// Close all client connections
-	s.clientsMu.Lock()
+	s.clientsMu.RLock()
+	clients := make([]*ClientConnection, 0, len(s.clients))
 	for _, client := range s.clients {
+		clients = append(clients, client)
+	}
+	s.clientsMu.RUnlock()
+	for _, client := range clients {
 		client.Close()
 	}
-	s.clientsMu.Unlock()
 
 	// Wait for all goroutines to finish with a timeout
 	shutdownCtx, cancel := context.WithTimeout(ctx, s.config.Server.ShutdownTimeout)

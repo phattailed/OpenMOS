@@ -107,6 +107,14 @@ func (b StoryBody) Cues() []BodyCue {
 	}
 
 	var cues []BodyCue
+	scanBodyCues(text, func(start, end int, cue BodyCue) {
+		cue.Paragraph = paragraphAt(start)
+		cues = append(cues, cue)
+	})
+	return cues
+}
+
+func scanBodyCues(text string, emit func(start, end int, cue BodyCue)) {
 	for i := 0; i < len(text); i++ {
 		var closer byte
 		prompter := false
@@ -123,17 +131,16 @@ func (b StoryBody) Cues() []BodyCue {
 		if rel < 0 {
 			continue
 		}
-		cue := BodyCue{Raw: text[i+1 : i+1+rel], Paragraph: paragraphAt(i)}
+		cue := BodyCue{Raw: text[i+1 : i+1+rel]}
 		if prompter {
 			cue.Kind = CuePrompter
 			cue.Target = strings.TrimSpace(strings.Trim(strings.TrimSpace(cue.Raw), "*"))
 		} else {
 			cue.parseCommand()
 		}
-		cues = append(cues, cue)
+		emit(i, i+rel+2, cue)
 		i += rel + 1
 	}
-	return cues
 }
 
 // parseCommand splits a bracketed command into verb, target, fields and parameters.

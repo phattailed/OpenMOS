@@ -23,6 +23,7 @@ type MOSService struct {
 	itemRepo         repository.ItemRepository
 	objectRepo       repository.ObjectRepository
 	eventBus         *events.EventBus
+	Source           *CommittedSource
 }
 
 // NewMOSService creates a new MOS service

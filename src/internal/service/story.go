@@ -243,13 +243,27 @@ func (s *MOSService) processStoryBody(ctx context.Context, story *model.Story, s
 		infos = append(infos, info)
 	}
 
-	// Direct children first: that is the live ENPS shape and the common case.
-	for _, si := range storyBody.Items {
-		appendItem(si)
-	}
-	for _, paragraph := range storyBody.Paragraphs {
-		for _, si := range paragraph.Items {
+	if ordered, err := storyBody.OrderedSource(); err == nil {
+		for _, element := range ordered {
+			if element.Item == nil {
+				continue
+			}
+			info := *element.Item
+			if info.Slug == "" {
+				info.Slug = info.Abstract
+			}
+			infos = append(infos, info)
+		}
+	} else {
+		// Keep legacy lenience for constructed bodies and unsupported source shapes. Committed
+		// mode validates OrderedSource before calling this seam, so it cannot certify this fallback.
+		for _, si := range storyBody.Items {
 			appendItem(si)
+		}
+		for _, paragraph := range storyBody.Paragraphs {
+			for _, si := range paragraph.Items {
+				appendItem(si)
+			}
 		}
 	}
 

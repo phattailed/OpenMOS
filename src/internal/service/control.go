@@ -194,11 +194,10 @@ func (s *MOSService) ProcessROStorySend(ctx context.Context, storySend xml.ROSto
 	// every item -- the objID, the channel, the graphics payload -- was dropped while the story
 	// itself persisted fine. A rundown without items is a list of headlines (doc/interop §40).
 	//
-	// Failures are reported rather than fatal: the story is still stored and acknowledged below,
-	// and turning a partial application into an error would leave the NCS believing nothing
-	// landed.
+	// A retention acknowledgement must not conceal a failed item write. Committed-source mode
+	// runs this operation in detached repositories so an error also discards partial changes.
 	if err := s.processStoryBody(ctx, story, &storySend.StoryBody); err != nil {
-		logger.Errorf("Stored story %s but failed to persist its items: %v", storySend.StoryID, err)
+		return fmt.Errorf("failed to persist story items: %w", err)
 	}
 
 	if !existing {

@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 
@@ -25,9 +27,9 @@ func (r *MemoryRunningOrderRepository) Create(_ context.Context, ro *model.Runni
 	if _, exists := r.data[ro.ID]; exists {
 		return nil, fmt.Errorf("running order %s already exists", ro.ID)
 	}
-	clone := *ro
-	r.data[ro.ID] = &clone
-	return &clone, nil
+	clone := cloneRunningOrder(ro)
+	r.data[ro.ID] = clone
+	return cloneRunningOrder(clone), nil
 }
 
 func (r *MemoryRunningOrderRepository) Get(_ context.Context, id string) (*model.RunningOrder, error) {
@@ -37,8 +39,7 @@ func (r *MemoryRunningOrderRepository) Get(_ context.Context, id string) (*model
 	if !ok {
 		return nil, fmt.Errorf("running order %s not found", id)
 	}
-	clone := *ro
-	return &clone, nil
+	return cloneRunningOrder(ro), nil
 }
 
 func (r *MemoryRunningOrderRepository) Update(_ context.Context, ro *model.RunningOrder) error {
@@ -47,8 +48,7 @@ func (r *MemoryRunningOrderRepository) Update(_ context.Context, ro *model.Runni
 	if _, ok := r.data[ro.ID]; !ok {
 		return fmt.Errorf("running order %s not found", ro.ID)
 	}
-	clone := *ro
-	r.data[ro.ID] = &clone
+	r.data[ro.ID] = cloneRunningOrder(ro)
 	return nil
 }
 
@@ -64,8 +64,7 @@ func (r *MemoryRunningOrderRepository) List(_ context.Context) ([]*model.Running
 	defer r.mu.RUnlock()
 	result := make([]*model.RunningOrder, 0, len(r.data))
 	for _, ro := range r.data {
-		clone := *ro
-		result = append(result, &clone)
+		result = append(result, cloneRunningOrder(ro))
 	}
 	return result, nil
 }
@@ -86,9 +85,9 @@ func (r *MemoryStoryRepository) Create(_ context.Context, story *model.Story) (*
 	if _, exists := r.data[story.ID]; exists {
 		return nil, fmt.Errorf("story %s already exists", story.ID)
 	}
-	clone := *story
-	r.data[story.ID] = &clone
-	return &clone, nil
+	clone := cloneStory(story)
+	r.data[story.ID] = clone
+	return cloneStory(clone), nil
 }
 
 func (r *MemoryStoryRepository) Get(_ context.Context, id string) (*model.Story, error) {
@@ -98,8 +97,7 @@ func (r *MemoryStoryRepository) Get(_ context.Context, id string) (*model.Story,
 	if !ok {
 		return nil, fmt.Errorf("story %s not found", id)
 	}
-	clone := *s
-	return &clone, nil
+	return cloneStory(s), nil
 }
 
 func (r *MemoryStoryRepository) Update(_ context.Context, story *model.Story) error {
@@ -108,8 +106,7 @@ func (r *MemoryStoryRepository) Update(_ context.Context, story *model.Story) er
 	if _, ok := r.data[story.ID]; !ok {
 		return fmt.Errorf("story %s not found", story.ID)
 	}
-	clone := *story
-	r.data[story.ID] = &clone
+	r.data[story.ID] = cloneStory(story)
 	return nil
 }
 
@@ -135,8 +132,7 @@ func (r *MemoryStoryRepository) ListByRunningOrder(_ context.Context, roID strin
 	var result []*model.Story
 	for _, s := range r.data {
 		if s.RunningOrderID == roID {
-			clone := *s
-			result = append(result, &clone)
+			result = append(result, cloneStory(s))
 		}
 	}
 	// Return stories in the order the NCS supplied, which for a rundown is play
@@ -175,9 +171,9 @@ func (r *MemoryItemRepository) Create(_ context.Context, item *model.Item) (*mod
 	if _, exists := r.data[item.ID]; exists {
 		return nil, fmt.Errorf("item %s already exists", item.ID)
 	}
-	clone := *item
-	r.data[item.ID] = &clone
-	return &clone, nil
+	clone := cloneItem(item)
+	r.data[item.ID] = clone
+	return cloneItem(clone), nil
 }
 
 func (r *MemoryItemRepository) Get(_ context.Context, id string) (*model.Item, error) {
@@ -187,8 +183,7 @@ func (r *MemoryItemRepository) Get(_ context.Context, id string) (*model.Item, e
 	if !ok {
 		return nil, fmt.Errorf("item %s not found", id)
 	}
-	clone := *i
-	return &clone, nil
+	return cloneItem(i), nil
 }
 
 func (r *MemoryItemRepository) Update(_ context.Context, item *model.Item) error {
@@ -197,8 +192,7 @@ func (r *MemoryItemRepository) Update(_ context.Context, item *model.Item) error
 	if _, ok := r.data[item.ID]; !ok {
 		return fmt.Errorf("item %s not found", item.ID)
 	}
-	clone := *item
-	r.data[item.ID] = &clone
+	r.data[item.ID] = cloneItem(item)
 	return nil
 }
 
@@ -224,8 +218,7 @@ func (r *MemoryItemRepository) ListByStory(_ context.Context, storyID string) ([
 	var result []*model.Item
 	for _, i := range r.data {
 		if i.StoryID == storyID {
-			clone := *i
-			result = append(result, &clone)
+			result = append(result, cloneItem(i))
 		}
 	}
 	// Items are ordered within their story for the same reason stories are ordered
@@ -255,9 +248,9 @@ func (r *MemoryObjectRepository) Create(_ context.Context, obj *model.MOSObject)
 	if _, exists := r.data[obj.ID]; exists {
 		return nil, fmt.Errorf("object %s already exists", obj.ID)
 	}
-	clone := *obj
-	r.data[obj.ID] = &clone
-	return &clone, nil
+	clone := cloneObject(obj)
+	r.data[obj.ID] = clone
+	return cloneObject(clone), nil
 }
 
 func (r *MemoryObjectRepository) Get(_ context.Context, id string) (*model.MOSObject, error) {
@@ -267,8 +260,7 @@ func (r *MemoryObjectRepository) Get(_ context.Context, id string) (*model.MOSOb
 	if !ok {
 		return nil, fmt.Errorf("object %s not found", id)
 	}
-	clone := *o
-	return &clone, nil
+	return cloneObject(o), nil
 }
 
 func (r *MemoryObjectRepository) Update(_ context.Context, obj *model.MOSObject) error {
@@ -277,8 +269,7 @@ func (r *MemoryObjectRepository) Update(_ context.Context, obj *model.MOSObject)
 	if _, ok := r.data[obj.ID]; !ok {
 		return fmt.Errorf("object %s not found", obj.ID)
 	}
-	clone := *obj
-	r.data[obj.ID] = &clone
+	r.data[obj.ID] = cloneObject(obj)
 	return nil
 }
 
@@ -294,8 +285,55 @@ func (r *MemoryObjectRepository) List(_ context.Context) ([]*model.MOSObject, er
 	defer r.mu.RUnlock()
 	result := make([]*model.MOSObject, 0, len(r.data))
 	for _, o := range r.data {
-		clone := *o
-		result = append(result, &clone)
+		result = append(result, cloneObject(o))
 	}
 	return result, nil
+}
+
+// Repository values are detached: callers may stage changes before Update or discard them.
+func cloneRunningOrder(in *model.RunningOrder) *model.RunningOrder {
+	out := *in
+	out.Metadata = maps.Clone(in.Metadata)
+	out.ExternalMetadata = slices.Clone(in.ExternalMetadata)
+	if in.AirTime != nil {
+		at := *in.AirTime
+		out.AirTime = &at
+	}
+	if in.OnAirSince != nil {
+		at := *in.OnAirSince
+		out.OnAirSince = &at
+	}
+	return &out
+}
+
+func cloneStory(in *model.Story) *model.Story {
+	out := *in
+	out.Metadata = maps.Clone(in.Metadata)
+	out.ExternalMetadata = slices.Clone(in.ExternalMetadata)
+	out.Cues = slices.Clone(in.Cues)
+	for i := range out.Cues {
+		out.Cues[i].Fields = slices.Clone(in.Cues[i].Fields)
+		out.Cues[i].Params = maps.Clone(in.Cues[i].Params)
+	}
+	return &out
+}
+
+func cloneItem(in *model.Item) *model.Item {
+	out := *in
+	out.Metadata = maps.Clone(in.Metadata)
+	out.ExternalMetadata = slices.Clone(in.ExternalMetadata)
+	if in.Media != nil {
+		out.Media = &model.MediaPaths{
+			Essence: slices.Clone(in.Media.Essence), Proxy: slices.Clone(in.Media.Proxy),
+			Metadata: slices.Clone(in.Media.Metadata),
+		}
+	}
+	return &out
+}
+
+func cloneObject(in *model.MOSObject) *model.MOSObject {
+	out := *in
+	out.Metadata = maps.Clone(in.Metadata)
+	out.ExternalMetadata = slices.Clone(in.ExternalMetadata)
+	return &out
 }

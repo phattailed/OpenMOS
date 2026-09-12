@@ -47,9 +47,14 @@ type Durable struct {
 	items         ItemRepository
 	objects       ObjectRepository
 
-	mu       sync.Mutex
-	path     string
-	degraded bool
+	mu         sync.Mutex
+	path       string
+	degraded   bool
+	committed  bool
+	binding    SourceBinding
+	checkpoint *SourceCheckpoint
+	openErr    error
+	lock       *os.File
 }
 
 // OpenDurable builds in-memory repositories, loads any previous snapshot from dir, and returns
@@ -59,11 +64,17 @@ type Durable struct {
 // start, matching internal/messageid and FileDedupStore. Losing durability costs a
 // resynchronisation, which the protocol can recover by asking; failing to start costs everything.
 func OpenDurable(dir string) *Durable {
-	d := &Durable{
-		runningOrders: NewMemoryRunningOrderRepository(),
-		stories:       NewMemoryStoryRepository(),
-		items:         NewMemoryItemRepository(),
-		objects:       NewMemoryObjectRepository(),
+	d := newMemoryDurable()
+	if dir != "" {
+		if _, err := os.Stat(filepath.Join(dir, checkpointFilename)); err == nil {
+			d.openErr = fmt.Errorf("committed source state present; source mode is required")
+			d.degraded = true
+			return d
+		} else if !os.IsNotExist(err) {
+			d.openErr = fmt.Errorf("inspect committed source state: %w", err)
+			d.degraded = true
+			return d
+		}
 	}
 
 	if dir == "" {
@@ -99,6 +110,15 @@ func (d *Durable) Items() ItemRepository                 { return &durableItems{
 // that does not exist.
 func (d *Durable) Objects() ObjectRepository { return d.objects }
 
+func (d *Durable) OpenError() error { return d.openErr }
+
+func (d *Durable) allowEntityWrite() error {
+	if d.committed {
+		return fmt.Errorf("committed source requires a message transaction")
+	}
+	return d.openErr
+}
+
 // Degraded reports that changes are not being persisted.
 func (d *Durable) Degraded() bool {
 	d.mu.Lock()
@@ -119,25 +139,61 @@ func (d *Durable) load() (int, error) {
 		return 0, fmt.Errorf("parse snapshot: %w", err)
 	}
 
+	return len(snap.RunningOrders), d.restoreSnapshot(snap)
+}
+
+func (d *Durable) restoreSnapshot(snap snapshot) error {
 	ctx := context.Background()
 	for _, ro := range snap.RunningOrders {
+		if ro == nil {
+			return fmt.Errorf("nil running order in snapshot")
+		}
 		if _, err := d.runningOrders.Create(ctx, ro); err != nil {
-			return 0, fmt.Errorf("restore running order %s: %w", ro.ID, err)
+			return fmt.Errorf("restore running order %s: %w", ro.ID, err)
 		}
 	}
 	// Stories and items are restored in snapshot order, which is the order they were listed in,
 	// which is the NCS-supplied order. That ordering is required to be retained.
 	for _, story := range snap.Stories {
+		if story == nil {
+			return fmt.Errorf("nil story in snapshot")
+		}
 		if _, err := d.stories.Create(ctx, story); err != nil {
-			return 0, fmt.Errorf("restore story %s: %w", story.ID, err)
+			return fmt.Errorf("restore story %s: %w", story.ID, err)
 		}
 	}
 	for _, item := range snap.Items {
+		if item == nil {
+			return fmt.Errorf("nil item in snapshot")
+		}
 		if _, err := d.items.Create(ctx, item); err != nil {
-			return 0, fmt.Errorf("restore item %s: %w", item.ID, err)
+			return fmt.Errorf("restore item %s: %w", item.ID, err)
 		}
 	}
-	return len(snap.RunningOrders), nil
+	return nil
+}
+
+func (d *Durable) takeSnapshot(ctx context.Context) (snapshot, error) {
+	ros, err := d.runningOrders.List(ctx)
+	if err != nil {
+		return snapshot{}, err
+	}
+	snap := snapshot{RunningOrders: ros}
+	for _, ro := range ros {
+		stories, err := d.stories.ListByRunningOrder(ctx, ro.ID)
+		if err != nil {
+			return snapshot{}, err
+		}
+		snap.Stories = append(snap.Stories, stories...)
+		for _, story := range stories {
+			items, err := d.items.ListByStory(ctx, story.ID)
+			if err != nil {
+				return snapshot{}, err
+			}
+			snap.Items = append(snap.Items, items...)
+		}
+	}
+	return snap, nil
 }
 
 // persist walks current state through the public list methods and writes it.
@@ -151,28 +207,10 @@ func (d *Durable) persist(ctx context.Context) {
 		return
 	}
 
-	ros, err := d.runningOrders.List(ctx)
+	snap, err := d.takeSnapshot(ctx)
 	if err != nil {
 		logger.Errorf("Cannot snapshot running orders: %v", err)
 		return
-	}
-
-	snap := snapshot{RunningOrders: ros}
-	for _, ro := range ros {
-		stories, err := d.stories.ListByRunningOrder(ctx, ro.ID)
-		if err != nil {
-			logger.Errorf("Cannot snapshot stories for %s: %v", ro.ID, err)
-			return
-		}
-		snap.Stories = append(snap.Stories, stories...)
-		for _, story := range stories {
-			items, err := d.items.ListByStory(ctx, story.ID)
-			if err != nil {
-				logger.Errorf("Cannot snapshot items for %s: %v", story.ID, err)
-				return
-			}
-			snap.Items = append(snap.Items, items...)
-		}
 	}
 
 	raw, err := json.Marshal(snap)
@@ -200,6 +238,9 @@ func (d *Durable) persist(ctx context.Context) {
 type durableRunningOrders struct{ d *Durable }
 
 func (w *durableRunningOrders) Create(ctx context.Context, ro *model.RunningOrder) (*model.RunningOrder, error) {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return nil, err
+	}
 	out, err := w.d.runningOrders.Create(ctx, ro)
 	if err == nil {
 		w.d.persist(ctx)
@@ -208,10 +249,15 @@ func (w *durableRunningOrders) Create(ctx context.Context, ro *model.RunningOrde
 }
 
 func (w *durableRunningOrders) Get(ctx context.Context, id string) (*model.RunningOrder, error) {
+	w.d.mu.Lock()
+	defer w.d.mu.Unlock()
 	return w.d.runningOrders.Get(ctx, id)
 }
 
 func (w *durableRunningOrders) Update(ctx context.Context, ro *model.RunningOrder) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.runningOrders.Update(ctx, ro)
 	if err == nil {
 		w.d.persist(ctx)
@@ -220,6 +266,9 @@ func (w *durableRunningOrders) Update(ctx context.Context, ro *model.RunningOrde
 }
 
 func (w *durableRunningOrders) Delete(ctx context.Context, id string) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.runningOrders.Delete(ctx, id)
 	if err == nil {
 		w.d.persist(ctx)
@@ -228,12 +277,17 @@ func (w *durableRunningOrders) Delete(ctx context.Context, id string) error {
 }
 
 func (w *durableRunningOrders) List(ctx context.Context) ([]*model.RunningOrder, error) {
+	w.d.mu.Lock()
+	defer w.d.mu.Unlock()
 	return w.d.runningOrders.List(ctx)
 }
 
 type durableStories struct{ d *Durable }
 
 func (w *durableStories) Create(ctx context.Context, story *model.Story) (*model.Story, error) {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return nil, err
+	}
 	out, err := w.d.stories.Create(ctx, story)
 	if err == nil {
 		w.d.persist(ctx)
@@ -242,10 +296,15 @@ func (w *durableStories) Create(ctx context.Context, story *model.Story) (*model
 }
 
 func (w *durableStories) Get(ctx context.Context, id string) (*model.Story, error) {
+	w.d.mu.Lock()
+	defer w.d.mu.Unlock()
 	return w.d.stories.Get(ctx, id)
 }
 
 func (w *durableStories) Update(ctx context.Context, story *model.Story) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.stories.Update(ctx, story)
 	if err == nil {
 		w.d.persist(ctx)
@@ -254,6 +313,9 @@ func (w *durableStories) Update(ctx context.Context, story *model.Story) error {
 }
 
 func (w *durableStories) Delete(ctx context.Context, id string) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.stories.Delete(ctx, id)
 	if err == nil {
 		w.d.persist(ctx)
@@ -262,6 +324,9 @@ func (w *durableStories) Delete(ctx context.Context, id string) error {
 }
 
 func (w *durableStories) DeleteMultiple(ctx context.Context, ids []string) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.stories.DeleteMultiple(ctx, ids)
 	if err == nil {
 		w.d.persist(ctx)
@@ -270,12 +335,17 @@ func (w *durableStories) DeleteMultiple(ctx context.Context, ids []string) error
 }
 
 func (w *durableStories) ListByRunningOrder(ctx context.Context, roID string) ([]*model.Story, error) {
+	w.d.mu.Lock()
+	defer w.d.mu.Unlock()
 	return w.d.stories.ListByRunningOrder(ctx, roID)
 }
 
 type durableItems struct{ d *Durable }
 
 func (w *durableItems) Create(ctx context.Context, item *model.Item) (*model.Item, error) {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return nil, err
+	}
 	out, err := w.d.items.Create(ctx, item)
 	if err == nil {
 		w.d.persist(ctx)
@@ -284,10 +354,15 @@ func (w *durableItems) Create(ctx context.Context, item *model.Item) (*model.Ite
 }
 
 func (w *durableItems) Get(ctx context.Context, id string) (*model.Item, error) {
+	w.d.mu.Lock()
+	defer w.d.mu.Unlock()
 	return w.d.items.Get(ctx, id)
 }
 
 func (w *durableItems) Update(ctx context.Context, item *model.Item) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.items.Update(ctx, item)
 	if err == nil {
 		w.d.persist(ctx)
@@ -296,6 +371,9 @@ func (w *durableItems) Update(ctx context.Context, item *model.Item) error {
 }
 
 func (w *durableItems) Delete(ctx context.Context, id string) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.items.Delete(ctx, id)
 	if err == nil {
 		w.d.persist(ctx)
@@ -304,6 +382,9 @@ func (w *durableItems) Delete(ctx context.Context, id string) error {
 }
 
 func (w *durableItems) DeleteMultiple(ctx context.Context, ids []string) error {
+	if err := w.d.allowEntityWrite(); err != nil {
+		return err
+	}
 	err := w.d.items.DeleteMultiple(ctx, ids)
 	if err == nil {
 		w.d.persist(ctx)
@@ -312,5 +393,7 @@ func (w *durableItems) DeleteMultiple(ctx context.Context, ids []string) error {
 }
 
 func (w *durableItems) ListByStory(ctx context.Context, storyID string) ([]*model.Item, error) {
+	w.d.mu.Lock()
+	defer w.d.mu.Unlock()
 	return w.d.items.ListByStory(ctx, storyID)
 }

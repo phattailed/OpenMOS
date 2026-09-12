@@ -11,6 +11,7 @@ import (
 
 	"airshift/openmos/internal/capture"
 	"airshift/openmos/internal/config"
+	"airshift/openmos/internal/service"
 	"airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
 
@@ -148,7 +149,7 @@ func (c *ClientConnection) Start(ctx context.Context) {
 					}
 
 					// Handle the message
-					err = c.handleMessage(ctx, message)
+					err = c.handleMessage(context.WithValue(ctx, sourceFrameKey{}, frame), message)
 					if err != nil {
 						c.trackError(err, "handle_message", map[string]interface{}{
 							"message_type": message.GetMessageType(),
@@ -209,6 +210,18 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	inner, err := xml.ValidateEnvelope(envelope, xml.Gen2x, c.config.MOS.ID, c.config.MOS.NCSID)
 	if err != nil {
 		return err
+	}
+	if source := committedSource(c.server.service); source != nil {
+		frame, _ := ctx.Value(sourceFrameKey{}).([]byte)
+		operation, err := operationBytes(frame)
+		if err != nil {
+			return err
+		}
+		input := service.SourceInput{Transport: "tcp", Scope: c.dedupScope(), NCSID: envelope.NcsID, MessageID: envelope.MessageID, Session: sourceSession(c), Content: operation}
+		if err := source.Observe(ctx, input); err != nil {
+			return err
+		}
+		ctx = context.WithValue(ctx, sourceInputKey{}, input)
 	}
 
 	return c.handlePayload(context.WithValue(ctx, envelopeContextKey{}, envelope), inner)
@@ -512,6 +525,9 @@ func (c *ClientConnection) Close() {
 		}
 
 		c.server.unregisterClient(c.id)
+		if source := committedSource(c.server.service); source != nil {
+			source.Disconnected(sourceSession(c))
+		}
 	})
 }
 

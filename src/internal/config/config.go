@@ -93,6 +93,17 @@ type Config struct {
 		Dir string
 	}
 
+	// Source is one opt-in committed rundown publisher. The token is environment-only and
+	// never written by configuration generation or included in the source checkpoint.
+	Source struct {
+		Enabled   bool
+		ID        string
+		RundownID string
+		Transport string
+		URL       string
+		Token     string `yaml:"-"`
+	}
+
 	// MongoDB configuration
 	Mongo struct {
 		URI      string
@@ -286,6 +297,12 @@ func LoadConfig() (*Config, error) {
 	if envVal := getEnv("STORAGE_BACKEND", ""); envVal != "" || !yamlLoaded {
 		config.Storage.Backend = getEnv("STORAGE_BACKEND", getDefaultString(config.Storage.Backend, "file"))
 	}
+	config.Source.Enabled = getEnvAsBool("SOURCE_ENABLED", config.Source.Enabled)
+	config.Source.ID = getEnv("SOURCE_ID", config.Source.ID)
+	config.Source.RundownID = getEnv("SOURCE_RUNDOWN_ID", config.Source.RundownID)
+	config.Source.Transport = getEnv("SOURCE_TRANSPORT", config.Source.Transport)
+	config.Source.URL = getEnv("SOURCE_URL", config.Source.URL)
+	config.Source.Token = getEnv("SOURCE_TOKEN", "")
 
 	// MongoDB config
 	if envVal := getEnv("MONGODB_URI", ""); envVal != "" || !yamlLoaded {
