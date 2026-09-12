@@ -11,12 +11,14 @@ live newsroom proof, deployment qualification or a guarantee of physical renderi
 
 ## Provisioning and operation
 
-Select an unused state directory and configure these environment variables. The existing
-MOS identity, peer identity and selected transport must also be configured and enabled.
+Keep `STATE_DIR` pointed at the existing protocol state and select an unused
+`SOURCE_STATE_DIR` for the committed checkpoint. The existing MOS identity, peer identity
+and selected transport must also be configured and enabled.
 
 ```text
 STORAGE_BACKEND=file
-STATE_DIR=/private/source-state
+STATE_DIR=/private/native-state
+SOURCE_STATE_DIR=/private/source-state
 SOURCE_ENABLED=true
 SOURCE_ID=synthetic-source
 SOURCE_RUNDOWN_ID=synthetic-rundown
@@ -28,6 +30,14 @@ SOURCE_URL=http://127.0.0.1:19090/v1/openmos-snapshots
 runtime environment; it is sent as a Bearer credential and excluded from generated YAML
 and retained checkpoints. HTTP redirects, remote addresses and alternate routes are
 rejected. The other source options can also be set in the YAML `source` block.
+
+`SOURCE_STATE_DIR` is optional (`source.statedir` in YAML). When absent, both initialization
+and normal startup use `STATE_DIR` for the checkpoint, preserving the existing behavior for
+fresh isolated installations. With an override, `STATE_DIR` still holds native sender
+message-ID marks, transport receipts, discovery state and the legacy file store. Legacy
+file mode ignores the override. Keep that native directory and the same MOS identity through
+source startup, restart and rollback so sender numbering continues from its retained mark.
+The directory setting does not copy or migrate counters or legacy rundown content.
 
 Run `openmos --initialize-source-state` once to provision a new directory, then start
 `openmos` normally. Provisioning refuses an existing committed checkpoint and any legacy

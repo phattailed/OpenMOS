@@ -88,6 +88,10 @@ func main() {
 	if err != nil {
 		standardLogger.Fatalf("Failed to load configuration: %v", err)
 	}
+	sourceStateDir := cfg.State.Dir
+	if cfg.Source.Enabled && cfg.Source.StateDir != "" {
+		sourceStateDir = cfg.Source.StateDir
+	}
 	sourceBinding := repository.SourceBinding{SourceID: cfg.Source.ID, RundownID: cfg.Source.RundownID, MosID: cfg.MOS.ID, NCSID: cfg.MOS.NCSID, Transport: cfg.Source.Transport, Destination: cfg.Source.URL}
 	if cfg.Source.Enabled || *initializeSource {
 		if !cfg.Source.Enabled || strings.ToLower(cfg.Storage.Backend) != "file" {
@@ -101,7 +105,7 @@ func main() {
 		}
 	}
 	if *initializeSource {
-		state, err := repository.OpenCommitted(cfg.State.Dir, sourceBinding, true)
+		state, err := repository.OpenCommitted(sourceStateDir, sourceBinding, true)
 		if err != nil {
 			standardLogger.Fatalf("Cannot initialize committed source: %v", err)
 		}
@@ -194,7 +198,7 @@ func main() {
 		// is exactly how the roStorySend defect in doc/interop §13 stayed hidden.
 		var durable *repository.Durable
 		if cfg.Source.Enabled {
-			durable, err = repository.OpenCommitted(cfg.State.Dir, sourceBinding, false)
+			durable, err = repository.OpenCommitted(sourceStateDir, sourceBinding, false)
 			if err != nil {
 				log.Fatalf("Cannot open committed source: %v", err)
 			}
@@ -210,7 +214,7 @@ func main() {
 			log.Warning("Running orders are NOT durable: state directory unavailable, " +
 				"continuing in memory")
 		} else {
-			log.Infof("Running orders persist under %s", cfg.State.Dir)
+			log.Infof("Running orders persist under %s", sourceStateDir)
 		}
 		runningOrderRepo = durable.RunningOrders()
 		storyRepo = durable.Stories()
