@@ -57,8 +57,8 @@ type WSClient struct {
 	// cache rather than processed.
 	messageIDs *messageid.Sequence
 
-	// requestConn is the live connection of the lane that may carry our own requests, or nil when no
-	// such lane is currently up. Guarded because the passive lane's reader consults it while the
+	// requestConn is the handshaken connection that may carry our own requests, or nil when no
+	// such lane is ready. Guarded because the passive lane's reader consults it while the
 	// request lane's reconnect loop replaces it.
 	requestMu   sync.Mutex
 	requestConn *websocket.Conn
@@ -152,7 +152,7 @@ func (c *WSClient) originate(ctx context.Context, msg mosxml.MOSMessage) error {
 	return c.writeFrame(ctx, conn, envelope)
 }
 
-// ready reports whether the request lane is connected.
+// ready reports whether the request lane has completed Profile 0.
 func (c *WSClient) ready() bool {
 	c.requestMu.Lock()
 	defer c.requestMu.Unlock()
@@ -344,6 +344,8 @@ type clientLane struct {
 	// originates records that this lane may carry our own requests. Exactly one lane should, and the
 	// dispatcher reaches it through the client's originate method.
 	originates bool
+	// reconnecting is set after this lane's first usable session ends.
+	reconnecting bool
 }
 
 // lanePlan decides which connections to hold, from configuration.
@@ -396,6 +398,7 @@ func (c *WSClient) runLane(ctx context.Context, lane clientLane) error {
 		}
 
 		if connected {
+			lane.reconnecting = true
 			// A session that actually became USABLE resets the backoff so the next reconnect
 			// is prompt, per the spec's "as quickly as possible".
 			//
@@ -452,14 +455,6 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 		defer c.deps.service.Source.Disconnected(sourceSession(conn))
 	}
 
-	// Make this connection available to the dispatcher if it is the lane that carries requests, and
-	// withdraw it when the session ends so a divergence arriving during a reconnect is reported as
-	// deferred rather than written to a dead socket.
-	if lane.originates {
-		c.setRequestConn(conn)
-		defer c.setRequestConn(nil)
-	}
-
 	// Give binary frames room; MOS envelopes can exceed the small default.
 	conn.SetReadLimit(4 << 20)
 
@@ -475,6 +470,12 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 	if lane.passive {
 		logger.Infof("MOS 4 client %s lane connected passively; not initiating a handshake, "+
 			"because the peer uses this connection for messages to us", lane.name)
+		// A passive disconnect invalidates Source even when the request lane survives.
+		// Recover on that handshaken lane through the existing serialized discovery walk.
+		// If it is not ready, its own successful handshake will start discovery.
+		if lane.reconnecting && c.config.Source.Transport == "ws-client" && c.deps != nil && committedSource(c.deps.service) != nil && c.ready() {
+			requestResync(ctx, *c.deps, wsClientResponder{client: c, conn: conn, lane: lane}, c.config.Source.RundownID)
+		}
 		return true, c.readLoop(ctx, conn, lane)
 	}
 
@@ -492,6 +493,13 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 		// backoff reset every time. A peer saying no deserves progressively more patience, not
 		// less.
 		return false, fmt.Errorf("profile 0 handshake failed: %w", err)
+	}
+
+	// Cross-lane requests must not enter the Profile 0 exchange. Publish this lane
+	// only after the handshake, and withdraw it before its disconnected session ends.
+	if lane.originates {
+		c.setRequestConn(conn)
+		defer c.setRequestConn(nil)
 	}
 
 	// Pull on connect, as real devices do. Failure is not fatal: the lane is usable and the peer may
