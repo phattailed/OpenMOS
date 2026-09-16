@@ -72,6 +72,10 @@ For a committed `ws-client` source, the passive lane checks control Ping/Pong at
 heartbeat interval. A matching Pong renews only a validated, unexpired current session. It
 does not register a connection, change the source revision or restore roster/body freshness.
 A failed Ping ends the connection; normal reconnect and fresh-coverage rules still apply.
+When the passive lane reconnects, an available request lane asks for the selected rundown
+through the existing recovery walk. A request lane becomes available only after Profile 0;
+if its handshake is pending, its normal discovery starts recovery after the handshake.
+Neither reconnection nor replayed acknowledgements make retained story bodies fresh.
 
 The source retains current raw XML even when it exceeds the receiver's publication limits.
 It then publishes `complete:false` with `stories:[]` and records the reason in the checkpoint's
