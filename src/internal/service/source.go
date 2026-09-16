@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -535,8 +536,6 @@ func (s *CommittedSource) applyBody(ctx context.Context, staged *MOSService, sta
 	}
 	occurrences := make([]SourceOccurrence, 0, len(elements))
 	ids := make(map[string]bool)
-	cues := make(map[string]bool)
-	ambiguous := false
 	for _, element := range elements {
 		if element.Item != nil {
 			item := element.Item.Source
@@ -568,45 +567,33 @@ func (s *CommittedSource) applyBody(ctx context.Context, staged *MOSService, sta
 			if cue.Params != nil {
 				o.Params = &cue.Params
 			}
-			signature, _ := json.Marshal(cueSelector(o))
-			if cues[string(signature)] {
-				ambiguous = true
-			}
-			cues[string(signature)] = true
 			occurrences = append(occurrences, o)
 		}
 	}
-	old := state.Stories[index].Occurrences
-	if state.Stories[index].Ambiguous && len(cues) > 0 {
-		ambiguous = true
+	// Older checkpoints may contain unresolved cue slots. A fresh authoritative body replaces
+	// those allocations instead of carrying the old ambiguity into every future publication.
+	if !state.Stories[index].Ambiguous {
+		retainCueIDs(state.Stories[index].Occurrences, occurrences)
 	}
-	if len(cues) > 0 && hasSourceCues(old) {
-		if sameCueLayout(old, occurrences) {
-			for i := range occurrences {
-				if occurrences[i].Kind == "cue" {
-					occurrences[i].ID = old[i].ID
-				}
-			}
-		} else {
-			ambiguous = true
+	for _, occurrence := range occurrences {
+		if occurrence.ID != "" {
+			ids[occurrence.ID] = true
 		}
 	}
-	if !ambiguous {
-		for i := range occurrences {
-			if occurrences[i].ID != "" {
-				continue
+	for i := range occurrences {
+		if occurrences[i].ID != "" {
+			continue
+		}
+		for {
+			if state.NextCue == repository.MaxSourceRevision {
+				return errors.New("anonymous cue identity exhausted")
 			}
-			for {
-				if state.NextCue == repository.MaxSourceRevision {
-					return errors.New("anonymous cue identity exhausted")
-				}
-				state.NextCue++
-				id := "cue:" + strconv.FormatUint(state.NextCue, 10)
-				if !ids[id] {
-					occurrences[i].ID = id
-					ids[id] = true
-					break
-				}
+			state.NextCue++
+			id := "cue:" + strconv.FormatUint(state.NextCue, 10)
+			if !ids[id] {
+				occurrences[i].ID = id
+				ids[id] = true
+				break
 			}
 		}
 	}
@@ -662,45 +649,72 @@ func (s *CommittedSource) applyBody(ctx context.Context, staged *MOSService, sta
 		return err
 	}
 	state.Stories[index].Fresh = true
-	state.Stories[index].Ambiguous = ambiguous
+	state.Stories[index].Ambiguous = false
 	state.Stories[index].Occurrences = occurrences
 	state.Stories[index].Raw = raw
 	return nil
 }
 
-func hasSourceCues(occurrences []SourceOccurrence) bool {
-	for _, occurrence := range occurrences {
-		if occurrence.Kind == "cue" {
-			return true
+// Explicit item IDs bound local cue regions only while their complete order is unchanged.
+// Otherwise leave all anonymous slots unassigned for fresh allocation; never align by text.
+func retainCueIDs(old, next []SourceOccurrence) {
+	oldAnchors, nextAnchors := []int{-1}, []int{-1}
+	for i, occurrence := range old {
+		if occurrence.Kind == "mos_item" {
+			oldAnchors = append(oldAnchors, i)
 		}
 	}
-	return false
+	for i, occurrence := range next {
+		if occurrence.Kind == "mos_item" {
+			nextAnchors = append(nextAnchors, i)
+		}
+	}
+	if len(oldAnchors) != len(nextAnchors) {
+		return
+	}
+	for i := 1; i < len(oldAnchors); i++ {
+		if old[oldAnchors[i]].ID != next[nextAnchors[i]].ID {
+			return
+		}
+	}
+	oldAnchors = append(oldAnchors, len(old))
+	nextAnchors = append(nextAnchors, len(next))
+	for i := 1; i < len(oldAnchors); i++ {
+		a := old[oldAnchors[i-1]+1 : oldAnchors[i]]
+		b := next[nextAnchors[i-1]+1 : nextAnchors[i]]
+		if sameCueRegion(a, b) {
+			for j := range b {
+				b[j].ID = a[j].ID
+			}
+		}
+	}
 }
 
-func sameCueLayout(old, next []SourceOccurrence) bool {
+// Unchanged regions retain their local slots, including equal editorial cues. Unique unchanged
+// selectors also allow payload edits in place. Neither rule establishes upstream cue lineage.
+func sameCueRegion(old, next []SourceOccurrence) bool {
 	if len(old) != len(next) {
 		return false
 	}
+	seen := make(map[[3]string]bool)
+	unique, unchanged := true, true
 	for i, a := range old {
 		b := next[i]
-		if a.Kind != b.Kind {
+		selector := cueSelector(a)
+		if a.ID == "" || selector != cueSelector(b) {
 			return false
 		}
-		if a.Kind == "mos_item" {
-			if a.ID != b.ID {
-				return false
-			}
-			continue
+		if seen[selector] {
+			unique = false
 		}
-		if cueSelector(a) != cueSelector(b) {
-			return false
-		}
+		seen[selector] = true
+		b.ID = a.ID
+		unchanged = unchanged && reflect.DeepEqual(a, b)
 	}
-	return true
+	return unique || unchanged
 }
 
-// Parsed fields are payload, not identity. A unique unchanged selector in an unchanged mixed
-// layout proves the one slot that an edit affects; repeated or reordered selectors do not.
+// Parsed fields are payload, not identity or an alignment key.
 func cueSelector(c SourceOccurrence) [3]string {
 	value := func(v *string) string {
 		if v == nil {

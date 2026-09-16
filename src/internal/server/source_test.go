@@ -130,8 +130,8 @@ func TestCommittedSourceIngressRetainsBeforeACKAndReplaysOriginal(t *testing.T) 
 			if snapshot.Complete {
 				t.Fatal("roster ACK implied fresh body coverage")
 			}
-			body := `<roStorySend><roID>rundown</roID><storyID>story</storyID><storyBody><storyItem><mosItem><itemID>video</itemID><objID>object</objID><mosID>media</mosID><itemEdDur>00:00:01.25</itemEdDur></mosItem></storyItem><p>[CG L3\Headline\]</p></storyBody></roStorySend>`
-			bodyReply, _ := send(frame("body-id", body))
+			body := `<roStorySend><roID>rundown</roID><storyID>story</storyID><storyBody><storyItem><mosItem><itemID>video</itemID><objID>object</objID><mosID>media</mosID><itemEdDur>00:00:01.25</itemEdDur></mosItem></storyItem><p>[CG L3\Headline\][CG L3\Headline\]</p></storyBody></roStorySend>`
+			bodyReply, bodyWire := send(frame("body-id", body))
 			if !bytes.Contains(bodyReply, []byte("<roStatus>OK</roStatus>")) {
 				t.Fatalf("body retention failed: %s", bodyReply)
 			}
@@ -140,10 +140,13 @@ func TestCommittedSourceIngressRetainsBeforeACKAndReplaysOriginal(t *testing.T) 
 				t.Fatal(err)
 			}
 			_ = json.Unmarshal(cp.Pending, &snapshot)
-			if !snapshot.Complete || len(snapshot.Stories) != 1 || len(snapshot.Stories[0].Occurrences) != 2 || *snapshot.Stories[0].Occurrences[0].ItemEdDur != "00:00:01.25" || (*snapshot.Stories[0].Occurrences[1].Fields)[1] != "" {
+			if !snapshot.Complete || len(snapshot.Stories) != 1 || len(snapshot.Stories[0].Occurrences) != 3 || *snapshot.Stories[0].Occurrences[0].ItemEdDur != "00:00:01.25" || (*snapshot.Stories[0].Occurrences[1].Fields)[1] != "" || snapshot.Stories[0].Occurrences[1].ID == snapshot.Stories[0].Occurrences[2].ID {
 				t.Fatal("actual ingress lost source coverage, raw duration, order or explicit empty cue field")
 			}
 			before := cp.Revision
+			if duplicate, duplicateWire := send(frame("body-id", body)); !bytes.Equal(bodyReply, duplicate) || !bytes.Equal(bodyWire, duplicateWire) {
+				t.Fatal("repeated-cue body did not replay its original transport response")
+			}
 			if duplicate, duplicateWire := send(frame("roster-id", roster)); !bytes.Equal(first, duplicate) || !bytes.Equal(firstWire, duplicateWire) {
 				t.Fatal("original transport envelope was not replayed")
 			}
