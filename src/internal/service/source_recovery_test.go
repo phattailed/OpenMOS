@@ -133,6 +133,99 @@ func TestCommittedSourceOrderedItemsSurviveReopen(t *testing.T) {
 	}
 }
 
+func TestCommittedSourceReplacesPreviouslyAmbiguousAllocations(t *testing.T) {
+	f := newSourceFixture(t, "")
+	f.accept(t, sourceRoster("story"))
+	operation := sourceBody("story", sourceItem("video")+`<p>[CG A\One][CG A\Two]</p>`)
+	f.accept(t, operation)
+	before := f.snapshot(t)
+	if !before.Complete {
+		t.Fatal("initial repeated cues did not complete the source")
+	}
+	// Represent the persisted shape written by the old ambiguous-body policy. Keep its
+	// allocator high-water mark, content and receipts; only a new body may replace the slots.
+	var nextCue uint64
+	if err := f.store.Commit(context.Background(), func(_ repository.Repository, cp *repository.SourceCheckpoint) error {
+		state, err := readSourceState(cp.State)
+		if err != nil {
+			return err
+		}
+		nextCue = state.NextCue
+		state.Stories[0].Ambiguous = true
+		for i := range state.Stories[0].Occurrences {
+			if state.Stories[0].Occurrences[i].Kind == "cue" {
+				state.Stories[0].Occurrences[i].ID = ""
+			}
+		}
+		return f.source.revise(cp, state)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	f.store, err = repository.OpenCommitted(f.dir, f.binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.source, err = NewCommittedSource(context.Background(), f.store, f.binding, "synthetic-token", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.accept(t, sourceRoster("story"))
+	if f.snapshot(t).Complete {
+		t.Fatal("restart or a roster alone cleared the old ambiguous body")
+	}
+	f.accept(t, operation)
+	after := f.snapshot(t)
+	if !after.Complete || !reflect.DeepEqual(before.Stories[0].Occurrences[0], after.Stories[0].Occurrences[0]) {
+		t.Fatal("fresh authoritative body did not replace the old ambiguous allocation")
+	}
+	cp, _ := f.store.Checkpoint()
+	state, err := readSourceState(cp.State)
+	if err != nil || state.NextCue != nextCue+2 || state.Stories[0].Ambiguous || state.Stories[0].Raw != operation {
+		t.Fatal("replacement lost content, reset the counter or retained the old ambiguity")
+	}
+	for i := 1; i < len(after.Stories[0].Occurrences); i++ {
+		if after.Stories[0].Occurrences[i].ID == before.Stories[0].Occurrences[i].ID {
+			t.Fatal("previously ambiguous body guessed continuity with an older allocation")
+		}
+	}
+}
+
+func TestCommittedSourceFailedCueAllocationPreservesCommittedBody(t *testing.T) {
+	f := newSourceFixture(t, "")
+	f.accept(t, sourceRoster("story"))
+	original := sourceBody("story", sourceItem("retained")+`<p>[CG A\Original]</p>`)
+	f.accept(t, original)
+	before := f.snapshot(t)
+	if err := f.store.Commit(context.Background(), func(_ repository.Repository, cp *repository.SourceCheckpoint) error {
+		state, err := readSourceState(cp.State)
+		if err != nil {
+			return err
+		}
+		state.NextCue = repository.MaxSourceRevision - 1
+		return f.source.revise(cp, state)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The detached stage can allocate once, then must fail without retaining half a body.
+	reply, err := f.send(t, "exhausted", sourceBody("story", sourceItem("replacement")+`<p>[CG A\One][CG A\Two]</p>`))
+	if err == nil || !bytes.Contains(reply, []byte("NACK")) || f.snapshot(t).Complete {
+		t.Fatal("exhausted cue allocation was acknowledged or left source coverage complete")
+	}
+	cp, _ := f.store.Checkpoint()
+	state, err := readSourceState(cp.State)
+	if err != nil || state.NextCue != repository.MaxSourceRevision-1 || state.Stories[0].Raw != original || !reflect.DeepEqual(state.Stories[0].Occurrences, before.Stories[0].Occurrences) {
+		t.Fatal("failed cue allocation leaked a partial allocator, body or identity update")
+	}
+	items, err := f.store.Items().ListByStory(context.Background(), "rundown/story")
+	if err != nil || len(items) != 1 || items[0].RawID != "retained" {
+		t.Fatal("failed cue allocation replaced the last committed item view")
+	}
+}
+
 func TestCommittedSourceCannotCertifyLegacyBodyFallback(t *testing.T) {
 	f := newSourceFixture(t, "")
 	f.accept(t, sourceRoster("story"))

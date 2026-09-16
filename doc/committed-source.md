@@ -104,13 +104,29 @@ text, paragraph-spanning commands and production instructions. Unsupported struc
 command crossing an item boundary cannot certify order. Item occurrence identity uses the
 source item ID within its source/rundown/story scope; it never uses an object ID or label.
 
-Anonymous cues receive persisted local IDs. A local ID is retained for a payload edit only
-when the complete mixed layout is unchanged, explicit item IDs stay in place, and each cue's
-type, parsed verb and target form a unique unchanged selector within that story. Fields,
-parameters and raw cue text remain editable payload. Repeated selectors, reordered slots,
-changed selectors or previously unresolved alignment suspend completeness. This is a
-conservative local continuity rule, not a guarantee of upstream cue identity. Authoritative
-removal of every anonymous cue clears that baseline; later cues receive new IDs.
+Every anonymous cue receives its own persisted local ID, including identical, repeated and
+back-to-back cues. Equal editorial content is never deduplicated. The existing monotonic
+allocator skips explicit item IDs and commits allocations with content, revision and reply;
+transport receipt replay does not allocate again.
+
+Unchanged regions retain their local allocations. Regions lie between consecutive explicit
+item IDs, or a story boundary, while the complete item-ID order remains unchanged. Within
+one region, unique unchanged type/verb/target selectors also permit payload edits in their
+existing slots. Fields, parameters and raw text are payload, never keys for matching a moved
+cue. These are local continuity policies, not proof of upstream cue lineage.
+
+An edit to a region with repeated selectors, reordered slots, changed selectors or changed
+cue count replaces all anonymous allocations in that region with fresh IDs. Without stable
+item anchors the region is the whole story; changed item-ID order likewise replaces that
+story's anonymous allocations. Explicit items and other stories retain their identities.
+A fresh authoritative body also replaces unresolved allocations in older checkpoints,
+preserving their allocator high-water mark. None of these cases requires a state reset or
+suspends completeness solely because historical cue lineage is unknown. Fresh roster/body
+coverage and the other publication checks still apply.
+
+Fresh local IDs explicitly replace prior occurrences; they do not authorize repurposing a
+destination resource. The receiving application owns safe retirement of previous resources,
+including retaining ownership and visibly deferring removal while a resource is in use.
 
 ## Neutral HTTP version 1
 

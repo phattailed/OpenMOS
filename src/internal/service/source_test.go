@@ -201,29 +201,150 @@ func TestCommittedSourceIdentityUncertaintyIsScopedToOwnedSession(t *testing.T) 
 	}
 }
 
-func TestCommittedSourceAmbiguousCueContinuityFailsClosed(t *testing.T) {
+func TestCommittedSourceRepeatedCuesRemainIndependent(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		fields     [][]string
+	}{
+		{"identical-back-to-back", `<p>[CG A\Same\][CG A\Same\]</p>`, [][]string{{"Same", ""}, {"Same", ""}}},
+		{"repeated-around-another-cue", `<p>[CG A\First]</p><p>[CG B\Middle]</p><p>[CG A\Last]</p>`, [][]string{{"First"}, {"Middle"}, {"Last"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSourceFixture(t, "")
+			f.accept(t, sourceRoster("story"))
+			operation := sourceBody("story", tc.body)
+			reply, err := f.send(t, "cue-body", operation)
+			if err != nil || !bytes.Contains(reply, []byte("<roStatus>OK</roStatus>")) {
+				t.Fatalf("repeated editorial cues were rejected: %s, %v", reply, err)
+			}
+			got := f.snapshot(t)
+			if !got.Complete || len(got.Stories) != 1 || len(got.Stories[0].Occurrences) != len(tc.fields) {
+				t.Fatal("repeated editorial cues did not produce a complete ordered body")
+			}
+			ids := make(map[string]bool)
+			for i, occurrence := range got.Stories[0].Occurrences {
+				if occurrence.ID == "" || ids[occurrence.ID] || occurrence.Kind != "cue" || occurrence.CueType != "SERIAL_CG" || occurrence.Fields == nil || !reflect.DeepEqual(*occurrence.Fields, tc.fields[i]) {
+					t.Fatalf("independent cue identity, content or order was lost: %+v", occurrence)
+				}
+				ids[occurrence.ID] = true
+			}
+			before, _ := f.store.Checkpoint()
+			duplicate, err := f.send(t, "cue-body", operation)
+			after, _ := f.store.Checkpoint()
+			if err != nil || !bytes.Equal(reply, duplicate) || !reflect.DeepEqual(before, after) {
+				t.Fatal("transport retry changed the original receipt or allocated more cues")
+			}
+			f.accept(t, operation)
+			after, _ = f.store.Checkpoint()
+			if after.Revision <= before.Revision || !bytes.Equal(before.State, after.State) || !reflect.DeepEqual(got.Stories, f.snapshot(t).Stories) {
+				t.Fatal("unchanged authoritative body replaced its local cue allocations")
+			}
+		})
+	}
+}
+
+func TestCommittedSourceCueReplacementIsBoundedByItems(t *testing.T) {
+	for _, tc := range []struct {
+		name, region string
+		fields       []string
+	}{
+		{"edit", `<p>[CG A\Edited][CG B\Middle][CG A\Two]</p>`, []string{"Edited", "Middle", "Two"}},
+		{"move", `<p>[CG B\Middle][CG A\Two][CG A\One]</p>`, []string{"Middle", "Two", "One"}},
+		{"insert", `<p>[CG A\One][CG B\Middle][CG A\Two][CG A\Three]</p>`, []string{"One", "Middle", "Two", "Three"}},
+		{"remove", `<p>[CG A\One][CG B\Middle]</p>`, []string{"One", "Middle"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSourceFixture(t, "")
+			f.accept(t, sourceRoster("first", "second"))
+			beforeRegion := `<p>[CG Head\Keep]</p>` + sourceItem("left")
+			afterRegion := sourceItem("right") + `<p>[CG Tail\Stay]</p>`
+			f.accept(t, sourceBody("first", beforeRegion+`<p>[CG A\One][CG B\Middle][CG A\Two]</p>`+afterRegion))
+			f.accept(t, sourceBody("second", sourceItem("left")+`<p>[CG A\Other story]</p>`))
+			before := f.snapshot(t)
+			if !before.Complete {
+				t.Fatal("initial repeated cues did not complete the source")
+			}
+			old := before.Stories[0].Occurrences
+			f.accept(t, sourceBody("first", beforeRegion+tc.region+afterRegion))
+			after := f.snapshot(t)
+			if !after.Complete || len(after.Stories) != 2 || !reflect.DeepEqual(before.Stories[1], after.Stories[1]) {
+				t.Fatal("regional replacement suspended the source or changed another story")
+			}
+			got := after.Stories[0].Occurrences
+			if len(got) != len(tc.fields)+4 || !reflect.DeepEqual(old[:2], got[:2]) || !reflect.DeepEqual(old[len(old)-2:], got[len(got)-2:]) {
+				t.Fatal("regional replacement changed explicit items or unaffected cue regions")
+			}
+			oldIDs := make(map[string]bool)
+			for _, occurrence := range old {
+				oldIDs[occurrence.ID] = true
+			}
+			for i, occurrence := range got[2 : len(got)-2] {
+				if occurrence.ID == "" || oldIDs[occurrence.ID] || occurrence.Fields == nil || !reflect.DeepEqual(*occurrence.Fields, []string{tc.fields[i]}) {
+					t.Fatal("uncertain region reused an old identity or lost the current ordered payload")
+				}
+				oldIDs[occurrence.ID] = true
+			}
+			items, err := f.store.Items().ListByStory(context.Background(), "rundown/first")
+			if err != nil || len(items) != 2 || items[0].RawID != "left" || items[0].Order != 2 || items[1].RawID != "right" || items[1].Order != len(got)-1 {
+				t.Fatal("normalized items lost their positions in the mixed source order")
+			}
+		})
+	}
+}
+
+func TestCommittedSourceCueReplacementWithoutStableAnchors(t *testing.T) {
+	for _, tc := range []struct{ name, old, next string }{
+		{"unanchored-edit", `<p>[CG A\One][CG B\Middle][CG A\Two]</p>`, `<p>[CG A\Changed][CG B\Middle][CG A\Two]</p>`},
+		{"unanchored-move", `<p>[CG A\One][CG B\Two]</p>`, `<p>[CG B\Two][CG A\One]</p>`},
+		{"item-move", `<p>[CG Head\Keep]</p>` + sourceItem("left") + `<p>[CG A\One]</p>` + sourceItem("right") + `<p>[CG Tail\Stay]</p>`, `<p>[CG Head\Keep]</p>` + sourceItem("right") + `<p>[CG A\One]</p>` + sourceItem("left") + `<p>[CG Tail\Stay]</p>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSourceFixture(t, "")
+			f.accept(t, sourceRoster("story"))
+			f.accept(t, sourceBody("story", tc.old))
+			before := f.snapshot(t)
+			if !before.Complete {
+				t.Fatal("initial source was incomplete")
+			}
+			oldIDs := make(map[string]bool)
+			for _, occurrence := range before.Stories[0].Occurrences {
+				if occurrence.Kind == "cue" {
+					oldIDs[occurrence.ID] = true
+				}
+			}
+			f.accept(t, sourceBody("story", tc.next))
+			after := f.snapshot(t)
+			if !after.Complete {
+				t.Fatal("uncertain continuity suspended an authoritative replacement")
+			}
+			for _, occurrence := range after.Stories[0].Occurrences {
+				if occurrence.Kind == "cue" && (occurrence.ID == "" || oldIDs[occurrence.ID]) {
+					t.Fatal("unanchored replacement guessed historical cue continuity")
+				}
+			}
+		})
+	}
+}
+
+func TestCommittedSourceCueAllocationAvoidsExplicitItemIDs(t *testing.T) {
 	f := newSourceFixture(t, "")
 	f.accept(t, sourceRoster("story"))
-	body := sourceItem("video") + `<p>[CG A\One]</p><p>[CG B\Two]</p>`
-	f.accept(t, sourceBody("story", body))
-	if !f.snapshot(t).Complete {
-		t.Fatal("initial unique cue slots incomplete")
+	cues := `<p>[CG A\One][CG A\Two]</p>`
+	f.accept(t, sourceBody("story", sourceItem("cue:1")+cues))
+	before := f.snapshot(t)
+	if !before.Complete || before.Stories[0].Occurrences[1].ID != "cue:2" || before.Stories[0].Occurrences[2].ID != "cue:3" {
+		t.Fatal("first allocations collided with an explicit item ID")
 	}
-	f.accept(t, sourceBody("story", sourceItem("video")+`<p>[CG B\Two]</p><p>[CG A\One]</p>`))
-	if got := f.snapshot(t); got.Complete || len(got.Stories) != 0 {
-		t.Fatal("reordered anonymous cues were guessed into stable identities")
+	// A new explicit item can use a formerly allocated cue ID or the next counter value.
+	f.accept(t, sourceBody("story", sourceItem("cue:1")+sourceItem("cue:2")+sourceItem("cue:4")+cues))
+	after := f.snapshot(t)
+	if !after.Complete {
+		t.Fatal("explicit item collision prevented an authoritative replacement")
 	}
-	f.accept(t, sourceBody("story", body))
-	if f.snapshot(t).Complete {
-		t.Fatal("previously unresolved identity silently recovered from matching text")
-	}
-	f.accept(t, sourceBody("story", sourceItem("video")))
-	if !f.snapshot(t).Complete {
-		t.Fatal("authoritative cue removal did not clear ambiguous baseline")
-	}
-	f.accept(t, sourceBody("story", sourceItem("video")+`<p>[CG A\One]</p><p>[CG A\Other]</p>`))
-	if f.snapshot(t).Complete {
-		t.Fatal("duplicate anonymous selector was presented as resolved")
+	for i, id := range []string{"cue:1", "cue:2", "cue:4", "cue:5", "cue:6"} {
+		if after.Stories[0].Occurrences[i].ID != id {
+			t.Fatal("replacement reset the cue counter, changed an explicit item or reused an occupied ID")
+		}
 	}
 }
 
@@ -336,7 +457,10 @@ func TestCommittedSourceReplayAndRestartDoNotRefreshCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.accept(t, sourceBody("story", sourceItem("video")))
+	body := sourceBody("story", sourceItem("video")+`<p>[CG A\One][CG A\Two]</p>`)
+	f.accept(t, body)
+	accepted, _ := f.store.Checkpoint()
+	acceptedStories := f.snapshot(t).Stories
 	before := f.snapshot(t).Revision
 	reply, err := f.send(t, "sender-id", sourceRoster("story"))
 	if err != nil || !bytes.Equal(firstReply, reply) || f.snapshot(t).Revision != before {
@@ -348,6 +472,10 @@ func TestCommittedSourceReplayAndRestartDoNotRefreshCoverage(t *testing.T) {
 	f.store, err = repository.OpenCommitted(f.dir, f.binding, false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	reopened, err := f.store.Checkpoint()
+	if err != nil || !reflect.DeepEqual(accepted, reopened) {
+		t.Fatal("restart changed the committed allocations, payload, revision or original receipts")
 	}
 	f.source, err = NewCommittedSource(context.Background(), f.store, f.binding, "synthetic-token", time.Minute)
 	if err != nil {
@@ -370,9 +498,16 @@ func TestCommittedSourceReplayAndRestartDoNotRefreshCoverage(t *testing.T) {
 		t.Fatal("changed duplicate mutated retained state")
 	}
 	f.accept(t, sourceRoster("story"))
-	f.accept(t, sourceBody("story", sourceItem("video")))
-	if !f.snapshot(t).Complete || f.snapshot(t).Revision <= before {
-		t.Fatal("fresh recovery did not keep a monotonic revision")
+	f.accept(t, body)
+	if got := f.snapshot(t); !got.Complete || got.Revision <= before || !reflect.DeepEqual(acceptedStories, got.Stories) {
+		t.Fatal("fresh recovery lost the retained repeated-cue allocations or monotonic revision")
+	}
+	f.accept(t, sourceBody("story", sourceItem("video")+`<p>[CG A\Changed][CG A\Two]</p>`))
+	cp, _ := f.store.Checkpoint()
+	oldState, _ := readSourceState(accepted.State)
+	newState, err := readSourceState(cp.State)
+	if err != nil || newState.NextCue != oldState.NextCue+2 || !f.snapshot(t).Complete {
+		t.Fatal("post-restart replacement reset the retained allocator or suspended the source")
 	}
 }
 
@@ -439,7 +574,8 @@ func TestCommittedSourcePublisherReplaysLostReplyAndFencesLateReceipt(t *testing
 	defer server.Close()
 	f := newSourceFixture(t, server.URL+"/v1/openmos-snapshots")
 	f.accept(t, sourceRoster("story"))
-	f.accept(t, sourceBody("story", sourceItem("video")))
+	body := sourceBody("story", sourceItem("video")+`<p>[CG A\Same][CG A\Same]</p>`)
+	f.accept(t, body)
 	if err := f.source.publishOnce(context.Background(), server.Client()); err == nil {
 		t.Fatal("lost reply was reported as accepted")
 	}
@@ -454,7 +590,7 @@ func TestCommittedSourcePublisherReplaysLostReplyAndFencesLateReceipt(t *testing
 	}
 	// Exercise the first receipt of a still-pending revision, not only renewal of one already
 	// accepted: a duplicate-receipt shortcut must not conceal a missing late-reply fence.
-	f.accept(t, sourceBody("story", sourceItem("video")))
+	f.accept(t, body)
 	done := make(chan error, 1)
 	go func() { done <- f.source.publishOnce(context.Background(), server.Client()) }()
 	<-started
