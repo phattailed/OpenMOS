@@ -112,12 +112,17 @@ func (s *CommittedSource) publishOnce(ctx context.Context, client *http.Client) 
 		return errors.New("receiver receipt is unavailable or exceeds its limit")
 	}
 	var receipt struct {
+		SourceID           string `json:"sourceId"`
+		RundownID          string `json:"rundownId"`
 		AcceptedRevision   uint64 `json:"acceptedRevision"`
 		Duplicate          *bool  `json:"duplicate"`
 		DestinationApplied *bool  `json:"destinationApplied"`
 	}
 	if err := json.Unmarshal(raw, &receipt); err != nil || receipt.AcceptedRevision != cp.Revision || receipt.Duplicate == nil || receipt.DestinationApplied == nil || *receipt.DestinationApplied {
 		return errors.New("receiver did not return a matching durable source receipt")
+	}
+	if s.extended && (receipt.SourceID != s.binding.SourceID || receipt.RundownID != s.binding.RundownID) {
+		return errors.New("receiver receipt identifies a different source or rundown")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

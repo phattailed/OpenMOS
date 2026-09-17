@@ -21,8 +21,9 @@ import (
 // This test enters all actual ingress paths, including the server's historical roCreate bypass
 // and the client's passive reader. The observed ACK must already exist in the durable checkpoint.
 func TestCommittedSourceIngressRetainsBeforeACKAndReplaysOriginal(t *testing.T) {
-	for _, transport := range []string{"tcp", "ws-server", "ws-client"} {
-		t.Run(transport, func(t *testing.T) {
+	for _, variant := range []string{"tcp", "ws-server", "ws-client", "tcp-set", "ws-server-set", "ws-client-set"} {
+		t.Run(variant, func(t *testing.T) {
+			transport := strings.TrimSuffix(variant, "-set")
 			cfg := testConfig()
 			cfg.MOS.ID, cfg.MOS.NCSID = "device", "newsroom"
 			cfg.State.Dir = t.TempDir()
@@ -40,6 +41,25 @@ func TestCommittedSourceIngressRetainsBeforeACKAndReplaysOriginal(t *testing.T) 
 			svc.Source, err = service.NewCommittedSource(ctx, durable, binding, "synthetic-token", time.Minute)
 			if err != nil {
 				t.Fatal(err)
+			}
+			var secondary *repository.Durable
+			if strings.HasSuffix(variant, "-set") {
+				extraBinding := binding
+				extraBinding.RundownID = "other"
+				secondary, err = repository.OpenCommitted(t.TempDir(), extraBinding, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer secondary.Close()
+				catalogue, err := repository.OpenCatalogue(t.TempDir(), service.SourceCatalogueBinding(binding), true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer catalogue.Close()
+				svc.Source, err = service.NewCommittedSourceSet(ctx, []service.SourceRundownStore{{Store: durable, Binding: binding}, {Store: secondary, Binding: extraBinding}}, catalogue, "synthetic-token", time.Minute)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			var send func(string) ([]byte, []byte)
 			var disconnect func()
@@ -144,6 +164,31 @@ func TestCommittedSourceIngressRetainsBeforeACKAndReplaysOriginal(t *testing.T) 
 				t.Fatal("actual ingress lost source coverage, raw duration, order or explicit empty cue field")
 			}
 			before := cp.Revision
+			if secondary != nil {
+				otherRoster := strings.ReplaceAll(roster, "rundown", "other")
+				otherBody := strings.ReplaceAll(body, "rundown", "other")
+				for _, input := range []struct{ id, raw string }{{"other-roster", otherRoster}, {"other-body", otherBody}} {
+					reply, _ := send(frame(input.id, input.raw))
+					if !bytes.Contains(reply, []byte("<roStatus>OK</roStatus>")) {
+						t.Fatal("second retained rundown was rejected")
+					}
+				}
+				other, err := secondary.Checkpoint()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var otherSnapshot service.SourceSnapshot
+				if err := json.Unmarshal(other.Pending, &otherSnapshot); err != nil {
+					t.Fatal(err)
+				}
+				if len(other.Receipts) != 2 || !otherSnapshot.Complete || otherSnapshot.RundownID != "other" || len(otherSnapshot.Stories) != 1 || len(otherSnapshot.Stories[0].Occurrences) != 3 {
+					t.Fatal("second-rundown ACK preceded its own durable content and receipts")
+				}
+				retained, _ := durable.Checkpoint()
+				if !bytes.Equal(retained.Pending, cp.Pending) || retained.Revision != before || len(retained.Receipts) != len(cp.Receipts) {
+					t.Fatal("second-rundown input mutated the original rundown's revision, content or receipts")
+				}
+			}
 			if duplicate, duplicateWire := send(frame("body-id", body)); !bytes.Equal(bodyReply, duplicate) || !bytes.Equal(bodyWire, duplicateWire) {
 				t.Fatal("repeated-cue body did not replay its original transport response")
 			}

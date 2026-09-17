@@ -1,14 +1,22 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+type SourceRundown struct {
+	RundownID string `json:"rundownId" yaml:"rundownid"`
+	StateDir  string `json:"stateDir" yaml:"statedir"`
+}
 
 // Config holds all configuration for the application
 type Config struct {
@@ -93,16 +101,18 @@ type Config struct {
 		Dir string
 	}
 
-	// Source is one opt-in committed rundown publisher. The token is environment-only and
+	// Source configures opt-in committed rundown publishers. The token is environment-only and
 	// never written by configuration generation or included in the source checkpoint.
 	Source struct {
-		Enabled   bool
-		StateDir  string // Committed checkpoint directory; empty uses State.Dir.
-		ID        string
-		RundownID string
-		Transport string
-		URL       string
-		Token     string `yaml:"-"`
+		Enabled           bool
+		StateDir          string // Committed checkpoint directory; empty uses State.Dir.
+		ID                string
+		RundownID         string
+		Transport         string
+		URL               string
+		Token             string `yaml:"-"`
+		CatalogueStateDir string
+		Additional        []SourceRundown
 	}
 
 	// MongoDB configuration
@@ -305,6 +315,20 @@ func LoadConfig() (*Config, error) {
 	config.Source.Transport = getEnv("SOURCE_TRANSPORT", config.Source.Transport)
 	config.Source.URL = getEnv("SOURCE_URL", config.Source.URL)
 	config.Source.Token = getEnv("SOURCE_TOKEN", "")
+	config.Source.CatalogueStateDir = getEnv("SOURCE_CATALOGUE_STATE_DIR", config.Source.CatalogueStateDir)
+	if raw, present := os.LookupEnv("SOURCE_ADDITIONAL_RUNDOWNS"); present {
+		d := json.NewDecoder(strings.NewReader(raw))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&config.Source.Additional); err != nil {
+			return nil, fmt.Errorf("invalid SOURCE_ADDITIONAL_RUNDOWNS: %w", err)
+		}
+		if config.Source.Additional == nil {
+			return nil, fmt.Errorf("SOURCE_ADDITIONAL_RUNDOWNS must be an array")
+		}
+		if d.Decode(new(any)) != io.EOF {
+			return nil, fmt.Errorf("SOURCE_ADDITIONAL_RUNDOWNS has trailing data")
+		}
+	}
 
 	// MongoDB config
 	if envVal := getEnv("MONGODB_URI", ""); envVal != "" || !yamlLoaded {

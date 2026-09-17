@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	stdxml "encoding/xml"
 	"errors"
 	"fmt"
 	"unicode/utf8"
@@ -23,7 +24,46 @@ type SourceSnapshot struct {
 
 type SourceStory struct {
 	ID          string             `json:"id"`
+	Page        *string            `json:"page,omitempty"`
+	Slug        *string            `json:"slug,omitempty"`
 	Occurrences []SourceOccurrence `json:"occurrences"`
+}
+
+type storyDisplay struct {
+	ID   string  `xml:"storyID"`
+	Page *string `xml:"storyNum"`
+	Slug *string `xml:"storySlug"`
+}
+
+// Read the retained standard wire properties, preserving absence and explicit empty values.
+// Computing this projection leaves existing rundown checkpoint state readable by prior builds.
+// External metadata is deliberately not consulted for application-specific display columns.
+func sourceStoryDisplay(state sourceState) (map[string]storyDisplay, error) {
+	var roster struct {
+		Stories []storyDisplay `xml:"story"`
+	}
+	if err := stdxml.Unmarshal([]byte(state.RawRoster), &roster); err != nil {
+		return nil, err
+	}
+	fields := make(map[string]storyDisplay, len(roster.Stories))
+	for _, story := range roster.Stories {
+		fields[story.ID] = story
+	}
+	for _, story := range state.Stories {
+		var body storyDisplay
+		if err := stdxml.Unmarshal([]byte(story.Raw), &body); err != nil {
+			return nil, err
+		}
+		prior := fields[story.ID]
+		if body.Page != nil {
+			prior.Page = body.Page
+		}
+		if body.Slug != nil {
+			prior.Slug = body.Slug
+		}
+		fields[story.ID] = prior
+	}
+	return fields, nil
 }
 
 type SourceOccurrence struct {
@@ -64,6 +104,11 @@ func marshalSource(snapshot SourceSnapshot) ([]byte, error) {
 			return nil, errors.New("source story identity or occurrences are invalid")
 		}
 		stories[story.ID] = true
+		for _, value := range []*string{story.Page, story.Slug} {
+			if value != nil && !sourceText(*value, 512, false) {
+				return nil, errors.New("source story display field exceeds 512 characters")
+			}
+		}
 		ids := make(map[string]bool)
 		for _, o := range story.Occurrences {
 			total++

@@ -148,8 +148,17 @@ func (c *WSClient) originate(ctx context.Context, msg mosxml.MOSMessage) error {
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", msg.GetMessageType(), err)
 	}
-	envelope := mosxml.WrapEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, c.messageID(), inner)
-	return c.writeFrame(ctx, conn, envelope)
+	messageID := c.messageID()
+	envelope := mosxml.WrapEnvelope(c.config.MOS.ID, c.config.MOS.NCSID, messageID, inner)
+	write := func() error { return c.writeFrame(ctx, conn, envelope) }
+	if c.deps == nil {
+		return write()
+	}
+	lane := "standard"
+	if c.config.WSClient.Passive {
+		lane = "request"
+	}
+	return writeSourceRequest(*c.deps, msg, "ws-client:"+c.config.WSClient.Channel+":"+lane, sourceSession(conn), messageID, false, write)
 }
 
 // ready reports whether the request lane has completed Profile 0.
@@ -474,7 +483,14 @@ func (c *WSClient) runSession(ctx context.Context, dialURL string, lane clientLa
 		// Recover on that handshaken lane through the existing serialized discovery walk.
 		// If it is not ready, its own successful handshake will start discovery.
 		if lane.reconnecting && c.config.Source.Transport == "ws-client" && c.deps != nil && committedSource(c.deps.service) != nil && c.ready() {
-			requestResync(ctx, *c.deps, wsClientResponder{client: c, conn: conn, lane: lane}, c.config.Source.RundownID)
+			peer := wsClientResponder{client: c, conn: conn, lane: lane}
+			if c.deps.service.Source.CatalogueEnabled() {
+				if next, ok := c.deps.walk.requestCatalogue(); ok {
+					sendDiscoveryReq(ctx, *c.deps, peer, next)
+				}
+			} else {
+				requestResync(ctx, *c.deps, peer, c.config.Source.RundownID)
+			}
 		}
 		return true, c.readLoop(ctx, conn, lane)
 	}
@@ -564,6 +580,12 @@ func (c *WSClient) doProfile0(ctx context.Context, conn *websocket.Conn) error {
 // consumed as the answer to whatever the NCS last sent (doc/interop §43).
 func (c *WSClient) beginDiscovery(ctx context.Context, conn *websocket.Conn, lane clientLane) {
 	if !lane.originates || c.deps == nil || c.deps.walk == nil {
+		return
+	}
+	if source := committedSource(c.deps.service); source != nil && source.CatalogueEnabled() {
+		if next, ok := c.deps.walk.requestCatalogue(); ok {
+			sendDiscoveryReq(ctx, *c.deps, wsClientResponder{client: c, conn: conn, lane: lane}, next)
+		}
 		return
 	}
 	inner, err := stdxml.Marshal(mosxml.ROReqAll{})
@@ -772,6 +794,20 @@ func (c *WSClient) handleInbound(ctx context.Context, conn *websocket.Conn, utf8
 		if err := c.deps.service.Source.Observe(ctx, input); err != nil {
 			return
 		}
+		// The first validated passive frame can arrive after the initial catalogue reply.
+		// Its new-session invalidation needs another enumeration on the existing request lane.
+		_, catalogueReply := msg.(mosxml.ROListAll)
+		if !catalogueReply && c.ready() && c.deps.service.Source.CatalogueNeedsRefresh() {
+			if next, ok := c.deps.walk.requestCatalogue(); ok {
+				sendDiscoveryReq(ctx, *c.deps, wsClientResponder{client: c, conn: conn, lane: lane}, next)
+			}
+		}
+		if c.deps.service.Source.CatalogueEnabled() {
+			switch msg.(type) {
+			case mosxml.Heartbeat, mosxml.KeepAlive:
+				defer advanceWalk(ctx, *c.deps, wsClientResponder{client: c, conn: conn, lane: lane})
+			}
+		}
 		ctx = context.WithValue(ctx, sourceInputKey{}, input)
 	}
 
@@ -874,7 +910,11 @@ func (w wsClientResponder) respond(ctx context.Context, msg mosxml.MOSMessage) e
 
 func (w wsClientResponder) originate(ctx context.Context, msg mosxml.MOSMessage) error {
 	w.messageID = w.client.messageID()
-	return w.respond(ctx, msg)
+	write := func() error { return w.respond(ctx, msg) }
+	if w.client.deps == nil {
+		return write()
+	}
+	return writeSourceRequest(*w.client.deps, msg, "ws-client:"+w.client.config.WSClient.Channel+":"+w.lane.name, sourceSession(w.conn), w.messageID, false, write)
 }
 
 // readMessage reads one frame, decodes it, and returns the validated payload.

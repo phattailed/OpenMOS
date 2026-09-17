@@ -32,6 +32,31 @@ type CommittedSource struct {
 	sessions map[string]time.Time
 	owners   map[string]string
 	wake     chan struct{}
+	extended bool // Set before ingress starts when attached to a catalogue source set.
+}
+
+// SourceReceiver keeps transport validation and envelopes shared by the single-rundown
+// implementation and the explicitly configured collection of independent rundown stores.
+type SourceReceiver interface {
+	CatalogueEnabled() bool
+	CatalogueNeedsRefresh() bool
+	RetainsRundown(string) bool
+	Observe(context.Context, SourceInput) error
+	RefreshSession(string)
+	Disconnected(string)
+	Uncertain(string)
+	Apply(context.Context, SourceInput, mosxml.MOSMessage, func(mosxml.MOSMessage) ([]byte, error)) (SourceResult, error)
+	RunPublisher(context.Context)
+}
+
+func (*CommittedSource) CatalogueEnabled() bool          { return false }
+func (*CommittedSource) CatalogueNeedsRefresh() bool     { return false }
+func (s *CommittedSource) RetainsRundown(id string) bool { return id == s.binding.RundownID }
+
+type SourceResult struct {
+	Reply   []byte
+	Recover bool
+	Applied bool // A fresh mutation or enumeration committed; false for receipt replay.
 }
 
 type SourceInput struct {
@@ -82,14 +107,18 @@ func ValidateSourceBinding(binding repository.SourceBinding) error {
 // NewCommittedSource invalidates persisted coverage before a publisher can renew it. Opening a
 // file never proves that the sender still holds a current roster or fresh story bodies.
 func NewCommittedSource(ctx context.Context, store *repository.Durable, binding repository.SourceBinding, token string, timeout time.Duration) (*CommittedSource, error) {
+	return newCommittedSource(ctx, store, binding, token, timeout, false)
+}
+
+func newCommittedSource(ctx context.Context, store *repository.Durable, binding repository.SourceBinding, token string, timeout time.Duration, catalogue bool) (*CommittedSource, error) {
 	if err := ValidateSourceBinding(binding); err != nil {
 		return nil, err
 	}
 	if token == "" || strings.ContainsAny(token, "\r\n") || timeout <= 0 {
 		return nil, errors.New("source credential and positive peer timeout are required")
 	}
-	s := &CommittedSource{store: store, binding: binding, token: token, timeout: timeout, sessions: make(map[string]time.Time), owners: make(map[string]string), wake: make(chan struct{}, 1)}
-	if err := s.invalidate(ctx); err != nil {
+	s := &CommittedSource{store: store, binding: binding, token: token, timeout: timeout, sessions: make(map[string]time.Time), owners: make(map[string]string), wake: make(chan struct{}, 1), extended: catalogue}
+	if err := s.invalidate(ctx); err != nil && !(catalogue && errors.Is(err, errSourceHalted)) {
 		return nil, err
 	}
 	return s, nil
@@ -114,7 +143,11 @@ func (s *CommittedSource) Observe(ctx context.Context, input SourceInput) error 
 	if input.Session == "" {
 		return errors.New("source session identity is required")
 	}
-	if _, seen := s.sessions[input.Session]; !seen {
+	last, seen := s.sessions[input.Session]
+	if seen && s.owners[input.Scope] != input.Session {
+		return errors.New("source connection has been superseded")
+	}
+	if !seen || time.Since(last) > s.timeout {
 		if err := s.invalidate(ctx); err != nil {
 			return err
 		}
@@ -186,7 +219,7 @@ func (s *CommittedSource) invalidate(ctx context.Context) error {
 			return err
 		}
 		if state.Halted {
-			return errors.New("source is halted; automatic recovery is unsupported")
+			return errSourceHalted
 		}
 		state.RosterFresh = false
 		for i := range state.Stories {
@@ -237,8 +270,17 @@ func (s *CommittedSource) revise(cp *repository.SourceCheckpoint, state sourceSt
 		}
 	}
 	if snapshot.Complete && state.Active {
+		display := map[string]storyDisplay{}
+		if s.extended {
+			var err error
+			display, err = sourceStoryDisplay(state)
+			if err != nil {
+				return err
+			}
+		}
 		for _, story := range state.Stories {
-			snapshot.Stories = append(snapshot.Stories, SourceStory{ID: story.ID, Occurrences: story.Occurrences})
+			fields := display[story.ID]
+			snapshot.Stories = append(snapshot.Stories, SourceStory{ID: story.ID, Page: fields.Page, Slug: fields.Slug, Occurrences: story.Occurrences})
 		}
 	}
 	pending, err := marshalSource(snapshot)
@@ -317,7 +359,7 @@ func SourceRundown(msg mosxml.MOSMessage) string {
 
 // Apply commits retained content, coverage, revision, pending delivery and the transport-rendered
 // reply together. The caller sends the returned bytes only after this method returns.
-func (s *CommittedSource) Apply(ctx context.Context, input SourceInput, msg mosxml.MOSMessage, render func(mosxml.MOSMessage) ([]byte, error)) (reply []byte, recover bool, result error) {
+func (s *CommittedSource) Apply(ctx context.Context, input SourceInput, msg mosxml.MOSMessage, render func(mosxml.MOSMessage) ([]byte, error)) (out SourceResult, result error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	roID := SourceRundown(msg)
@@ -328,24 +370,24 @@ func (s *CommittedSource) Apply(ctx context.Context, input SourceInput, msg mosx
 		return render(mosxml.CreateROAck(roID, status, nil))
 	}
 	if input.Transport != s.binding.Transport || input.NCSID != s.binding.NCSID || !sourceText(input.Scope, 512, true) || !sourceText(input.MessageID, 4<<20, false) || input.Session == "" || len(input.Content) == 0 || len(input.Content) > 6<<20 || roID != "" && roID != s.binding.RundownID {
-		reply, result = respond("NACK: message is outside the committed source binding")
+		out.Reply, result = respond("NACK: message is outside the committed source binding")
 		return
 	}
 	if _, live := s.sessions[input.Session]; !live || s.owners[input.Scope] != input.Session {
-		reply, result = respond("NACK: source connection has not been validated")
+		out.Reply, result = respond("NACK: source connection has not been validated")
 		return
 	}
 	cp, err := s.store.Checkpoint()
 	if err != nil {
-		reply, _ = respond("NACK: committed source storage is unavailable")
-		return reply, false, err
+		out.Reply, _ = respond("NACK: committed source storage is unavailable")
+		return out, err
 	}
 	state, err := readSourceState(cp.State)
 	if err != nil {
-		return nil, false, err
+		return out, err
 	}
 	if state.Halted {
-		reply, result = respond("NACK: source is halted; automatic recovery is unsupported")
+		out.Reply, result = respond("NACK: source is halted; automatic recovery is unsupported")
 		return
 	}
 	sum := sha256.Sum256(input.Content)
@@ -361,7 +403,8 @@ func (s *CommittedSource) Apply(ctx context.Context, input SourceInput, msg mosx
 				continue
 			}
 			if receipt.Hash == hash {
-				return append([]byte(nil), receipt.Response...), false, nil
+				out.Reply = append([]byte(nil), receipt.Response...)
+				return out, nil
 			}
 			conflict = true
 			break
@@ -383,20 +426,20 @@ func (s *CommittedSource) Apply(ctx context.Context, input SourceInput, msg mosx
 			if err := s.revise(cp, state); err != nil {
 				return err
 			}
-			reply, err = respond("OK")
+			out.Reply, err = respond("OK")
 			if err != nil {
 				return err
 			}
-			rememberSource(cp, input, hash, reply)
+			rememberSource(cp, input, hash, out.Reply)
 			return nil
 		})
 	}
 	if applyErr != nil {
 		// A failed stage is discarded. Only the old repository state plus an incomplete source and
 		// its negative receipt are committed; no partial application can escape behind an OK.
-		reply, err = respond("NACK: committed source requires a fresh roster and complete bodies")
+		out.Reply, err = respond("NACK: committed source requires a fresh roster and complete bodies")
 		if err != nil {
-			return nil, false, err
+			return SourceResult{}, err
 		}
 		err = s.store.Commit(ctx, func(_ repository.Repository, cp *repository.SourceCheckpoint) error {
 			state, err := readSourceState(cp.State)
@@ -411,18 +454,20 @@ func (s *CommittedSource) Apply(ctx context.Context, input SourceInput, msg mosx
 				return err
 			}
 			if !conflict {
-				rememberSource(cp, input, hash, reply)
+				rememberSource(cp, input, hash, out.Reply)
 			}
 			return nil
 		})
 		if err != nil {
-			return reply, false, err
+			return out, err
 		}
 		s.notify()
-		return reply, true, applyErr
+		out.Recover = true
+		return out, applyErr
 	}
 	s.notify()
-	return reply, false, nil
+	out.Applied = true
+	return out, nil
 }
 
 func rememberSource(cp *repository.SourceCheckpoint, input SourceInput, hash string, reply []byte) {

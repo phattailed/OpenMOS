@@ -101,7 +101,7 @@ type passiveSourceTest struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	timeout    time.Duration
-	source     *service.CommittedSource
+	source     service.SourceReceiver
 	store      *repository.Durable
 	conn       *websocket.Conn
 	wire       *sourcePongConn

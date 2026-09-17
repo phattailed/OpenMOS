@@ -63,8 +63,8 @@ func (f *sourceFixture) send(t *testing.T, id, operation string) ([]byte, error)
 	if err := f.source.Observe(context.Background(), input); err != nil {
 		return nil, err
 	}
-	reply, _, err := f.source.Apply(context.Background(), input, msg, func(msg mosxml.MOSMessage) ([]byte, error) { return stdxml.Marshal(msg) })
-	return reply, err
+	out, err := f.source.Apply(context.Background(), input, msg, func(msg mosxml.MOSMessage) ([]byte, error) { return stdxml.Marshal(msg) })
+	return out.Reply, err
 }
 
 func (f *sourceFixture) accept(t *testing.T, operation string) []byte {

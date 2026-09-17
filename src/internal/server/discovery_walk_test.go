@@ -307,3 +307,111 @@ func TestOnlyOneROReqOutstandingPerLane(t *testing.T) {
 		t.Errorf("walk has %d queued, want 2 (RO-2 and RO-3)", walk.remaining())
 	}
 }
+
+func TestCatalogueDiscoverySharesTheRequestQueueAndSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	walk := openDiscoveryWalk(dir)
+	if id, ok := walk.enqueueUrgent("first"); !ok || id != "first" {
+		t.Fatal("initial rundown request did not start")
+	}
+	if _, ok := walk.requestCatalogue(); ok {
+		t.Fatal("catalogue overlapped an outstanding rundown request")
+	}
+	walk = openDiscoveryWalk(dir)
+	if id, ok := walk.nudge(); !ok || id != "" {
+		t.Fatal("restart lost the pending catalogue request")
+	}
+	if _, ok := walk.requestCatalogue(); ok {
+		t.Fatal("repeated recovery sent another catalogue request")
+	}
+	if _, ok := walk.enqueueUrgent("second"); ok {
+		t.Fatal("rundown recovery overlapped the catalogue request")
+	}
+	if id, ok, _ := walk.begin([]string{"first", "second"}); !ok || id != "first" {
+		t.Fatal("catalogue response did not start sequential rundown discovery")
+	}
+	if _, ok := walk.requestCatalogue(); ok {
+		t.Fatal("catalogue refresh bypassed an outstanding rundown")
+	}
+	if id, ok := walk.resolved("first"); !ok || id != "" {
+		t.Fatal("queued catalogue refresh did not take the next request slot")
+	}
+	if walk.registerRequest("", "ws:ro", "session", "request-a", false) == nil {
+		t.Fatal("catalogue request did not retain its actual wire identity")
+	}
+	walk.mu.Lock()
+	walk.deadline = time.Now().Add(-time.Second)
+	walk.mu.Unlock()
+	if id, expired := walk.timedOut(); !expired || id != "" {
+		t.Fatal("unanswered catalogue request has no bounded timeout")
+	}
+	if id, ok := walk.nudge(); !ok || id != "" {
+		t.Fatal("expired catalogue request was never retried")
+	}
+	if _, ok, _ := walk.begin(nil); ok {
+		t.Fatal("authoritative empty catalogue retained stale discovery work")
+	}
+	walk = openDiscoveryWalk(dir)
+	if _, ok := walk.nudge(); ok {
+		t.Fatal("restart repeated completed empty catalogue work")
+	}
+}
+
+func TestCatalogueRepliesRequireTheCurrentScopeSessionAndRequest(t *testing.T) {
+	walk := newDiscoveryWalk()
+	walk.requestCatalogue()
+	first := walk.registerRequest("", "ws:ro", "request-session", "first", false)
+	walk.mu.Lock()
+	walk.deadline = time.Now().Add(-time.Second)
+	walk.mu.Unlock()
+	walk.nudge()
+	if walk.claimRequest("", "ws:ro", "request-session", "first") != nil {
+		t.Fatal("expired request claimed the reserved successor before it was written")
+	}
+	second := walk.registerRequest("", "ws:ro", "request-session", "second", false)
+	for _, input := range []struct{ scope, session, id string }{
+		{"ws:ro", "request-session", "first"},
+		{"ws:ro", "passive-session", "second"},
+		{"ws:obj", "request-session", "second"},
+	} {
+		if walk.claimRequest("", input.scope, input.session, input.id) != nil {
+			t.Fatal("a late answer or a different lane claimed the current catalogue request")
+		}
+	}
+	if walk.failedRequest(first) {
+		t.Fatal("old failure cancelled the current request")
+	}
+	if walk.claimRequest("", "ws:ro", "request-session", "second") != second || second == nil {
+		t.Fatal("matching catalogue response could not claim its own slot")
+	}
+}
+
+func TestCatalogueAndRosterNativeTimeoutRequireAnotherConnection(t *testing.T) {
+	for _, rundown := range []string{"", "rundown"} {
+		t.Run("target-"+rundown, func(t *testing.T) {
+			walk := newDiscoveryWalk()
+			if rundown == "" {
+				walk.requestCatalogue()
+			} else {
+				walk.enqueueUrgent(rundown)
+			}
+			walk.registerRequest(rundown, "tcp:ro", "old-session", "", true)
+			walk.mu.Lock()
+			walk.deadline = time.Now().Add(-time.Second)
+			walk.mu.Unlock()
+			walk.nudge()
+			if walk.registerRequest(rundown, "tcp:ro", "old-session", "", true) != nil || walk.claimRequest(rundown, "tcp:ro", "old-session", "") != nil {
+				t.Fatal("ambiguous native timeout allowed a second request or late reply on the same connection")
+			}
+			if _, ok := walk.enqueueUrgent("other"); ok {
+				t.Fatal("rundown recovery bypassed the ambiguous native request")
+			}
+			if walk.registerRequest(rundown, "tcp:ro", "new-session", "", true) == nil {
+				t.Fatal("a fresh native connection could not recover discovery")
+			}
+			if walk.claimRequest(rundown, "tcp:ro", "old-session", "") != nil || walk.claimRequest(rundown, "tcp:ro", "new-session", "") == nil {
+				t.Fatal("native discovery response was not correlated to its sole outstanding session")
+			}
+		})
+	}
+}
