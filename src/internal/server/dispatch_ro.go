@@ -373,12 +373,16 @@ func handleCreate(ctx context.Context, deps roDeps, r peerResponder, m mosxml.Ru
 func handleListAll(ctx context.Context, deps roDeps, r peerResponder, m mosxml.ROListAll) error {
 	roIDs := make([]string, 0, len(m.ROs))
 	for _, ro := range m.ROs {
+		if source := committedSource(deps.service); source != nil && source.CatalogueEnabled() && !source.RetainsRundown(ro.ID) {
+			continue
+		}
 		roIDs = append(roIDs, ro.ID)
 	}
 
 	// An empty roListAll is a legitimate answer -- a real NCS sends self-closing ones -- and
 	// means there is nothing to walk.
 	if len(roIDs) == 0 {
+		deps.walk.begin(nil)
 		logger.Infof("Received empty roListAll from %s; no running orders to discover",
 			r.peerLabel())
 		return nil
@@ -408,9 +412,13 @@ func handleListAll(ctx context.Context, deps roDeps, r peerResponder, m mosxml.R
 // after an in-flight request has timed out.
 func advanceWalk(ctx context.Context, deps roDeps, r peerResponder) {
 	if abandoned, yes := deps.walk.timedOut(); yes {
-		logger.Warningf("No roList arrived for RO %s within the discovery walk timeout; "+
-			"continuing with the next running order. A roReq may be answered with a NACK "+
-			"rather than a roList, so this is expected rather than exceptional.", abandoned)
+		if abandoned == "" {
+			logger.Warningf("Catalogue request timed out; recovery needs a new request identity or native TCP session")
+		} else {
+			logger.Warningf("No roList arrived for RO %s within the discovery walk timeout; "+
+				"continuing with the next running order. A roReq may be answered with a NACK "+
+				"rather than a roList, so this is expected rather than exceptional.", abandoned)
+		}
 	}
 	if next, ok := deps.walk.nudge(); ok {
 		sendDiscoveryReq(ctx, deps, r, next)
@@ -425,6 +433,12 @@ func advanceWalk(ctx context.Context, deps roDeps, r peerResponder) {
 // told us it holds them. Passing the walk through the loop-breaker would make a legitimate
 // first-time walk suppress itself whenever it followed a recent divergence on the same RO.
 func sendDiscoveryReq(ctx context.Context, deps roDeps, r peerResponder, roID string) {
+	if roID == "" {
+		if err := sendRequest(ctx, deps, r, mosxml.ROReqAll{}); err != nil {
+			logger.Errorf("Discovery walk: failed to request catalogue: %v", err)
+		}
+		return
+	}
 	logger.Infof("Discovery walk: sending roReq for RO %s (%d remaining)",
 		roID, deps.walk.remaining())
 	if err := sendRequest(ctx, deps, r, mosxml.ROReq{ROID: roID}); err != nil {
@@ -465,12 +479,7 @@ func requestResync(ctx context.Context, deps roDeps, r peerResponder, roID strin
 		logger.Infof("Queued roReq for RO %s behind the request already in flight", roID)
 		return
 	}
-	logger.Infof("Sending roReq for RO %s to recover local state", roID)
-	if err := sendRequest(ctx, deps, r, mosxml.ROReq{ROID: next}); err != nil {
-		logger.Errorf("Failed to send roReq for RO %s: %v", next, err)
-		// The identifier stays queued, and the walk's deadline releases the slot, so a lane that
-		// recovers later can still make the request.
-	}
+	sendDiscoveryReq(ctx, deps, r, next)
 }
 
 // sendRequest sends a message the peer must treat as a REQUEST, choosing a lane that can carry one.
@@ -582,7 +591,9 @@ func (t tcpResponder) originate(ctx context.Context, msg mosxml.MOSMessage) erro
 	}
 	// Native MOS 2.x has no request messageID. Do not copy an optional peer ID from its ACK.
 	envelope.MessageID = ""
-	return t.conn.writeMessage(context.WithValue(ctx, envelopeContextKey{}, envelope), msg)
+	return writeSourceRequest(t.conn.roDeps(), msg, t.conn.dedupScope(), sourceSession(t.conn), "", true, func() error {
+		return t.conn.writeMessage(context.WithValue(ctx, envelopeContextKey{}, envelope), msg)
+	})
 }
 
 // canOriginate is true on the MOS 2.x socket. The NCS dials us, but the socket carries traffic in
@@ -626,14 +637,15 @@ func (w wsResponder) respond(ctx context.Context, msg mosxml.MOSMessage) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal %s: %w", msg.GetMessageType(), err)
 	}
-	w.server.writeMessage(ctx, w.sess,
+	return w.server.writeSourceMessage(ctx, w.sess,
 		mosxml.WrapEnvelope(w.server.config.MOS.ID, w.sess.ncsID, w.messageID, inner))
-	return nil
 }
 
 func (w wsResponder) originate(ctx context.Context, msg mosxml.MOSMessage) error {
 	w.messageID = w.server.messageIDs.Next()
-	return w.respond(ctx, msg)
+	return writeSourceRequest(w.server.roDeps(), msg, "ws:"+w.sess.channel, sourceSession(w.sess), w.messageID, false, func() error {
+		return w.respond(ctx, msg)
+	})
 }
 
 // roDeps assembles the shared dependencies from a WebSocket server.

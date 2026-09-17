@@ -69,3 +69,23 @@ func TestCommittedSourceHealthDoesNotReviveOwnershipOrFreshness(t *testing.T) {
 		})
 	}
 }
+
+func TestCommittedSourceObservedInputCannotEraseAnExpiredInterval(t *testing.T) {
+	f := newSourceFixture(t, "")
+	f.accept(t, sourceRoster("story"))
+	f.accept(t, sourceBody("story", sourceItem("video")))
+	before, _ := f.store.Checkpoint()
+	f.source.sessions["connection"] = time.Now().Add(-2 * f.source.timeout)
+	if err := f.source.Observe(context.Background(), SourceInput{Transport: "tcp", Scope: "tcp:ro", NCSID: "newsroom", Session: "connection"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := f.store.Checkpoint()
+	if f.snapshot(t).Complete || after.Revision <= before.Revision || !reflect.DeepEqual(after.Receipts, before.Receipts) {
+		t.Fatal("validated input erased an expired interval before the publisher could invalidate coverage")
+	}
+	f.accept(t, sourceRoster("story"))
+	f.accept(t, sourceBody("story", sourceItem("video")))
+	if !f.snapshot(t).Complete {
+		t.Fatal("fresh roster and body did not restore coverage after expiry")
+	}
+}

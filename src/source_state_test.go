@@ -30,6 +30,8 @@ func TestSourceStateDirectoryEntrypoint(t *testing.T) {
 		os.Args = []string{os.Args[0]}
 		if mode == "initialize" {
 			os.Args = append(os.Args, "--initialize-source-state")
+		} else if mode == "initialize-catalogue" {
+			os.Args = append(os.Args, "--initialize-source-catalogue")
 		}
 		main()
 		return
@@ -37,7 +39,7 @@ func TestSourceStateDirectoryEntrypoint(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess interrupt delivery is unavailable on Windows")
 	}
-	for _, configuration := range []string{"environment", "yaml", "fallback"} {
+	for _, configuration := range []string{"environment", "yaml", "fallback", "catalogue"} {
 		t.Run(configuration, func(t *testing.T) {
 			testSourceStateDirectory(t, configuration)
 		})
@@ -48,6 +50,8 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 	dir := t.TempDir()
 	nativeDir := filepath.Join(dir, "native")
 	checkpointDir := filepath.Join(dir, "checkpoint")
+	catalogueDir, additionalDir := filepath.Join(dir, "catalogue"), filepath.Join(dir, "additional")
+	multi := configuration == "catalogue"
 	separate := configuration != "fallback"
 	if !separate {
 		checkpointDir = nativeDir
@@ -71,7 +75,7 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 	envDir := ""
 	if configuration == "yaml" {
 		yaml = fmt.Sprintf("source:\n  statedir: %q\n", checkpointDir)
-	} else if configuration == "environment" {
+	} else if configuration == "environment" || multi {
 		envDir = checkpointDir
 	}
 	if err := os.WriteFile(configPath, []byte(yaml), 0600); err != nil {
@@ -119,13 +123,24 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 		_, _, _ = conn.Read(ctx)
 	}))
 	defer peer.Close()
+	posted := make(chan string, 16)
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Revision uint64 }
+		var body struct {
+			Revision  uint64
+			SourceID  string
+			RundownID string
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		fmt.Fprintf(w, `{"acceptedRevision":%d,"duplicate":false,"destinationApplied":false}`, body.Revision)
+		if multi && body.SourceID == "source" && body.Revision > 0 {
+			select {
+			case posted <- r.URL.Path + ":" + body.RundownID:
+			default:
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sourceId": body.SourceID, "rundownId": body.RundownID, "acceptedRevision": body.Revision, "duplicate": false, "destinationApplied": false})
 	}))
 	defer receiver.Close()
 
@@ -144,6 +159,13 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 		}
 		if envDir != "" {
 			cmd.Env = append(cmd.Env, "SOURCE_STATE_DIR="+envDir)
+		}
+		if multi {
+			extra, err := json.Marshal([]map[string]string{{"rundownId": "other", "stateDir": additionalDir}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.Env = append(cmd.Env, "SOURCE_CATALOGUE_STATE_DIR="+catalogueDir, "SOURCE_ADDITIONAL_RUNDOWNS="+string(extra))
 		}
 		return cmd
 	}
@@ -191,6 +213,33 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 	if mark() != 100 {
 		t.Fatal("initialization changed the existing sender mark")
 	}
+	if multi {
+		prior := read(checkpointPath)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		output, err := command(ctx, "run", true).CombinedOutput()
+		cancel()
+		if err == nil || !bytes.Contains(output, []byte("Cannot open additional source")) {
+			t.Fatalf("normal startup provisioned an absent additional rundown: %v\n%s", err, output)
+		}
+		if !bytes.Equal(prior, read(checkpointPath)) || mark() != 100 {
+			t.Fatal("failed source-set preflight modified original state")
+		}
+		for _, mode := range []string{"initialize", "initialize-catalogue"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			cmd := command(ctx, mode, true)
+			if mode == "initialize" {
+				cmd.Env = append(cmd.Env, "SOURCE_STATE_DIR="+additionalDir, "SOURCE_RUNDOWN_ID=other", "SOURCE_ADDITIONAL_RUNDOWNS=[]")
+			}
+			output, err := cmd.CombinedOutput()
+			cancel()
+			if err != nil {
+				t.Fatalf("explicit additional provisioning failed: %v\n%s", err, output)
+			}
+		}
+		if !bytes.Equal(prior, read(checkpointPath)) || mark() != 100 {
+			t.Fatal("additional provisioning changed the original checkpoint or native counter")
+		}
+	}
 
 	var revision uint64
 	for _, step := range []struct {
@@ -202,6 +251,9 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 		}
 		previousMark := mark()
 		previousCheckpoint := read(checkpointPath)
+		for len(posted) > 0 {
+			<-posted
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		cmd := command(ctx, "run", step.enabled)
 		var output bytes.Buffer
@@ -215,6 +267,19 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 		var got request
 		select {
 		case got = <-requests:
+			if multi && step.enabled {
+				want := map[string]bool{"/v1/openmos-snapshots:rundown": true, "/v1/openmos-snapshots:other": true, "/v1/openmos-catalogue:": true}
+				for len(want) > 0 {
+					select {
+					case path := <-posted:
+						delete(want, path)
+					case <-ctx.Done():
+						cancel()
+						<-done
+						t.Fatalf("entrypoint failed to publish independent streams: %v\n%s", want, &output)
+					}
+				}
+			}
 			if err := cmd.Process.Signal(os.Interrupt); err != nil {
 				cancel()
 				<-done

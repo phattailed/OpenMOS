@@ -16,7 +16,7 @@ import (
 type sourceInputKey struct{}
 type sourceFrameKey struct{}
 
-func committedSource(svc *service.MOSService) *service.CommittedSource {
+func committedSource(svc *service.MOSService) service.SourceReceiver {
 	if svc == nil {
 		return nil
 	}
@@ -31,7 +31,12 @@ type sourceWire interface {
 }
 
 func dispatchCommittedSource(ctx context.Context, deps roDeps, r peerResponder, msg mosxml.MOSMessage) (bool, error) {
-	if deps.service == nil || deps.service.Source == nil || !service.SourceMessage(msg) {
+	if deps.service == nil || deps.service.Source == nil {
+		return false, nil
+	}
+	_, catalogue := msg.(mosxml.ROListAll)
+	_, roster := msg.(mosxml.ROList)
+	if !service.SourceMessage(msg) && !(catalogue && deps.service.Source.CatalogueEnabled()) {
 		return false, nil
 	}
 	wire, ok := r.(sourceWire)
@@ -42,24 +47,67 @@ func dispatchCommittedSource(ctx context.Context, deps roDeps, r peerResponder, 
 	if !ok {
 		return true, errors.New("committed source requires validated input provenance")
 	}
-	reply, recover, err := deps.service.Source.Apply(ctx, input, msg, func(response mosxml.MOSMessage) ([]byte, error) { return wire.encodeSourceReply(ctx, response) })
-	if len(reply) > 0 {
-		if sendErr := wire.sendSourceReply(ctx, reply); sendErr != nil {
+	if deps.service.Source.CatalogueEnabled() {
+		defer advanceWalk(ctx, deps, r)
+		if catalogue || roster {
+			request := deps.walk.claimRequest(service.SourceRundown(msg), input.Scope, input.Session, input.MessageID)
+			if request == nil {
+				// An unsolicited or late response cannot certify current source coverage. An
+				// incomplete source may ask for a tracked answer on the usable request lane.
+				if deps.service.Source.CatalogueNeedsRefresh() {
+					if next, ok := deps.walk.requestCatalogue(); ok {
+						sendDiscoveryReq(ctx, deps, r, next)
+					}
+				}
+				return true, nil
+			}
+			defer deps.walk.releaseRequest(request)
+		}
+	}
+	out, err := deps.service.Source.Apply(ctx, input, msg, func(response mosxml.MOSMessage) ([]byte, error) { return wire.encodeSourceReply(ctx, response) })
+	if len(out.Reply) > 0 {
+		if sendErr := wire.sendSourceReply(ctx, out.Reply); sendErr != nil {
 			return true, sendErr
 		}
 	}
-	if recover {
+	if out.Recover {
 		logger.Warningf("Committed source input requires recovery: %v", err)
 		requestResync(ctx, deps, r, service.SourceRundown(msg))
 		return true, nil
 	}
-	if _, list := msg.(mosxml.ROList); list && err == nil {
+	if catalogue, ok := msg.(mosxml.ROListAll); ok {
+		if err == nil && out.Applied {
+			return true, handleListAll(ctx, deps, r, catalogue)
+		}
+		return true, err
+	}
+	if roster && err == nil && out.Applied {
 		deps.resync.forget(service.SourceRundown(msg))
 		if next, ok := deps.walk.resolved(service.SourceRundown(msg)); ok {
 			sendDiscoveryReq(ctx, deps, r, next)
 		}
 	}
 	return true, err
+}
+
+// Register the actual wire identity before writing, rather than guessing an identifier or
+// connection in the shared dispatcher. All four concrete request originators use this seam.
+func writeSourceRequest(deps roDeps, msg mosxml.MOSMessage, scope, session, messageID string, native bool, write func() error) error {
+	_, catalogue := msg.(mosxml.ROReqAll)
+	roster, rundown := msg.(mosxml.ROReq)
+	source := committedSource(deps.service)
+	if !catalogue && !rundown || source == nil || !source.CatalogueEnabled() {
+		return write()
+	}
+	request := deps.walk.registerRequest(roster.ROID, scope, session, messageID, native)
+	if request == nil {
+		return nil
+	}
+	err := write()
+	if err != nil && deps.walk.failedRequest(request) {
+		source.Uncertain(session)
+	}
+	return err
 }
 
 // operationBytes slices the actual operation, including its attributes, without remarshal or

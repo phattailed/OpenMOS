@@ -79,6 +79,9 @@ func OpenCommitted(dir string, binding SourceBinding, initialize bool) (*Durable
 	if err := lockCheckpoint(lock); err != nil {
 		return nil, fmt.Errorf("source state already owned or cannot be locked: %w", err)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "source-catalogue.json")); !os.IsNotExist(err) {
+		return nil, errors.New("catalogue state present; rundown state requires a separate directory")
+	}
 	if _, err := os.Stat(filepath.Join(dir, "runningorders.json")); err == nil {
 		return nil, errors.New("legacy running-order state present; automatic migration is unsupported")
 	} else if !os.IsNotExist(err) {

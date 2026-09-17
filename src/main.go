@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +28,7 @@ func main() {
 	generateConfig := flag.String("generate-config", "", "Generate a default configuration file at the specified path and exit")
 	configPath := flag.String("config", "", "Path to the configuration file (default: search for config.yaml)")
 	initializeSource := flag.Bool("initialize-source-state", false, "Provision a new committed source directory and exit; refuses existing or legacy data")
+	initializeCatalogue := flag.Bool("initialize-source-catalogue", false, "Provision a new catalogue directory and exit; refuses existing or rundown state")
 
 	// One-shot Profile 7 mode. This does not start a server: it opens a single non-passive MOS 4
 	// connection, sends one roReqStoryAction, reports the answer and exits.
@@ -93,7 +95,7 @@ func main() {
 		sourceStateDir = cfg.Source.StateDir
 	}
 	sourceBinding := repository.SourceBinding{SourceID: cfg.Source.ID, RundownID: cfg.Source.RundownID, MosID: cfg.MOS.ID, NCSID: cfg.MOS.NCSID, Transport: cfg.Source.Transport, Destination: cfg.Source.URL}
-	if cfg.Source.Enabled || *initializeSource {
+	if cfg.Source.Enabled || *initializeSource || *initializeCatalogue {
 		if !cfg.Source.Enabled || strings.ToLower(cfg.Storage.Backend) != "file" {
 			standardLogger.Fatal("Committed source requires SOURCE_ENABLED and file storage")
 		}
@@ -103,6 +105,52 @@ func main() {
 		if cfg.Source.Transport == "tcp" && !cfg.Server.Enabled || cfg.Source.Transport == "ws-server" && !cfg.WebSocket.Enabled || cfg.Source.Transport == "ws-client" && !cfg.WSClient.Enabled {
 			standardLogger.Fatal("Configured committed source transport is disabled")
 		}
+		if *initializeSource && *initializeCatalogue {
+			standardLogger.Fatal("Provision one source or catalogue directory at a time")
+		}
+		if len(cfg.Source.Additional) > 99 || len(cfg.Source.Additional) > 0 && cfg.Source.CatalogueStateDir == "" {
+			standardLogger.Fatal("Additional rundowns require catalogue state and a maximum source set of 100")
+		}
+		ids := map[string]bool{sourceBinding.RundownID: true}
+		dirs := make(map[string]bool)
+		for _, dir := range []string{sourceStateDir, cfg.State.Dir} {
+			absolute, err := filepath.Abs(dir)
+			if err != nil {
+				standardLogger.Fatal("Invalid source or native state directory")
+			}
+			dirs[absolute] = true
+		}
+		additionalDirs := []string{}
+		if cfg.Source.CatalogueStateDir != "" {
+			additionalDirs = append(additionalDirs, cfg.Source.CatalogueStateDir)
+		}
+		for _, extra := range cfg.Source.Additional {
+			binding := sourceBinding
+			binding.RundownID = extra.RundownID
+			if service.ValidateSourceBinding(binding) != nil || ids[extra.RundownID] || extra.StateDir == "" {
+				standardLogger.Fatal("Additional rundowns require unique valid IDs and explicit state directories")
+			}
+			ids[extra.RundownID] = true
+			additionalDirs = append(additionalDirs, extra.StateDir)
+		}
+		for _, dir := range additionalDirs {
+			absolute, err := filepath.Abs(dir)
+			if err != nil || dirs[absolute] {
+				standardLogger.Fatal("Catalogue and additional rundown directories must be separate")
+			}
+			dirs[absolute] = true
+		}
+	}
+	if *initializeCatalogue {
+		state, err := repository.OpenCatalogue(cfg.Source.CatalogueStateDir, service.SourceCatalogueBinding(sourceBinding), true)
+		if err != nil {
+			standardLogger.Fatalf("Cannot initialize source catalogue: %v", err)
+		}
+		if err := state.Close(); err != nil {
+			standardLogger.Fatalf("Cannot release initialized catalogue: %v", err)
+		}
+		standardLogger.Info("Catalogue initialized; startup requires a fresh authoritative enumeration")
+		return
 	}
 	if *initializeSource {
 		state, err := repository.OpenCommitted(sourceStateDir, sourceBinding, true)
@@ -263,7 +311,36 @@ func main() {
 	// framing only; they must not own message semantics.
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
 	if committed != nil {
-		mosService.Source, err = service.NewCommittedSource(ctx, committed, sourceBinding, cfg.Source.Token, cfg.MOS.ClientTimeout)
+		stores := []*repository.Durable{committed}
+		bindings := []repository.SourceBinding{sourceBinding}
+		for _, extra := range cfg.Source.Additional {
+			binding := sourceBinding
+			binding.RundownID = extra.RundownID
+			store, err := repository.OpenCommitted(extra.StateDir, binding, false)
+			if err != nil {
+				log.Fatalf("Cannot open additional source: %v", err)
+			}
+			defer store.Close()
+			stores = append(stores, store)
+			bindings = append(bindings, binding)
+		}
+		var catalogue *repository.Catalogue
+		if cfg.Source.CatalogueStateDir != "" {
+			catalogue, err = repository.OpenCatalogue(cfg.Source.CatalogueStateDir, service.SourceCatalogueBinding(sourceBinding), false)
+			if err != nil {
+				log.Fatalf("Cannot open source catalogue: %v", err)
+			}
+			defer catalogue.Close()
+		}
+		members := make([]service.SourceRundownStore, 0, len(stores))
+		for i, store := range stores {
+			members = append(members, service.SourceRundownStore{Store: store, Binding: bindings[i]})
+		}
+		if catalogue != nil {
+			mosService.Source, err = service.NewCommittedSourceSet(ctx, members, catalogue, cfg.Source.Token, cfg.MOS.ClientTimeout)
+		} else {
+			mosService.Source, err = service.NewCommittedSource(ctx, committed, sourceBinding, cfg.Source.Token, cfg.MOS.ClientTimeout)
+		}
 		if err != nil {
 			log.Fatalf("Cannot start committed source: %v", err)
 		}

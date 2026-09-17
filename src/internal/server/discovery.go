@@ -36,7 +36,10 @@ type discoveryWalk struct {
 
 	// inFlight is the running order whose roReq has been sent and not yet resolved. Empty
 	// when the walk is idle.
-	inFlight string
+	inFlight          string
+	cataloguePending  bool
+	catalogueInFlight bool
+	request           *discoveryRequest
 
 	// deadline bounds how long to wait for the in-flight answer before moving on.
 	deadline time.Time
@@ -55,10 +58,18 @@ type discoveryWalk struct {
 	degraded bool
 }
 
+// The pointer also identifies the attempt: a late write failure must not cancel its successor.
+type discoveryRequest struct {
+	rundownID                 string // Empty identifies roReqAll; otherwise this is the roReq target.
+	scope, session, messageID string
+	native, replying, expired bool
+}
+
 // walkState is the persisted shape. The in-flight identifier is written back to the front of
 // pending on load rather than kept separate, because after a restart no answer is coming for it.
 type walkState struct {
-	Pending []string `json:"pending"`
+	Pending          []string `json:"pending"`
+	CataloguePending bool     `json:"cataloguePending,omitempty"`
 }
 
 const (
@@ -119,6 +130,7 @@ func openDiscoveryWalk(dir string) *discoveryWalk {
 		logger.Infof("Resuming an interrupted discovery walk: %d running orders were advertised "+
 			"but never fetched", len(w.pending))
 	}
+	w.cataloguePending = state.CataloguePending
 	return w
 }
 
@@ -138,7 +150,7 @@ func (w *discoveryWalk) persistLocked() {
 
 	// An empty queue is written as an empty file rather than deleted, so a completed walk is
 	// distinguishable from one that never ran.
-	raw, err := json.Marshal(walkState{Pending: pending})
+	raw, err := json.Marshal(walkState{Pending: pending, CataloguePending: w.cataloguePending || w.catalogueInFlight})
 	if err != nil {
 		return
 	}
@@ -171,6 +183,10 @@ func (w *discoveryWalk) begin(roIDs []string) (next string, ok bool, dropped int
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.cataloguePending = false
+	if w.catalogueInFlight {
+		w.catalogueInFlight, w.request = false, nil
+	}
 
 	// Deduplicate while preserving order. A malformed or duplicated list should not produce
 	// duplicate requests.
@@ -191,7 +207,99 @@ func (w *discoveryWalk) begin(roIDs []string) (next string, ok bool, dropped int
 	w.pending = queue
 
 	next, ok = w.takeLocked()
+	if !ok {
+		w.persistLocked()
+	}
 	return next, ok, dropped
+}
+
+// requestCatalogue shares the existing one-request-at-a-time walk. An empty returned ID
+// with ok=true means roReqAll; no empty or fabricated roID is put on the wire.
+func (w *discoveryWalk) requestCatalogue() (string, bool) {
+	if w == nil {
+		return "", false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.catalogueInFlight {
+		return "", w.request != nil && w.request.expired // Native recovery needs a new session.
+	}
+	w.cataloguePending = true
+	next, ok := w.takeLocked()
+	if !ok {
+		w.persistLocked()
+	}
+	return next, ok
+}
+
+// registerRequest binds the reserved slot before writing, including when a response can
+// arrive before the write returns. Native TCP cannot distinguish two requests on one session
+// after a timeout, so that session stays fenced until a replacement connection is used.
+func (w *discoveryWalk) registerRequest(rundownID, scope, session, messageID string, native bool) *discoveryRequest {
+	if w == nil || scope == "" || session == "" || !native && messageID == "" {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	request := w.request
+	if request == nil || request.rundownID != rundownID {
+		return nil
+	}
+	if request.expired && request.native && request.session != session {
+		request = &discoveryRequest{rundownID: rundownID}
+		w.request = request
+	}
+	if request.session != "" {
+		return nil
+	}
+	request.scope, request.session, request.messageID, request.native = scope, session, messageID, native
+	w.deadline = time.Now().Add(w.timeout)
+	return request
+}
+
+func (w *discoveryWalk) claimRequest(rundownID, scope, session, messageID string) *discoveryRequest {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	request := w.request
+	if request == nil || request.rundownID != rundownID || request.session == "" || request.scope != scope || request.session != session ||
+		request.expired || request.replying || !time.Now().Before(w.deadline) || !request.native && request.messageID != messageID {
+		return nil
+	}
+	request.replying = true // Do not time out the slot while its durable application is running.
+	return request
+}
+
+func (w *discoveryWalk) releaseRequest(request *discoveryRequest) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.request == request {
+		request.replying = false
+	}
+}
+
+func (w *discoveryWalk) failedRequest(request *discoveryRequest) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.request != request || request.replying {
+		return false
+	}
+	if request.native {
+		request.expired = true // A failed write may still have delivered bytes.
+		w.deadline = time.Now()
+	} else {
+		if w.catalogueInFlight {
+			w.catalogueInFlight, w.cataloguePending = false, true
+		} else {
+			w.pending = append([]string{w.inFlight}, w.pending...)
+			w.inFlight = ""
+		}
+		w.request = nil
+	}
+	w.persistLocked()
+	return true
 }
 
 // enqueueUrgent puts a running order at the FRONT of the queue and returns it if it can be
@@ -254,6 +362,7 @@ func (w *discoveryWalk) resolved(roID string) (next string, ok bool) {
 		return "", false
 	}
 	w.inFlight = ""
+	w.request = nil
 	next, ok = w.takeLocked()
 	if !ok {
 		// Nothing left to request: record the completed state so a restart does not repeat it.
@@ -277,17 +386,26 @@ func (w *discoveryWalk) nudge() (next string, ok bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.inFlight == "" {
+	if w.inFlight == "" && !w.catalogueInFlight {
 		// Idle, or already waiting on nothing. If work remains, start it.
 		return w.takeLocked()
 	}
-	if time.Now().Before(w.deadline) {
+	if w.request != nil && w.request.replying || time.Now().Before(w.deadline) {
 		return "", false
+	}
+	if w.request != nil && w.request.native {
+		w.request.expired = true
+		return w.inFlight, true // Registration refuses the ambiguous old TCP session without writing.
 	}
 
 	// The answer never came, or came as a refusal the transport logged rather than routed.
 	// Abandon this one and continue; recovery is best-effort by nature.
 	w.inFlight = ""
+	w.request = nil
+	if w.catalogueInFlight {
+		w.catalogueInFlight = false
+		w.cataloguePending = true // Retry only after the existing bounded request timeout.
+	}
 	next, ok = w.takeLocked()
 	if !ok {
 		w.persistLocked()
@@ -302,8 +420,14 @@ func (w *discoveryWalk) timedOut() (roID string, yes bool) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.request != nil && (w.request.replying || w.request.expired) {
+		return "", false
+	}
 	if w.inFlight != "" && !time.Now().Before(w.deadline) {
 		return w.inFlight, true
+	}
+	if w.catalogueInFlight && !time.Now().Before(w.deadline) {
+		return "", true
 	}
 	return "", false
 }
@@ -330,12 +454,23 @@ func (w *discoveryWalk) inFlightID() string {
 
 // takeLocked pops the next pending identifier and marks it in flight. Caller holds the lock.
 func (w *discoveryWalk) takeLocked() (string, bool) {
-	if w.inFlight != "" || len(w.pending) == 0 {
+	if w.inFlight != "" || w.catalogueInFlight {
+		return "", false
+	}
+	if w.cataloguePending {
+		w.cataloguePending, w.catalogueInFlight = false, true
+		w.request = &discoveryRequest{}
+		w.deadline = time.Now().Add(w.timeout)
+		w.persistLocked()
+		return "", true
+	}
+	if len(w.pending) == 0 {
 		return "", false
 	}
 	next := w.pending[0]
 	w.pending = w.pending[1:]
 	w.inFlight = next
+	w.request = &discoveryRequest{rundownID: next}
 	w.deadline = time.Now().Add(w.timeout)
 	w.persistLocked()
 	return next, true
