@@ -459,6 +459,8 @@ func TestCommittedSourceReplayAndRestartDoNotRefreshCoverage(t *testing.T) {
 	}
 	body := sourceBody("story", sourceItem("video")+`<p>[CG A\One][CG A\Two]</p>`)
 	f.accept(t, body)
+	f.accept(t, metadataReplacement(rundownMetadata))
+	assertSourceMetadata(t, f, []string{rundownMetadata})
 	accepted, _ := f.store.Checkpoint()
 	acceptedStories := f.snapshot(t).Stories
 	before := f.snapshot(t).Revision
@@ -477,6 +479,7 @@ func TestCommittedSourceReplayAndRestartDoNotRefreshCoverage(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(accepted, reopened) {
 		t.Fatal("restart changed the committed allocations, payload, revision or original receipts")
 	}
+	assertSourceMetadata(t, f, []string{rundownMetadata})
 	f.source, err = NewCommittedSource(context.Background(), f.store, f.binding, "synthetic-token", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -488,6 +491,7 @@ func TestCommittedSourceReplayAndRestartDoNotRefreshCoverage(t *testing.T) {
 	if f.snapshot(t).Complete {
 		t.Fatal("old input receipt re-established completeness after restart")
 	}
+	assertSourceMetadata(t, f, []string{rundownMetadata})
 	conflict := strings.Replace(sourceRoster("story"), "Synthetic rundown", "Changed rundown", 1)
 	reply, err = f.send(t, "sender-id", conflict)
 	if err == nil || !bytes.Contains(reply, []byte("NACK")) {
@@ -576,6 +580,8 @@ func TestCommittedSourcePublisherReplaysLostReplyAndFencesLateReceipt(t *testing
 	f.accept(t, sourceRoster("story"))
 	body := sourceBody("story", sourceItem("video")+`<p>[CG A\Same][CG A\Same]</p>`)
 	f.accept(t, body)
+	f.accept(t, metadataReplacement(rundownMetadata))
+	assertSourceMetadata(t, f, []string{rundownMetadata})
 	if err := f.source.publishOnce(context.Background(), server.Client()); err == nil {
 		t.Fatal("lost reply was reported as accepted")
 	}
@@ -587,6 +593,10 @@ func TestCommittedSourcePublisherReplaysLostReplyAndFencesLateReceipt(t *testing
 	mu.Unlock()
 	if !same {
 		t.Fatal("lost reply retried a different source body")
+	}
+	var replay struct{ Metadata []string }
+	if err := json.Unmarshal(bodies[1], &replay); err != nil || !reflect.DeepEqual(replay.Metadata, []string{rundownMetadata}) {
+		t.Fatal("pending HTTP replay lost rundown metadata")
 	}
 	// Exercise the first receipt of a still-pending revision, not only renewal of one already
 	// accepted: a duplicate-receipt shortcut must not conceal a missing late-reply fence.

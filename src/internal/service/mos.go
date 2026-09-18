@@ -261,6 +261,7 @@ func (s *MOSService) ProcessRunningOrderInfo(ctx context.Context, roInfo xml.Run
 		existingRO.Slug = roInfo.Slug
 		existingRO.Channel = roInfo.Channel
 		existingRO.Duration = duration
+		existingRO.ExternalMetadata = preserveExternalMetadata(roInfo.MosExternalMetadata)
 		existingRO.UpdatedAt = time.Now()
 		// Only overwrite when the transport supplied one, so an update carrying no
 		// MOS ID cannot erase a value recorded earlier.
@@ -403,6 +404,7 @@ func (s *MOSService) ReplaceRunningOrder(ctx context.Context, roReplace xml.RORe
 		existingRO.Slug = roReplace.Slug
 		existingRO.Channel = roReplace.Channel
 		existingRO.Duration = duration
+		existingRO.ExternalMetadata = preserveExternalMetadata(roReplace.MosExternalMetadata)
 		existingRO.Version++
 		existingRO.UpdatedAt = time.Now()
 
@@ -660,6 +662,7 @@ func (s *MOSService) ReplaceMetadata(ctx context.Context, roMeta xml.ROMetadataR
 	}
 
 	// Update metadata fields
+	ro.ExternalMetadata = preserveExternalMetadata(roMeta.MosExternalMetadata)
 	if roMeta.Slug != "" {
 		ro.Slug = roMeta.Slug
 	}
