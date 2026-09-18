@@ -19,6 +19,7 @@ type SourceSnapshot struct {
 	Revision  uint64        `json:"revision"`
 	Active    bool          `json:"active"`
 	Complete  bool          `json:"complete"`
+	Metadata  *[]string     `json:"metadata,omitempty"`
 	Stories   []SourceStory `json:"stories"`
 }
 
@@ -96,6 +97,9 @@ type SourceMedia struct {
 func marshalSource(snapshot SourceSnapshot) ([]byte, error) {
 	if snapshot.Version != 1 || snapshot.Revision == 0 || snapshot.Revision > repository.MaxSourceRevision || !sourceText(snapshot.SourceID, 512, true) || !sourceText(snapshot.RundownID, 512, true) || len(snapshot.Stories) > 100 || snapshot.Stories == nil {
 		return nil, errors.New("source header or story limit is invalid")
+	}
+	if err := sourceStrings(snapshot.Metadata, 16384); err != nil {
+		return nil, err
 	}
 	stories := make(map[string]bool)
 	total := 0

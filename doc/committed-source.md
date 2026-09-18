@@ -204,6 +204,23 @@ the raw strings `objDur` and `objTB`. Media entries carry `role`, `url` and opti
 Optional absence is distinct from explicit empty strings, empty arrays or empty positional
 fields. Durations and metadata payloads are never interpreted for destination use.
 
+The snapshot can also carry optional top-level `metadata`: an ordered array of complete,
+opaque `mosExternalMetadata` XML strings for the rundown. A full `roCreate`, `roReplace` or
+`roList` establishes this list; `roMetadataReplace` replaces it without changing stories.
+An authoritative message that omits the blocks establishes `metadata:[]`, as does rundown
+deletion. An empty `mosPayload` remains a block. No scope, schema or payload is interpreted.
+The array uses the occurrence metadata bounds: at most 32 strings, each valid UTF-8 and at
+most 16384 Unicode code points, within the existing 64 KiB complete JSON limit. Content
+outside publication limits stays in the MOS repository and source checkpoint; publication
+becomes incomplete and omits metadata rather than truncating it or claiming an empty list.
+
+Metadata and its pending projection survive checkpoint reopening and receipt replay.
+Older checkpoints remain readable; omitted metadata means not yet established until a fresh
+authoritative message arrives. A compatible receiver must be deployed before this producer:
+earlier receivers reject the additional top-level property. Earlier producers with a strict
+source-state decoder cannot read a checkpoint after its new metadata field has been written;
+an operational downgrade requires a separately validated compatible reader, not a state reset.
+
 In catalogue mode, each story can also carry optional `page` and `slug` strings. These come
 from present standard `storyNum` and `storySlug` properties in the retained roster, overridden
 only by a present property in the current story body message. Explicit empty values override;

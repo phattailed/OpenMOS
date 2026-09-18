@@ -60,12 +60,13 @@ func (s *MOSService) ApplyROList(ctx context.Context, list xml.ROList, mosID str
 	// A roList and a roCreate describe a running order identically, so reuse the
 	// create-or-update path rather than duplicating persistence logic.
 	info := xml.RunningOrderInfo{
-		ID:       list.ID,
-		Slug:     list.Slug,
-		Channel:  list.Channel,
-		EditTime: list.EdStart,
-		Duration: list.EdDur,
-		Stories:  list.Stories,
+		ID:                  list.ID,
+		Slug:                list.Slug,
+		Channel:             list.Channel,
+		EditTime:            list.EdStart,
+		Duration:            list.EdDur,
+		Stories:             list.Stories,
+		MosExternalMetadata: list.MosExternalMetadata,
 	}
 	if err := s.ProcessRunningOrderInfo(ctx, info, mosID); err != nil {
 		return fmt.Errorf("failed to apply roList for %q: %w", list.ID, err)

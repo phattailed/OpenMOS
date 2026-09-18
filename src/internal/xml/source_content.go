@@ -289,6 +289,28 @@ func sourceChildren(raw string) ([]sourceXMLNode, error) {
 	}
 }
 
+// RundownSourceMetadata retains complete direct metadata blocks in wire order.
+// An authoritative roster or metadata replacement without blocks establishes an empty list.
+func RundownSourceMetadata(raw string) ([]string, error) {
+	var operation struct {
+		Inner string `xml:",innerxml"`
+	}
+	if err := xml.Unmarshal([]byte(raw), &operation); err != nil {
+		return nil, err
+	}
+	nodes, err := sourceChildren(operation.Inner)
+	if err != nil {
+		return nil, err
+	}
+	blocks := []string{}
+	for _, node := range nodes {
+		if node.XMLName.Local == "mosExternalMetadata" {
+			blocks = append(blocks, node.raw)
+		}
+	}
+	return blocks, nil
+}
+
 type sourceItemWire struct {
 	values   map[string]string
 	media    *[]SourceMedia

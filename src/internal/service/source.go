@@ -83,6 +83,7 @@ type sourceState struct {
 	NextCue     uint64            `json:"nextCue"`
 	Halted      bool              `json:"halted"`
 	RawRoster   string            `json:"rawRoster"`
+	Metadata    *[]string         `json:"metadata,omitempty"`
 	Problem     string            `json:"problem,omitempty"`
 }
 
@@ -253,7 +254,7 @@ func (s *CommittedSource) revise(cp *repository.SourceCheckpoint, state sourceSt
 	if cp.Revision == repository.MaxSourceRevision {
 		return errors.New("source revision exhausted; reset is unsupported")
 	}
-	snapshot := SourceSnapshot{Version: 1, SourceID: s.binding.SourceID, RundownID: s.binding.RundownID, Revision: cp.Revision + 1, Active: state.Active, Complete: state.RosterFresh, Stories: []SourceStory{}}
+	snapshot := SourceSnapshot{Version: 1, SourceID: s.binding.SourceID, RundownID: s.binding.RundownID, Revision: cp.Revision + 1, Active: state.Active, Complete: state.RosterFresh, Metadata: state.Metadata, Stories: []SourceStory{}}
 	state.Problem = ""
 	if !state.RosterFresh {
 		state.Problem = "fresh_roster_required"
@@ -284,11 +285,12 @@ func (s *CommittedSource) revise(cp *repository.SourceCheckpoint, state sourceSt
 		}
 	}
 	pending, err := marshalSource(snapshot)
-	if err != nil && snapshot.Complete {
+	if err != nil {
 		// Receiver limits cannot discard valid MOS content. Raw roster/body values and derived
 		// source state stay committed; the neutral receiver gets a visible incomplete suspension.
 		state.Problem = "source_projection_outside_limits"
 		snapshot.Complete, snapshot.Stories = false, []SourceStory{}
+		snapshot.Metadata = nil
 		pending, err = marshalSource(snapshot)
 	}
 	if err != nil {
@@ -493,6 +495,14 @@ func (s *CommittedSource) halt(ctx context.Context) error {
 }
 
 func (s *CommittedSource) applyMessage(ctx context.Context, staged *MOSService, state *sourceState, msg mosxml.MOSMessage, raw string) error {
+	switch msg.(type) {
+	case mosxml.RunningOrderInfo, mosxml.ROReplace, mosxml.ROList, mosxml.ROMetadataReplace:
+		metadata, err := mosxml.RundownSourceMetadata(raw)
+		if err != nil {
+			return err
+		}
+		state.Metadata = &metadata
+	}
 	switch m := msg.(type) {
 	case mosxml.RunningOrderInfo:
 		return s.applyRoster(ctx, staged, state, mosxml.ROReplace{ID: m.ID, Slug: m.Slug, Channel: m.Channel, EdDur: m.Duration, Stories: m.Stories, MosExternalMetadata: m.MosExternalMetadata}, raw)
@@ -506,6 +516,7 @@ func (s *CommittedSource) applyMessage(ctx context.Context, staged *MOSService, 
 		}
 		state.Active, state.RosterFresh, state.Stories = false, true, nil
 		state.RawRoster = raw
+		state.Metadata = &[]string{}
 		return nil
 	case mosxml.ROStorySend:
 		return s.applyBody(ctx, staged, state, m, raw)

@@ -142,6 +142,11 @@ func TestSourceSetRetainsUnselectedEditsAndExactDisplayProperties(t *testing.T) 
 	if bytes.Contains(cp.Pending, []byte(`"segment"`)) {
 		t.Fatal("external metadata was interpreted as an authoritative display property")
 	}
+	f.accept(t, metadataReplacement(rundownMetadata))
+	assertSourceMetadata(t, &sourceFixture{store: f.group.byRundown["rundown"].store}, []string{rundownMetadata})
+	if !reflect.DeepEqual(f.snapshot(t, "other"), b) || f.catalogue(t).Revision != catRevision {
+		t.Fatal("rundown metadata changed another snapshot or catalogue authority")
+	}
 	// Float/removal is a real roster replacement, not a fabricated zero-content snapshot.
 	f.accept(t, `<roReplace><roID>rundown</roID><roSlug> Show A </roSlug></roReplace>`)
 	if empty := f.snapshot(t, "rundown"); !empty.Complete || len(empty.Stories) != 0 || !reflect.DeepEqual(f.snapshot(t, "other"), b) {
