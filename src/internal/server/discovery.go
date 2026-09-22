@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"airshift/openmos/internal/repository"
 	"airshift/openmos/pkg/logger"
 )
 
@@ -85,8 +86,17 @@ const (
 
 	// defaultWalkMax bounds the queue. A peer advertising an implausible number of running
 	// orders should not be able to commit us to an unbounded sequence of requests.
-	defaultWalkMax = 512
+	defaultWalkMax = repository.MaxSourceMembers
 )
+
+func (w *discoveryWalk) catalogueFits(count int) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return count <= w.max
+}
 
 func newDiscoveryWalk() *discoveryWalk {
 	return &discoveryWalk{timeout: defaultWalkTimeout, max: defaultWalkMax, degraded: true}

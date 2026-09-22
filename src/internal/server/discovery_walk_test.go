@@ -2,12 +2,70 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	stdxml "encoding/xml"
 	"fmt"
 	"testing"
 	"time"
 
+	"airshift/openmos/internal/repository"
+	"airshift/openmos/internal/service"
 	mosxml "airshift/openmos/internal/xml"
 )
+
+type catalogueOnlyResponder struct{ recordingResponder }
+
+func (*catalogueOnlyResponder) encodeSourceReply(context.Context, mosxml.MOSMessage) ([]byte, error) {
+	return nil, fmt.Errorf("catalogue must not produce a MOS acknowledgement")
+}
+
+func (*catalogueOnlyResponder) sendSourceReply(context.Context, []byte) error {
+	return fmt.Errorf("catalogue must not produce a MOS acknowledgement")
+}
+
+func TestCatalogueCapacityIsCheckedBeforeSourceAuthority(t *testing.T) {
+	ctx := context.Background()
+	binding := repository.SourceBinding{SourceID: "source", MosID: "device", NCSID: "newsroom", Transport: "ws-client", Destination: "http://127.0.0.1:1234/v1/openmos-snapshots"}
+	catalogue, err := repository.OpenCatalogue(t.TempDir(), service.SourceCatalogueBinding(binding), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalogue.Close()
+	source, err := service.NewCommittedSourceSet(ctx, nil, catalogue, "synthetic-token", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := service.SourceInput{Transport: "ws-client", NCSID: "newsroom", Scope: "ws-client:ro:standard", Session: "session", MessageID: "prior", Content: []byte(`<roListAll><ro><roID>retained</roID></ro></roListAll>`)}
+	if err := source.Observe(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	responder := &catalogueOnlyResponder{}
+	if _, err := source.Apply(ctx, input, listAllOf("retained"), func(msg mosxml.MOSMessage) ([]byte, error) { return stdxml.Marshal(msg) }); err != nil {
+		t.Fatal(err)
+	}
+	deps, walk := walkDeps(t)
+	deps.service.Source = source
+	walk.max = 1
+	walk.requestCatalogue()
+	walk.registerRequest("", input.Scope, input.Session, "current", false)
+	input.MessageID = "current"
+	msg := listAllOf("new-one", "new-two")
+	input.Content, _ = stdxml.Marshal(msg)
+	if _, err := dispatchRunningOrder(context.WithValue(ctx, sourceInputKey{}, input), deps, responder, msg); err == nil {
+		t.Fatal("discovery capacity failure was not exposed")
+	}
+	cp, err := catalogue.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot service.SourceCatalogue
+	if err := json.Unmarshal(cp.Pending, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Complete || len(snapshot.Rundowns) != 1 || snapshot.Rundowns[0].ID != "retained" || source.RetainsRundown("new-one") || source.RetainsRundown("new-two") || walk.remaining() != 0 {
+		t.Fatal("capacity failure enrolled or queued a partial set, removed retained membership, or published complete authority")
+	}
+}
 
 // The discovery walk: roReqAll -> roListAll -> one roReq per advertised running order -> apply
 // each returned roList.

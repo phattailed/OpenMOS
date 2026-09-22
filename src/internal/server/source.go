@@ -64,11 +64,18 @@ func dispatchCommittedSource(ctx context.Context, deps roDeps, r peerResponder, 
 			defer deps.walk.releaseRequest(request)
 		}
 	}
+	if listing, ok := msg.(mosxml.ROListAll); ok && !deps.walk.catalogueFits(len(listing.ROs)) {
+		deps.service.Source.Uncertain(input.Session)
+		return true, errors.New("catalogue exceeds discovery capacity; complete authority withheld")
+	}
 	out, err := deps.service.Source.Apply(ctx, input, msg, func(response mosxml.MOSMessage) ([]byte, error) { return wire.encodeSourceReply(ctx, response) })
 	if len(out.Reply) > 0 {
 		if sendErr := wire.sendSourceReply(ctx, out.Reply); sendErr != nil {
 			return true, sendErr
 		}
+	}
+	if !catalogue && deps.service.Source.CatalogueEnabled() && !deps.service.Source.RetainsRundown(service.SourceRundown(msg)) {
+		refreshCatalogue(ctx, deps, r)
 	}
 	if out.Recover {
 		logger.Warningf("Committed source input requires recovery: %v", err)
@@ -88,6 +95,18 @@ func dispatchCommittedSource(ctx context.Context, deps roDeps, r peerResponder, 
 		}
 	}
 	return true, err
+}
+
+// Unknown traffic is only a discovery hint. Profile 0 traffic also refreshes the bounded
+// catalogue lifetime, using the same serialized request lane and correlation as recovery.
+func refreshCatalogue(ctx context.Context, deps roDeps, r peerResponder) {
+	source := committedSource(deps.service)
+	if source == nil || !source.CatalogueNeedsRefresh() || !r.canOriginate() && (deps.origin == nil || !deps.origin.ready()) {
+		return
+	}
+	if next, ok := deps.walk.requestCatalogue(); ok {
+		sendDiscoveryReq(ctx, deps, r, next)
+	}
 }
 
 // Register the actual wire identity before writing, rather than guessing an identifier or

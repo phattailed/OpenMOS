@@ -17,62 +17,14 @@ import (
 )
 
 func (g *CommittedSourceSet) RunPublisher(ctx context.Context) {
-	if strings.HasSuffix(g.binding.Destination, "/v2/source-sync") {
-		g.runBoundedPublisher(ctx)
-		return
-	}
-	var done sync.WaitGroup
-	for _, source := range g.members {
-		done.Add(1)
-		go func() { defer done.Done(); source.RunPublisher(ctx) }()
-	}
-	done.Add(1)
-	go func() { defer done.Done(); g.runCataloguePublisher(ctx) }()
-	done.Wait()
-}
-
-func (g *CommittedSourceSet) runCataloguePublisher(ctx context.Context) {
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-g.wake:
-		case <-timer.C:
-		}
-		delay := 10 * time.Second
-		if err := g.publishCatalogueOnce(ctx, client); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if !errors.Is(err, errSourceContinue) {
-				logger.Warningf("Committed catalogue delivery unavailable: %v", err)
-			}
-			if errors.Is(err, errSourceHalted) {
-				return
-			}
-			delay = time.Second
-			if errors.Is(err, errSourceContinue) {
-				delay = 0
-			}
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(delay)
-	}
+	g.runBoundedPublisher(ctx)
 }
 
 func (g *CommittedSourceSet) publishCatalogueOnce(ctx context.Context, client *http.Client) error {
 	g.mu.Lock()
 	expired := false
 	for session, seen := range g.sessions {
-		if time.Since(seen) > g.members[0].timeout {
+		if time.Since(seen) > g.timeout {
 			delete(g.sessions, session)
 			if g.releaseSession(session) {
 				expired = true
@@ -82,7 +34,7 @@ func (g *CommittedSourceSet) publishCatalogueOnce(ctx context.Context, client *h
 			}
 		}
 	}
-	if expired {
+	if expired || !g.enumerated.IsZero() && time.Since(g.enumerated) > g.timeout {
 		if err := g.invalidateCatalogue(); err != nil {
 			g.mu.Unlock()
 			return err
@@ -103,7 +55,7 @@ func (g *CommittedSourceSet) publishCatalogueOnce(ctx context.Context, client *h
 				return err
 			}
 		}
-		complete, err := g.transfer.step(ctx, client, g.binding.Destination, g.members[0].token)
+		complete, err := g.transfer.step(ctx, client, g.binding.Destination, g.token)
 		if errors.Is(err, errSourceHalted) {
 			g.mu.Lock()
 			haltErr := g.catalogue.Commit(func(latest *repository.CatalogueCheckpoint) error { latest.Halted = true; return nil })
@@ -121,7 +73,7 @@ func (g *CommittedSourceSet) publishCatalogueOnce(ctx context.Context, client *h
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Authorization", "Bearer "+g.members[0].token)
+		req.Header.Set("Authorization", "Bearer "+g.token)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
@@ -175,13 +127,17 @@ func (g *CommittedSourceSet) publishCatalogueOnce(ctx context.Context, client *h
 }
 
 // Four fixed workers share fair one-request turns. Per-show goroutines would multiply
-// in-flight bodies and timeouts with the size of the configured source directory.
+// in-flight bodies and timeouts with the size of the retained source directory.
 func (g *CommittedSourceSet) runBoundedPublisher(ctx context.Context) {
+	type job struct {
+		index  int
+		member *CommittedSource
+	}
 	type result struct {
 		index int
 		err   error
 	}
-	jobs := make(chan int)
+	jobs := make(chan job)
 	done := make(chan result, 4)
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	var workers sync.WaitGroup
@@ -189,15 +145,15 @@ func (g *CommittedSourceSet) runBoundedPublisher(ctx context.Context) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			for index := range jobs {
+			for job := range jobs {
 				var err error
-				if index == len(g.members) {
+				if job.member == nil {
 					err = g.publishCatalogueOnce(ctx, client)
 				} else {
-					err = g.members[index].publishOnce(ctx, client)
+					err = job.member.publishOnce(ctx, client)
 				}
 				select {
-				case done <- result{index, err}:
+				case done <- result{job.index, err}:
 				case <-ctx.Done():
 					return
 				}
@@ -205,7 +161,9 @@ func (g *CommittedSourceSet) runBoundedPublisher(ctx context.Context) {
 		}()
 	}
 	defer func() { close(jobs); workers.Wait() }()
-	next := make([]time.Time, len(g.members)+1)
+	// Catalogue always owns slot zero. Appending a member cannot reinterpret an in-flight job.
+	members := []*CommittedSource{nil}
+	next := make([]time.Time, 1)
 	busy := make([]bool, len(next))
 	halted := make([]bool, len(next))
 	cursor := 0
@@ -228,23 +186,34 @@ func (g *CommittedSourceSet) runBoundedPublisher(ctx context.Context) {
 			next[result.index] = time.Now().Add(delay)
 		case <-ticker.C:
 		}
+		g.mu.Lock()
+		members = append(members, g.members[len(members)-1:]...)
+		g.mu.Unlock()
+		for len(next) < len(members) {
+			next = append(next, time.Time{})
+			busy = append(busy, false)
+			halted = append(halted, false)
+		}
 		start := cursor
 		for n := 0; n < len(next); n++ {
 			index := (start + n) % len(next)
+			if busy[index] || halted[index] {
+				continue // Keep a pending wake until the in-flight result has been handled.
+			}
 			wake := g.wake
-			if index < len(g.members) {
-				wake = g.members[index].wake
+			if members[index] != nil {
+				wake = members[index].wake
 			}
 			select {
 			case <-wake:
 				next[index] = time.Time{}
 			default:
 			}
-			if busy[index] || halted[index] || time.Now().Before(next[index]) {
+			if time.Now().Before(next[index]) {
 				continue
 			}
 			select {
-			case jobs <- index:
+			case jobs <- job{index, members[index]}:
 				busy[index] = true
 				cursor = (index + 1) % len(next)
 			default:

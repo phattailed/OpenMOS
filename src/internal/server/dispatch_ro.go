@@ -92,6 +92,10 @@ func dispatchRunningOrder(ctx context.Context, deps roDeps, r peerResponder, msg
 	if handled, err := dispatchCommittedSource(ctx, deps, r, msg); handled {
 		return true, err
 	}
+	switch msg.(type) {
+	case mosxml.Heartbeat, mosxml.KeepAlive, mosxml.ListMachInfo:
+		refreshCatalogue(ctx, deps, r)
+	}
 	// Any inbound traffic is an opportunity to unstick a discovery walk whose answer never
 	// arrived. See discoveryWalk.nudge for why this is opportunistic rather than timer-driven.
 	advanceWalk(ctx, deps, r)
@@ -373,9 +377,6 @@ func handleCreate(ctx context.Context, deps roDeps, r peerResponder, m mosxml.Ru
 func handleListAll(ctx context.Context, deps roDeps, r peerResponder, m mosxml.ROListAll) error {
 	roIDs := make([]string, 0, len(m.ROs))
 	for _, ro := range m.ROs {
-		if source := committedSource(deps.service); source != nil && source.CatalogueEnabled() && !source.RetainsRundown(ro.ID) {
-			continue
-		}
 		roIDs = append(roIDs, ro.ID)
 	}
 

@@ -219,7 +219,27 @@ func TestCommittedSourceIngressRetainsBeforeACKAndReplaysOriginal(t *testing.T) 
 				}
 				// A subsequent valid heartbeat proves the malformed frame was processed, and must
 				// update transport liveness without making uncertain source content fresh again.
-				_, _ = send(frame("after-malformed", "<heartbeat/>"))
+				reply, _ := send(frame("after-malformed", "<heartbeat/>"))
+				if variant == "ws-server-set" {
+					// The same health input now starts catalogue recovery on the usable server
+					// lane. Assert that extra request, then consume the heartbeat's own response.
+					_, msg, _, err := mosxml.ParseEnvelope(reply)
+					if err != nil || msg.GetMessageType() != "roReqAll" {
+						t.Fatalf("health input did not request fresh catalogue authority: %v", err)
+					}
+					kind, wire, err := wsConn.Read(ctx)
+					if err != nil || kind != websocket.MessageBinary {
+						t.Fatalf("missing heartbeat response after catalogue request: %v", err)
+					}
+					raw, err := mosxml.DecodeUCS2BE(wire)
+					if err != nil {
+						t.Fatal(err)
+					}
+					env, msg, _, err := mosxml.ParseEnvelope(raw)
+					if err != nil || env.MessageID != "after-malformed" || msg.GetMessageType() != "mosAck" {
+						t.Fatalf("heartbeat response lost its original correlation: %v", err)
+					}
+				}
 				cp, _ = durable.Checkpoint()
 				_ = json.Unmarshal(cp.Pending, &snapshot)
 				if snapshot.Complete || cp.Revision <= before {

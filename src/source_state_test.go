@@ -39,7 +39,7 @@ func TestSourceStateDirectoryEntrypoint(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess interrupt delivery is unavailable on Windows")
 	}
-	for _, configuration := range []string{"environment", "yaml", "fallback", "catalogue"} {
+	for _, configuration := range []string{"environment", "yaml", "fallback", "catalogue", "discovered"} {
 		t.Run(configuration, func(t *testing.T) {
 			testSourceStateDirectory(t, configuration)
 		})
@@ -52,6 +52,7 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 	checkpointDir := filepath.Join(dir, "checkpoint")
 	catalogueDir, additionalDir := filepath.Join(dir, "catalogue"), filepath.Join(dir, "additional")
 	multi := configuration == "catalogue"
+	discovered := configuration == "discovered"
 	separate := configuration != "fallback"
 	if !separate {
 		checkpointDir = nativeDir
@@ -134,7 +135,7 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if multi && body.SourceID == "source" && body.Revision > 0 {
+		if (multi || discovered) && body.SourceID == "source" && body.Revision > 0 {
 			select {
 			case posted <- r.URL.Path + ":" + body.RundownID:
 			default:
@@ -166,6 +167,9 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 				t.Fatal(err)
 			}
 			cmd.Env = append(cmd.Env, "SOURCE_CATALOGUE_STATE_DIR="+catalogueDir, "SOURCE_ADDITIONAL_RUNDOWNS="+string(extra))
+		}
+		if discovered {
+			cmd.Env = append(cmd.Env, "SOURCE_CATALOGUE_STATE_DIR="+catalogueDir, "SOURCE_RUNDOWN_ID=", "SOURCE_ADDITIONAL_RUNDOWNS=[]")
 		}
 		return cmd
 	}
@@ -202,12 +206,19 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	output, err := command(ctx, "initialize", true).CombinedOutput()
+	mode := "initialize"
+	if discovered {
+		mode = "initialize-catalogue"
+	}
+	output, err := command(ctx, mode, true).CombinedOutput()
 	cancel()
 	if err != nil {
 		t.Fatalf("initialize separate checkpoint beside retained legacy state: %v\n%s", err, output)
 	}
 	checkpointPath := filepath.Join(checkpointDir, "source-checkpoint.json")
+	if discovered {
+		checkpointPath = filepath.Join(catalogueDir, "source-catalogue.json")
+	}
 	read(checkpointPath)
 	checkLegacy()
 	if mark() != 100 {
@@ -246,7 +257,7 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 		name    string
 		enabled bool
 	}{{"source startup", true}, {"source restart", true}, {"legacy rollback", false}} {
-		if !step.enabled && !separate {
+		if !step.enabled && (!separate || discovered) {
 			continue // A shared committed directory deliberately cannot be opened as legacy state.
 		}
 		previousMark := mark()
@@ -267,8 +278,12 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 		var got request
 		select {
 		case got = <-requests:
-			if multi && step.enabled {
+			if (multi || discovered) && step.enabled {
 				want := map[string]bool{"/v1/openmos-snapshots:rundown": true, "/v1/openmos-snapshots:other": true, "/v1/openmos-catalogue:": true}
+				if discovered {
+					delete(want, "/v1/openmos-snapshots:rundown")
+					delete(want, "/v1/openmos-snapshots:other")
+				}
 				for len(want) > 0 {
 					select {
 					case path := <-posted:
@@ -302,14 +317,19 @@ func testSourceStateDirectory(t *testing.T, configuration string) {
 		if step.enabled {
 			var saved struct {
 				Source struct{ Revision uint64 }
+				State  struct{ Revision uint64 }
 			}
 			if err := json.Unmarshal(checkpoint, &saved); err != nil {
 				t.Fatal(err)
 			}
-			if saved.Source.Revision <= revision {
+			current := saved.Source.Revision
+			if discovered {
+				current = saved.State.Revision
+			}
+			if current == 0 || current < revision || !discovered && current == revision {
 				t.Fatalf("%s did not reopen and advance the retained source revision", step.name)
 			}
-			revision = saved.Source.Revision
+			revision = current
 		} else if !bytes.Equal(checkpoint, previousCheckpoint) {
 			t.Fatal("legacy rollback changed the source checkpoint")
 		}

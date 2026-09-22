@@ -102,7 +102,11 @@ func main() {
 		if !cfg.Source.Enabled || strings.ToLower(cfg.Storage.Backend) != "file" {
 			standardLogger.Fatal("Committed source requires SOURCE_ENABLED and file storage")
 		}
-		if err := service.ValidateSourceBinding(sourceBinding); err != nil {
+		validate := service.ValidateSourceBinding
+		if cfg.Source.CatalogueStateDir != "" && cfg.Source.RundownID == "" && !*initializeSource && !*upgradeSource {
+			validate = service.ValidateSourceSetBinding
+		}
+		if err := validate(sourceBinding); err != nil {
 			standardLogger.Fatalf("Invalid committed source configuration: %v", err)
 		}
 		if cfg.Source.Transport == "tcp" && !cfg.Server.Enabled || cfg.Source.Transport == "ws-server" && !cfg.WebSocket.Enabled || cfg.Source.Transport == "ws-client" && !cfg.WSClient.Enabled {
@@ -117,8 +121,12 @@ func main() {
 		if modes > 1 {
 			standardLogger.Fatal("Provision one source or catalogue directory at a time")
 		}
-		if (len(cfg.Source.Additional) > 99 && !strings.HasSuffix(cfg.Source.URL, "/v2/source-sync")) || len(cfg.Source.Additional) > 0 && cfg.Source.CatalogueStateDir == "" {
-			standardLogger.Fatal("Additional rundowns require catalogue state and a maximum source set of 100")
+		count := len(cfg.Source.Additional)
+		if cfg.Source.RundownID != "" {
+			count++
+		}
+		if count > repository.MaxSourceMembers || (count > 100 && !strings.HasSuffix(cfg.Source.URL, "/v2/source-sync")) || len(cfg.Source.Additional) > 0 && cfg.Source.CatalogueStateDir == "" {
+			standardLogger.Fatal("Additional rundowns require catalogue state; retained capacity is 100 for v1 or 512 for v2")
 		}
 		ids := map[string]bool{sourceBinding.RundownID: true}
 		dirs := make(map[string]bool)
@@ -261,6 +269,15 @@ func main() {
 		itemRepo = repository.NewMongoItemRepository(database)
 		objectRepo = repository.NewMongoObjectRepository(database)
 	case "file", "":
+		if cfg.Source.Enabled && cfg.Source.RundownID == "" {
+			// Catalogue-only startup has no arbitrary primary rundown. Committed input is
+			// routed to its independently retained member by the shared source dispatcher.
+			runningOrderRepo = repository.NewMemoryRunningOrderRepository()
+			storyRepo = repository.NewMemoryStoryRepository()
+			itemRepo = repository.NewMemoryItemRepository()
+			objectRepo = repository.NewMemoryObjectRepository()
+			break
+		}
 		// The interop default. Protocol state already survives a restart; the rundown did not,
 		// which left OpenMOS silently disagreeing with the NCS about what it holds. The NCS has
 		// no reason to say again, so the divergence is invisible until something breaks -- which
@@ -331,9 +348,13 @@ func main() {
 	// One shared service and message core behind every transport. Transports own
 	// framing only; they must not own message semantics.
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
-	if committed != nil {
-		stores := []*repository.Durable{committed}
-		bindings := []repository.SourceBinding{sourceBinding}
+	if cfg.Source.Enabled {
+		var stores []*repository.Durable
+		var bindings []repository.SourceBinding
+		if committed != nil {
+			stores = append(stores, committed)
+			bindings = append(bindings, sourceBinding)
+		}
 		for _, extra := range cfg.Source.Additional {
 			binding := sourceBinding
 			binding.RundownID = extra.RundownID

@@ -111,7 +111,7 @@ type Config struct {
 		Transport         string
 		URL               string
 		Token             string `yaml:"-"`
-		CatalogueStateDir string
+		CatalogueStateDir string // Catalogue and discovered rundown root; no primary ID is required.
 		Additional        []SourceRundown
 	}
 
