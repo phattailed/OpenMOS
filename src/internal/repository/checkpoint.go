@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -93,6 +94,9 @@ func OpenCommitted(dir string, binding SourceBinding, initialize bool) (*Durable
 	d.path = filepath.Join(dir, checkpointFilename)
 	d.binding = binding
 	d.committed = true
+	if strings.HasSuffix(binding.Destination, "/v2/source-sync") {
+		d.content = newCheckpointContent(d.path)
+	}
 	d.checkpoint = &SourceCheckpoint{}
 	raw, err := os.ReadFile(d.path)
 	if os.IsNotExist(err) && initialize {
@@ -107,6 +111,12 @@ func OpenCommitted(dir string, binding SourceBinding, initialize bool) (*Durable
 	}
 	if initialize {
 		return nil, errors.New("source state already initialized; reset is unsupported")
+	}
+	if d.content != nil {
+		raw, err = d.content.read(raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var file checkpointFile
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -211,13 +221,25 @@ func (d *Durable) Checkpoint() (SourceCheckpoint, error) {
 	return cloneCheckpoint(*d.checkpoint)
 }
 
-func cloneCheckpoint(in SourceCheckpoint) (out SourceCheckpoint, err error) {
-	raw, err := json.Marshal(in)
-	if err != nil {
-		return out, err
+func cloneCheckpoint(in SourceCheckpoint) (SourceCheckpoint, error) {
+	out := in
+	out.State = bytes.Clone(in.State)
+	out.Pending = bytes.Clone(in.Pending)
+	out.Receipts = append([]InputReceipt(nil), in.Receipts...)
+	for i := range out.Receipts {
+		out.Receipts[i].Response = bytes.Clone(out.Receipts[i].Response)
 	}
-	err = json.Unmarshal(raw, &out)
-	return out, err
+	return out, nil
+}
+
+// Delivery reads immutable committed bytes. Publishers must never modify the returned slices.
+func (d *Durable) Delivery() (SourceCheckpoint, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.checkpoint == nil || d.degraded {
+		return SourceCheckpoint{}, errors.New("committed source storage is unavailable")
+	}
+	return SourceCheckpoint{Revision: d.checkpoint.Revision, AcceptedRevision: d.checkpoint.AcceptedRevision, State: d.checkpoint.State, Pending: d.checkpoint.Pending}, nil
 }
 
 func validateCheckpoint(state SourceCheckpoint, binding SourceBinding) error {
@@ -236,7 +258,11 @@ func validateCheckpoint(state SourceCheckpoint, binding SourceBinding) error {
 		RundownID string `json:"rundownId"`
 		Revision  uint64 `json:"revision"`
 	}
-	if !json.Valid(state.State) || len(state.Pending) > MaxSourceSnapshotBytes || json.Unmarshal(state.Pending, &header) != nil || header.Version != 1 || header.SourceID != binding.SourceID || header.RundownID != binding.RundownID || header.Revision != state.Revision {
+	version := 1
+	if strings.HasSuffix(binding.Destination, "/v2/source-sync") {
+		version = 2
+	}
+	if !json.Valid(state.State) || (version == 1 && len(state.Pending) > MaxSourceSnapshotBytes) || json.Unmarshal(state.Pending, &header) != nil || header.Version != version || header.SourceID != binding.SourceID || header.RundownID != binding.RundownID || header.Revision != state.Revision {
 		return errors.New("committed source payload does not match its binding and revision")
 	}
 	// Retain receipts without eviction, but never accept a malformed or conflicting replay key.
@@ -259,6 +285,17 @@ func validateCheckpoint(state SourceCheckpoint, binding SourceBinding) error {
 }
 
 func (d *Durable) saveCheckpoint(snap snapshot, state SourceCheckpoint) error {
+	if d.content != nil {
+		var err error
+		state.State, err = CanonicalSourceJSON(state.State)
+		if err != nil {
+			return err
+		}
+		state.Pending, err = CanonicalSourceJSON(state.Pending)
+		if err != nil {
+			return err
+		}
+	}
 	file := checkpointFile{Version: 1, Binding: d.binding, Snapshot: snap, Source: state}
 	raw, err := json.Marshal(file)
 	if err != nil {
@@ -268,6 +305,9 @@ func (d *Durable) saveCheckpoint(snap snapshot, state SourceCheckpoint) error {
 	raw, err = json.Marshal(file)
 	if err != nil {
 		return err
+	}
+	if d.content != nil {
+		return d.content.save(d.path, raw)
 	}
 	return replaceCheckpoint(d.path, raw)
 }

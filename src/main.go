@@ -30,6 +30,9 @@ func main() {
 	initializeSource := flag.Bool("initialize-source-state", false, "Provision a new committed source directory and exit; refuses existing or legacy data")
 	initializeCatalogue := flag.Bool("initialize-source-catalogue", false, "Provision a new catalogue directory and exit; refuses existing or rundown state")
 
+	upgradeSource := flag.Bool("upgrade-source-sync", false, "Offline upgrade of one committed rundown to SOURCE_URL ending in /v2/source-sync; preserves the legacy checkpoint")
+	upgradeCatalogue := flag.Bool("upgrade-catalogue-sync", false, "Offline upgrade of the configured catalogue to v2; preserves counters and the legacy checkpoint")
+
 	// One-shot Profile 7 mode. This does not start a server: it opens a single non-passive MOS 4
 	// connection, sends one roReqStoryAction, reports the answer and exits.
 	//
@@ -95,7 +98,7 @@ func main() {
 		sourceStateDir = cfg.Source.StateDir
 	}
 	sourceBinding := repository.SourceBinding{SourceID: cfg.Source.ID, RundownID: cfg.Source.RundownID, MosID: cfg.MOS.ID, NCSID: cfg.MOS.NCSID, Transport: cfg.Source.Transport, Destination: cfg.Source.URL}
-	if cfg.Source.Enabled || *initializeSource || *initializeCatalogue {
+	if cfg.Source.Enabled || *initializeSource || *initializeCatalogue || *upgradeSource || *upgradeCatalogue {
 		if !cfg.Source.Enabled || strings.ToLower(cfg.Storage.Backend) != "file" {
 			standardLogger.Fatal("Committed source requires SOURCE_ENABLED and file storage")
 		}
@@ -105,10 +108,16 @@ func main() {
 		if cfg.Source.Transport == "tcp" && !cfg.Server.Enabled || cfg.Source.Transport == "ws-server" && !cfg.WebSocket.Enabled || cfg.Source.Transport == "ws-client" && !cfg.WSClient.Enabled {
 			standardLogger.Fatal("Configured committed source transport is disabled")
 		}
-		if *initializeSource && *initializeCatalogue {
+		modes := 0
+		for _, enabled := range []bool{*initializeSource, *initializeCatalogue, *upgradeSource, *upgradeCatalogue} {
+			if enabled {
+				modes++
+			}
+		}
+		if modes > 1 {
 			standardLogger.Fatal("Provision one source or catalogue directory at a time")
 		}
-		if len(cfg.Source.Additional) > 99 || len(cfg.Source.Additional) > 0 && cfg.Source.CatalogueStateDir == "" {
+		if (len(cfg.Source.Additional) > 99 && !strings.HasSuffix(cfg.Source.URL, "/v2/source-sync")) || len(cfg.Source.Additional) > 0 && cfg.Source.CatalogueStateDir == "" {
 			standardLogger.Fatal("Additional rundowns require catalogue state and a maximum source set of 100")
 		}
 		ids := map[string]bool{sourceBinding.RundownID: true}
@@ -140,6 +149,18 @@ func main() {
 			}
 			dirs[absolute] = true
 		}
+	}
+	if *upgradeSource || *upgradeCatalogue {
+		binding, dir := sourceBinding, sourceStateDir
+		if *upgradeCatalogue {
+			binding = service.SourceCatalogueBinding(binding)
+			dir = cfg.Source.CatalogueStateDir
+		}
+		if err := repository.UpgradeSourceSync(dir, binding); err != nil {
+			standardLogger.Fatalf("Source sync upgrade failed: %v", err)
+		}
+		standardLogger.Info("Source sync checkpoint upgraded; counters and original checkpoint preserved. No service started.")
+		return
 	}
 	if *initializeCatalogue {
 		state, err := repository.OpenCatalogue(cfg.Source.CatalogueStateDir, service.SourceCatalogueBinding(sourceBinding), true)

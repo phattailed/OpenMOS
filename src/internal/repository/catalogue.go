@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -39,6 +40,7 @@ type Catalogue struct {
 	binding  SourceBinding
 	state    CatalogueCheckpoint
 	degraded bool
+	content  *checkpointContent
 }
 
 // OpenCatalogue requires a separate, explicitly provisioned directory. The binding has no
@@ -71,6 +73,9 @@ func OpenCatalogue(dir string, binding SourceBinding, initialize bool) (*Catalog
 		return nil, fmt.Errorf("catalogue state already owned or cannot be locked: %w", err)
 	}
 	c := &Catalogue{path: filepath.Join(dir, "source-catalogue.json"), lock: lock, binding: binding}
+	if strings.HasSuffix(binding.Destination, "/v2/source-sync") {
+		c.content = newCheckpointContent(c.path)
+	}
 	raw, err := os.ReadFile(c.path)
 	if os.IsNotExist(err) && initialize {
 		if err := c.save(c.state); err != nil {
@@ -84,6 +89,12 @@ func OpenCatalogue(dir string, binding SourceBinding, initialize bool) (*Catalog
 	}
 	if initialize {
 		return nil, errors.New("catalogue already initialized; reset is unsupported")
+	}
+	if c.content != nil {
+		raw, err = c.content.read(raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var file catalogueFile
 	d := json.NewDecoder(bytes.NewReader(raw))
@@ -179,7 +190,11 @@ func (c *Catalogue) validate(state CatalogueCheckpoint) error {
 		SourceID string `json:"sourceId"`
 		Revision uint64 `json:"revision"`
 	}
-	if len(state.Pending) > 64<<10 || json.Unmarshal(state.Pending, &header) != nil || header.Version != 1 || header.SourceID != c.binding.SourceID || header.Revision != state.Revision {
+	version := 1
+	if strings.HasSuffix(c.binding.Destination, "/v2/source-sync") {
+		version = 2
+	}
+	if (version == 1 && len(state.Pending) > 64<<10) || json.Unmarshal(state.Pending, &header) != nil || header.Version != version || header.SourceID != c.binding.SourceID || header.Revision != state.Revision {
 		return errors.New("catalogue payload does not match its binding and revision")
 	}
 	seen := make(map[[3]string]bool)
@@ -195,6 +210,13 @@ func (c *Catalogue) validate(state CatalogueCheckpoint) error {
 }
 
 func (c *Catalogue) save(state CatalogueCheckpoint) error {
+	if c.content != nil {
+		var err error
+		state.Pending, err = CanonicalSourceJSON(state.Pending)
+		if err != nil {
+			return err
+		}
+	}
 	file := catalogueFile{Version: 1, Binding: c.binding, State: state}
 	raw, err := json.Marshal(file)
 	if err != nil {
@@ -204,6 +226,9 @@ func (c *Catalogue) save(state CatalogueCheckpoint) error {
 	raw, err = json.Marshal(file)
 	if err != nil {
 		return err
+	}
+	if c.content != nil {
+		return c.content.save(c.path, raw)
 	}
 	return replaceCheckpoint(c.path, raw)
 }

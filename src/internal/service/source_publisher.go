@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"airshift/openmos/internal/repository"
@@ -34,11 +35,16 @@ func (s *CommittedSource) RunPublisher(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			logger.Warningf("Committed source delivery unavailable: %v", err)
+			if !errors.Is(err, errSourceContinue) {
+				logger.Warningf("Committed source delivery unavailable: %v", err)
+			}
 			if errors.Is(err, errSourceHalted) {
 				return
 			}
 			delay = time.Second
+			if errors.Is(err, errSourceContinue) {
+				delay = 0
+			}
 		}
 		if !timer.Stop() {
 			select {
@@ -67,12 +73,15 @@ func (s *CommittedSource) publishOnce(ctx context.Context, client *http.Client) 
 			return err
 		}
 	}
-	cp, err := s.store.Checkpoint()
+	cp, err := s.store.Delivery()
 	if err != nil {
 		s.mu.Unlock()
 		return err
 	}
-	state, err := readSourceState(cp.State)
+	var state sourceState
+	if s.transfer == nil || !bytes.Equal(s.transfer.retainedState, cp.State) {
+		state, err = readSourceState(cp.State)
+	}
 	if err != nil {
 		s.mu.Unlock()
 		return err
@@ -84,45 +93,68 @@ func (s *CommittedSource) publishOnce(ctx context.Context, client *http.Client) 
 	// No state mutex is held while the receiver is unavailable. New incomplete/inactive commits
 	// supersede this request and wake the one publisher immediately after it finishes.
 	s.mu.Unlock()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.binding.Destination, bytes.NewReader(cp.Pending))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+s.token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return errors.New("loopback receiver request failed")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusConflict {
-		s.mu.Lock()
-		err := s.halt(ctx)
-		s.mu.Unlock()
+	if strings.HasSuffix(s.binding.Destination, "/v2/source-sync") {
+		if s.transfer == nil || s.transfer.binding["revision"] != cp.Revision {
+			s.transfer, err = newSourceTransfer(cp.Pending)
+			if err != nil {
+				return err
+			}
+		}
+		s.transfer.retainedState = cp.State
+		complete, err := s.transfer.step(ctx, client, s.binding.Destination, s.token)
+		if errors.Is(err, errSourceHalted) {
+			s.mu.Lock()
+			haltErr := s.halt(ctx)
+			s.mu.Unlock()
+			return errors.Join(err, haltErr)
+		}
 		if err != nil {
 			return err
 		}
-		return errSourceHalted
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("receiver returned HTTP %d", resp.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8193))
-	if err != nil || len(raw) > 8192 {
-		return errors.New("receiver receipt is unavailable or exceeds its limit")
-	}
-	var receipt struct {
-		SourceID           string `json:"sourceId"`
-		RundownID          string `json:"rundownId"`
-		AcceptedRevision   uint64 `json:"acceptedRevision"`
-		Duplicate          *bool  `json:"duplicate"`
-		DestinationApplied *bool  `json:"destinationApplied"`
-	}
-	if err := json.Unmarshal(raw, &receipt); err != nil || receipt.AcceptedRevision != cp.Revision || receipt.Duplicate == nil || receipt.DestinationApplied == nil || *receipt.DestinationApplied {
-		return errors.New("receiver did not return a matching durable source receipt")
-	}
-	if s.extended && (receipt.SourceID != s.binding.SourceID || receipt.RundownID != s.binding.RundownID) {
-		return errors.New("receiver receipt identifies a different source or rundown")
+		if !complete {
+			return errSourceContinue
+		}
+	} else {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.binding.Destination, bytes.NewReader(cp.Pending))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+s.token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return errors.New("loopback receiver request failed")
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusConflict {
+			s.mu.Lock()
+			err := s.halt(ctx)
+			s.mu.Unlock()
+			if err != nil {
+				return err
+			}
+			return errSourceHalted
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			return fmt.Errorf("receiver returned HTTP %d", resp.StatusCode)
+		}
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 8193))
+		if err != nil || len(raw) > 8192 {
+			return errors.New("receiver receipt is unavailable or exceeds its limit")
+		}
+		var receipt struct {
+			SourceID           string `json:"sourceId"`
+			RundownID          string `json:"rundownId"`
+			AcceptedRevision   uint64 `json:"acceptedRevision"`
+			Duplicate          *bool  `json:"duplicate"`
+			DestinationApplied *bool  `json:"destinationApplied"`
+		}
+		if err := json.Unmarshal(raw, &receipt); err != nil || receipt.AcceptedRevision != cp.Revision || receipt.Duplicate == nil || receipt.DestinationApplied == nil || *receipt.DestinationApplied {
+			return errors.New("receiver did not return a matching durable source receipt")
+		}
+		if s.extended && (receipt.SourceID != s.binding.SourceID || receipt.RundownID != s.binding.RundownID) {
+			return errors.New("receiver receipt identifies a different source or rundown")
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -95,7 +95,7 @@ type SourceMedia struct {
 }
 
 func marshalSource(snapshot SourceSnapshot) ([]byte, error) {
-	if snapshot.Version != 1 || snapshot.Revision == 0 || snapshot.Revision > repository.MaxSourceRevision || !sourceText(snapshot.SourceID, 512, true) || !sourceText(snapshot.RundownID, 512, true) || len(snapshot.Stories) > 100 || snapshot.Stories == nil {
+	if (snapshot.Version != 1 && snapshot.Version != 2) || snapshot.Revision == 0 || snapshot.Revision > repository.MaxSourceRevision || !sourceText(snapshot.SourceID, 512, true) || !sourceText(snapshot.RundownID, 512, true) || (snapshot.Version == 1 && len(snapshot.Stories) > 100) || snapshot.Stories == nil {
 		return nil, errors.New("source header or story limit is invalid")
 	}
 	if err := sourceStrings(snapshot.Metadata, 16384); err != nil {
@@ -116,7 +116,7 @@ func marshalSource(snapshot SourceSnapshot) ([]byte, error) {
 		ids := make(map[string]bool)
 		for _, o := range story.Occurrences {
 			total++
-			if !sourceText(o.ID, 512, true) || ids[o.ID] || total > 200 {
+			if !sourceText(o.ID, 512, true) || ids[o.ID] || (snapshot.Version == 1 && total > 200) {
 				return nil, errors.New("source occurrence identity or count is invalid")
 			}
 			ids[o.ID] = true
@@ -166,7 +166,7 @@ func marshalSource(snapshot SourceSnapshot) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) > repository.MaxSourceSnapshotBytes {
+	if snapshot.Version == 1 && len(raw) > repository.MaxSourceSnapshotBytes {
 		return nil, fmt.Errorf("source snapshot exceeds 128 KiB (%d bytes)", len(raw))
 	}
 	return raw, nil

@@ -32,7 +32,8 @@ type CommittedSource struct {
 	sessions map[string]time.Time
 	owners   map[string]string
 	wake     chan struct{}
-	extended bool // Set before ingress starts when attached to a catalogue source set.
+	transfer *sourceTransfer // One publisher owns this resumable in-memory cursor.
+	extended bool            // Set before ingress starts when attached to a catalogue source set.
 }
 
 // SourceReceiver keeps transport validation and envelopes shared by the single-rundown
@@ -99,8 +100,8 @@ func ValidateSourceBinding(binding repository.SourceBinding) error {
 		return errors.New("invalid source destination")
 	}
 	ip := net.ParseIP(u.Hostname())
-	if u.Scheme != "http" || ip == nil || !ip.IsLoopback() || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "/v1/openmos-snapshots" || u.RawPath != "" {
-		return errors.New("source destination must be numeric loopback HTTP at /v1/openmos-snapshots")
+	if u.Scheme != "http" || ip == nil || !ip.IsLoopback() || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "/v1/openmos-snapshots" && u.Path != "/v2/source-sync") || u.RawPath != "" {
+		return errors.New("source destination must be numeric loopback HTTP at /v1/openmos-snapshots or /v2/source-sync")
 	}
 	return nil
 }
@@ -255,6 +256,9 @@ func (s *CommittedSource) revise(cp *repository.SourceCheckpoint, state sourceSt
 		return errors.New("source revision exhausted; reset is unsupported")
 	}
 	snapshot := SourceSnapshot{Version: 1, SourceID: s.binding.SourceID, RundownID: s.binding.RundownID, Revision: cp.Revision + 1, Active: state.Active, Complete: state.RosterFresh, Metadata: state.Metadata, Stories: []SourceStory{}}
+	if strings.HasSuffix(s.binding.Destination, "/v2/source-sync") {
+		snapshot.Version = 2
+	}
 	state.Problem = ""
 	if !state.RosterFresh {
 		state.Problem = "fresh_roster_required"
