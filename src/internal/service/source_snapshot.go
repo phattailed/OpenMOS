@@ -166,8 +166,8 @@ func marshalSource(snapshot SourceSnapshot) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) > 64<<10 {
-		return nil, fmt.Errorf("source snapshot exceeds 64 KiB (%d bytes)", len(raw))
+	if len(raw) > repository.MaxSourceSnapshotBytes {
+		return nil, fmt.Errorf("source snapshot exceeds 128 KiB (%d bytes)", len(raw))
 	}
 	return raw, nil
 }

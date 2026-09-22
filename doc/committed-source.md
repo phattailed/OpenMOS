@@ -210,7 +210,7 @@ opaque `mosExternalMetadata` XML strings for the rundown. A full `roCreate`, `ro
 An authoritative message that omits the blocks establishes `metadata:[]`, as does rundown
 deletion. An empty `mosPayload` remains a block. No scope, schema or payload is interpreted.
 The array uses the occurrence metadata bounds: at most 32 strings, each valid UTF-8 and at
-most 16384 Unicode code points, within the existing 64 KiB complete JSON limit. Content
+most 16384 Unicode code points, within the 128 KiB complete JSON limit. Content
 outside publication limits stays in the MOS repository and source checkpoint; publication
 becomes incomplete and omits metadata rather than truncating it or claiming an empty list.
 
@@ -228,7 +228,7 @@ absence does not. Values retain whitespace and allow 512 Unicode code points. No
 is invented, and no `segment` is inferred from text or opaque external metadata. Display fields
 are projected from already retained raw XML, without extending the rundown checkpoint state.
 
-The publication limits are 100 stories, 200 total occurrences and 64 KiB of complete UTF-8
+The publication limits are 100 stories, 200 total occurrences and 128 KiB of complete UTF-8
 JSON. IDs, types, labels, raw timing, verbs, parameter keys, media roles and technical
 descriptions allow 512 Unicode code points; abstracts, URLs, cue fields and parameter values
 allow 2048. Raw cues and each metadata block allow 16384. Media, metadata, field arrays and

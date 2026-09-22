@@ -141,7 +141,7 @@ func TestCommittedSourceRundownMetadataLimitsRetainMOSContent(t *testing.T) {
 	}{
 		{"count", strings.Repeat(rundownMetadata, 33), 33},
 		{"block-length", strings.Replace(rundownMetadata, "First &amp; second", strings.Repeat("x", 16385), 1), 1},
-		{"total-utf8-bytes", strings.Repeat(strings.Replace(rundownMetadata, "First &amp; second", strings.Repeat("é", 1100), 1), 32), 32},
+		{"total-utf8-bytes", strings.Repeat(strings.Replace(rundownMetadata, "First &amp; second", strings.Repeat("é", 2500), 1), 32), 32},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSourceFixture(t, "")
@@ -164,7 +164,7 @@ func TestCommittedSourceRundownMetadataLimitsRetainMOSContent(t *testing.T) {
 			if err := json.Unmarshal(cp.Pending, &pending); err != nil {
 				t.Fatal(err)
 			}
-			if f.snapshot(t).Complete || len(cp.Pending) > 64<<10 || pending["metadata"] != nil {
+			if f.snapshot(t).Complete || len(cp.Pending) > repository.MaxSourceSnapshotBytes || pending["metadata"] != nil {
 				t.Error("unpublishable metadata must suspend coverage without an empty-array clearing claim")
 			}
 		})

@@ -15,6 +15,7 @@ import (
 )
 
 const MaxSourceRevision uint64 = 9007199254740991
+const MaxSourceSnapshotBytes = 128 << 10
 
 const checkpointFilename = "source-checkpoint.json"
 
@@ -235,7 +236,7 @@ func validateCheckpoint(state SourceCheckpoint, binding SourceBinding) error {
 		RundownID string `json:"rundownId"`
 		Revision  uint64 `json:"revision"`
 	}
-	if !json.Valid(state.State) || len(state.Pending) > 64<<10 || json.Unmarshal(state.Pending, &header) != nil || header.Version != 1 || header.SourceID != binding.SourceID || header.RundownID != binding.RundownID || header.Revision != state.Revision {
+	if !json.Valid(state.State) || len(state.Pending) > MaxSourceSnapshotBytes || json.Unmarshal(state.Pending, &header) != nil || header.Version != 1 || header.SourceID != binding.SourceID || header.RundownID != binding.RundownID || header.Revision != state.Revision {
 		return errors.New("committed source payload does not match its binding and revision")
 	}
 	// Retain receipts without eviction, but never accept a malformed or conflicting replay key.
