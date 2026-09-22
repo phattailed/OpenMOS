@@ -53,6 +53,7 @@ type Durable struct {
 	committed  bool
 	binding    SourceBinding
 	checkpoint *SourceCheckpoint
+	content    *checkpointContent
 	openErr    error
 	lock       *os.File
 }

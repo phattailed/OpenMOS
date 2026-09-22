@@ -35,7 +35,9 @@ type SourceCatalogueRundown struct {
 
 func SourceCatalogueBinding(source repository.SourceBinding) repository.SourceBinding {
 	source.RundownID = ""
-	source.Destination = strings.TrimSuffix(source.Destination, "/v1/openmos-snapshots") + cataloguePath
+	if !strings.HasSuffix(source.Destination, "/v2/source-sync") {
+		source.Destination = strings.TrimSuffix(source.Destination, "/v1/openmos-snapshots") + cataloguePath
+	}
 	return source
 }
 
@@ -50,6 +52,7 @@ type CommittedSourceSet struct {
 	sessions  map[string]time.Time
 	owners    map[string]string
 	wake      chan struct{}
+	transfer  *sourceTransfer
 }
 
 func (*CommittedSourceSet) CatalogueEnabled() bool          { return true }
@@ -72,7 +75,7 @@ type SourceRundownStore struct {
 }
 
 func NewCommittedSourceSet(ctx context.Context, retained []SourceRundownStore, catalogue *repository.Catalogue, token string, timeout time.Duration) (*CommittedSourceSet, error) {
-	if len(retained) == 0 || len(retained) > 100 || catalogue == nil {
+	if len(retained) == 0 || (len(retained) > 100 && !strings.HasSuffix(retained[0].Binding.Destination, "/v2/source-sync")) || catalogue == nil {
 		return nil, errors.New("source set requires 1-100 retained rundowns and a catalogue store")
 	}
 	g := &CommittedSourceSet{byRundown: make(map[string]*CommittedSource), catalogue: catalogue,
@@ -99,7 +102,7 @@ func NewCommittedSourceSet(ctx context.Context, retained []SourceRundownStore, c
 }
 
 func marshalCatalogue(snapshot SourceCatalogue) ([]byte, error) {
-	if snapshot.Version != 1 || !sourceText(snapshot.SourceID, 512, true) || snapshot.Revision == 0 || snapshot.Revision > repository.MaxSourceRevision || snapshot.Rundowns == nil || len(snapshot.Rundowns) > 100 {
+	if (snapshot.Version != 1 && snapshot.Version != 2) || !sourceText(snapshot.SourceID, 512, true) || snapshot.Revision == 0 || snapshot.Revision > repository.MaxSourceRevision || snapshot.Rundowns == nil || (snapshot.Version == 1 && len(snapshot.Rundowns) > 100) {
 		return nil, errors.New("invalid catalogue header or capacity")
 	}
 	seen := make(map[string]bool)
@@ -115,7 +118,7 @@ func marshalCatalogue(snapshot SourceCatalogue) ([]byte, error) {
 		}
 	}
 	raw, err := json.Marshal(snapshot)
-	if err == nil && len(raw) > 64<<10 {
+	if err == nil && snapshot.Version == 1 && len(raw) > 64<<10 {
 		err = errors.New("catalogue exceeds 64 KiB")
 	}
 	return raw, err
@@ -126,6 +129,9 @@ func (g *CommittedSourceSet) reviseCatalogue(cp *repository.CatalogueCheckpoint,
 		return errSourceHalted
 	}
 	proposed := SourceCatalogue{Version: 1, SourceID: g.binding.SourceID, Revision: cp.Revision, Complete: complete, Rundowns: rows}
+	if strings.HasSuffix(g.binding.Destination, "/v2/source-sync") {
+		proposed.Version = 2
+	}
 	if proposed.Revision == 0 {
 		proposed.Revision = 1
 	}

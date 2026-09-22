@@ -54,8 +54,8 @@ stops further publication and successful retention acknowledgements until a vali
 ### Retaining multiple rundowns
 
 Keep the existing primary source binding and checkpoint. Add a separate catalogue directory
-and explicitly selected additional rundown bindings; the complete retained set is limited to
-100 distinct IDs, including the primary. For example:
+and explicitly selected additional rundown bindings; version 1 limits the retained set to
+100 distinct IDs, including the primary. Version 2 removes this count limit. For example:
 
 ```text
 SOURCE_CATALOGUE_STATE_DIR=/private/catalogue-state
@@ -210,7 +210,7 @@ opaque `mosExternalMetadata` XML strings for the rundown. A full `roCreate`, `ro
 An authoritative message that omits the blocks establishes `metadata:[]`, as does rundown
 deletion. An empty `mosPayload` remains a block. No scope, schema or payload is interpreted.
 The array uses the occurrence metadata bounds: at most 32 strings, each valid UTF-8 and at
-most 16384 Unicode code points, within the existing 64 KiB complete JSON limit. Content
+most 16384 Unicode code points, within the 128 KiB complete JSON limit. Content
 outside publication limits stays in the MOS repository and source checkpoint; publication
 becomes incomplete and omits metadata rather than truncating it or claiming an empty list.
 
@@ -228,7 +228,7 @@ absence does not. Values retain whitespace and allow 512 Unicode code points. No
 is invented, and no `segment` is inferred from text or opaque external metadata. Display fields
 are projected from already retained raw XML, without extending the rundown checkpoint state.
 
-The publication limits are 100 stories, 200 total occurrences and 64 KiB of complete UTF-8
+The publication limits are 100 stories, 200 total occurrences and 128 KiB of complete UTF-8
 JSON. IDs, types, labels, raw timing, verbs, parameter keys, media roles and technical
 descriptions allow 512 Unicode code points; abstracts, URLs, cue fields and parameter values
 allow 2048. Raw cues and each metadata block allow 16384. Media, metadata, field arrays and
@@ -290,3 +290,36 @@ Focused repository, service and actual TCP/WebSocket ingress tests cover these b
 The normal Go build, vet, repeated test and race checks remain required. Source freshness
 against a particular newsroom still requires independent evidence of its full-roster and
 fresh-body delivery sequence.
+
+## Bounded source synchronization version 2
+
+Set `SOURCE_URL` to the same numeric loopback origin with `/v2/source-sync` to
+select the new protocol. Deploy a compatible receiver first. New directories use
+the existing initialization commands. Existing committed directories require an
+explicit offline `--upgrade-source-sync` for each rundown and
+`--upgrade-catalogue-sync` for the catalogue, using their exact original bindings
+and the new URL. Each operation takes the existing ownership lock, preserves
+counters and original replay receipts, saves the exact old checkpoint as `.pre-v2`,
+and exits without starting any transport. It does not migrate native protocol
+state. Ordinary startup still invalidates source coverage before publishing.
+The backup is recovery evidence; restoring it after new traffic would roll back
+counters and receipts and is not a supported downgrade.
+
+Delivery uses `start`, `missing`, `parts`, `commit` and `heartbeat` under that URL.
+An ordered manifest references SHA-256 story objects. Large occurrence arrays,
+manifest reference arrays and catalogues use ordered content-addressed parts too.
+Each request is at most 64 KiB; each decoded transport part is at most 32 KiB.
+Unchanged objects are reused, interrupted delivery resumes, and the receiver
+publishes only after every required object is retained and validated. A published
+unchanged revision renews through a small heartbeat. A newer pending revision
+inhibits preparation; it never makes missing parts authoritative deletion.
+Four workers give each configured show one bounded request per turn.
+
+V2 removes the legacy aggregate story, occurrence and catalogue limits while
+preserving identity, ordering, field bounds and source freshness rules. Checkpoints
+store immutable source records separately and atomically replace a small root;
+a preparation receipt does not rewrite unchanged story content. Input application
+still stages the complete logical rundown and scans retained receipts. Very large
+receipt histories and sustained ingress remain qualification concerns. MOS framing
+and per-field limits are unchanged. Neither source acceptance nor the synthetic
+capacity checks qualify a destination's physical capacity or rendering.

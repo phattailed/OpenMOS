@@ -382,6 +382,19 @@ func TestCommittedSourceRetainsOversizeRawBodyWithoutTruncatedPublication(t *tes
 	}
 }
 
+func TestSourceSnapshotPublishesBetween64And128KiB(t *testing.T) {
+	occurrences := make([]SourceOccurrence, 48)
+	for i := range occurrences {
+		abstract := strings.Repeat("x", 1500)
+		occurrences[i] = SourceOccurrence{ID: fmt.Sprintf("item-%d", i), Kind: "mos_item", Abstract: &abstract}
+	}
+	raw, err := marshalSource(SourceSnapshot{Version: 1, SourceID: "source", RundownID: "rundown", Revision: 1, Active: true, Complete: true,
+		Stories: []SourceStory{{ID: "story", Occurrences: occurrences}}})
+	if err != nil || len(raw) <= 64<<10 || len(raw) > repository.MaxSourceSnapshotBytes {
+		t.Fatalf("valid snapshot between 64 and 128 KiB was rejected: bytes=%d err=%v", len(raw), err)
+	}
+}
+
 func TestCommittedSourceReceiptRetentionDoesNotStopAtLegacyCacheCapacity(t *testing.T) {
 	f := newSourceFixture(t, "")
 	f.accept(t, sourceRoster("story"))
@@ -444,7 +457,10 @@ func TestSourceSnapshotUsesCodePointAndWholeByteBounds(t *testing.T) {
 		t.Fatal("513-code-point field accepted")
 	}
 	label = "within field limit"
-	metadata := []string{strings.Repeat("x", 16384), strings.Repeat("x", 16384), strings.Repeat("x", 16384), strings.Repeat("x", 16384)}
+	metadata := make([]string, 9)
+	for i := range metadata {
+		metadata[i] = strings.Repeat("x", 16384)
+	}
 	snapshot.Stories[0].Occurrences[0].Metadata = &metadata
 	if _, err := marshalSource(snapshot); err == nil {
 		t.Fatal("whole JSON byte cap ignored for individually valid fields")
