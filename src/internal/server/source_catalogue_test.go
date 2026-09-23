@@ -3,10 +3,15 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,10 +23,186 @@ import (
 	"nhooyr.io/websocket"
 )
 
+func TestCatalogueDiscoversUnknownMembersThroughTCPAndWebSocket(t *testing.T) {
+	for _, transport := range []string{"tcp", "ws-server"} {
+		t.Run(transport, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cfg := testConfig()
+			cfg.MOS.ID, cfg.MOS.NCSID = "device", "newsroom"
+			cfg.MOS.HeartbeatInterval, cfg.MOS.ClientTimeout = time.Minute, time.Minute
+			cfg.State.Dir = t.TempDir()
+			binding := repository.SourceBinding{SourceID: "source", MosID: "device", NCSID: "newsroom", Transport: transport, Destination: "http://127.0.0.1:1234/v1/openmos-snapshots"}
+			root := t.TempDir()
+			catalogue, err := repository.OpenCatalogue(root, service.SourceCatalogueBinding(binding), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer catalogue.Close()
+			source, err := service.NewCommittedSourceSet(ctx, nil, catalogue, "synthetic-token", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc, _, _, _ := newDispatchService(t)
+			svc.Source = source
+			var write func(string, string)
+			var read func() []byte
+			if transport == "tcp" {
+				server, err := NewTCPServer(cfg, svc, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- server.Start(ctx) }()
+				defer func() { cancel(); <-done }()
+				conn, err := net.Dial("tcp", server.listener.Addr().String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				write = func(id, body string) {
+					writeMOS28ForTest(t, conn, string(mosxml.WrapEnvelope("device", "newsroom", id, []byte(body))))
+				}
+				read = func() []byte { return readUCS2BEFrameForTest(t, conn) }
+			} else {
+				server := NewWSServer(cfg, svc, nil, NewMemoryDedupStore(), nil)
+				done := make(chan error, 1)
+				go func() { done <- server.Start(ctx) }()
+				defer func() { cancel(); server.Shutdown(); <-done }()
+				conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/mos?mosID=device&ncsID=newsroom&channel=ro", server.Addr()), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.CloseNow()
+				write = func(id, body string) {
+					wire, err := mosxml.EncodeUCS2BE(mosxml.WrapEnvelope("device", "newsroom", id, []byte(body)))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := conn.Write(ctx, websocket.MessageBinary, wire); err != nil {
+						t.Fatal(err)
+					}
+				}
+				read = func() []byte {
+					kind, wire, err := conn.Read(ctx)
+					if err != nil || kind != websocket.MessageBinary {
+						t.Fatalf("read WebSocket request: %v", err)
+					}
+					return wire
+				}
+			}
+			decode := func(wire []byte) []byte {
+				t.Helper()
+				raw, err := mosxml.DecodeUCS2BE(wire)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			}
+			request := func(kind, rundown string) string {
+				t.Helper()
+				parsed, err := mosxml.ParseMessage(string(decode(read())))
+				if err != nil {
+					t.Fatal(err)
+				}
+				env, ok := parsed.(mosxml.Envelope)
+				if !ok {
+					t.Fatal("request has no MOS envelope")
+				}
+				generation := mosxml.Gen4x
+				if transport == "tcp" {
+					generation = mosxml.Gen2x
+				}
+				msg, err := mosxml.ValidateEnvelope(env, generation, "device", "newsroom")
+				if err != nil || msg.GetMessageType() != kind {
+					t.Fatalf("expected %s request, got %T: %v", kind, msg, err)
+				}
+				if ro, ok := msg.(mosxml.ROReq); ok && ro.ROID != rundown {
+					t.Fatalf("requested %q, want opaque ID %q", ro.ROID, rundown)
+				}
+				return env.MessageID
+			}
+			write("initial-health", `<keepAlive/>`)
+			enumerationID := request("roReqAll", "")
+			ids := []string{"new/../one", `new\two`}
+			unknown := `<roCreate><roID>` + ids[1] + `</roID><roSlug>Before enrollment</roSlug></roCreate>`
+			write("pre-enrollment", unknown)
+			refusal := read()
+			if !bytes.Contains(decode(refusal), []byte("NACK")) || source.RetainsRundown(ids[1]) {
+				t.Fatal("unknown traffic was accepted or established enrollment")
+			}
+			path := filepath.Join(root, "rundowns", fmt.Sprintf("%x", sha256.Sum256([]byte(ids[1]))), "source-checkpoint.json")
+			retained, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved struct {
+				Binding repository.SourceBinding
+				Source  repository.SourceCheckpoint
+			}
+			if err := json.Unmarshal(retained, &saved); err != nil || len(saved.Source.Receipts) != 1 {
+				t.Fatal("unknown NACK preceded durable refusal retention")
+			}
+			heldRefusal, err := mosxml.EncodeUCS2BE(saved.Source.Receipts[0].Response)
+			if err != nil || !bytes.Equal(heldRefusal, refusal) {
+				t.Fatal("unknown NACK wire differs from its durably retained response")
+			}
+			listing := `<roListAll><ro><roID>` + ids[0] + `</roID></ro><ro><roID>` + ids[1] + `</roID></ro></roListAll>`
+			write(enumerationID, listing)
+			for _, id := range ids {
+				requestID := request("roReq", id)
+				if !source.RetainsRundown(id) {
+					t.Fatal("discovery did not durably enroll every opaque member")
+				}
+				write(requestID, `<roList><roID>`+id+`</roID><roSlug>Synthetic</roSlug><story><storyID>story</storyID></story></roList>`)
+			}
+			body := `<roStorySend><roID>` + ids[1] + `</roID><storyID>story</storyID><storyBody><p>[CG :title\unselected]</p></storyBody></roStorySend>`
+			write("accepted-body", body)
+			ack := read()
+			if raw := decode(ack); !bytes.Contains(raw, []byte("<roStatus>OK</roStatus>")) {
+				t.Fatalf("discovered member body was not accepted: %s", raw)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &saved); err != nil || saved.Binding.RundownID != ids[1] || len(saved.Source.Receipts) == 0 {
+				t.Fatal("successful ACK preceded durable enrollment/content/receipt retention")
+			}
+			heldWire, err := mosxml.EncodeUCS2BE(saved.Source.Receipts[len(saved.Source.Receipts)-1].Response)
+			if err != nil || !bytes.Equal(heldWire, ack) {
+				t.Fatal("transport ACK differs from the durably retained response with its transport encoding")
+			}
+			write("accepted-body", body)
+			if replay := read(); !bytes.Equal(replay, ack) {
+				t.Fatal("discovered member changed its original transport acknowledgement on replay")
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, raw) {
+				t.Fatal("replay rewrote the discovered member checkpoint")
+			}
+			write("pre-enrollment", unknown)
+			if replay := read(); !bytes.Equal(replay, refusal) {
+				t.Fatal("enrollment changed the original refusal wire bytes")
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, raw) {
+				t.Fatal("pre-enrollment refusal replay changed recovered content")
+			}
+			before, _ := catalogue.Checkpoint()
+			write("unsolicited-empty", `<roListAll/>`)
+			write("barrier", `<roReq><roID>barrier</roID></roReq>`)
+			request("roAck", "")
+			after, _ := catalogue.Checkpoint()
+			if !bytes.Equal(before.Pending, after.Pending) {
+				t.Fatal("uncorrelated empty enumeration removed authoritative membership")
+			}
+		})
+	}
+}
+
 // Exercise the actual two-lane client. The passive connection first validates after a
 // catalogue answer, and later reconnects while the original request connection survives.
 func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cfg := clientTestConfig("")
 	cfg.MOS.ID, cfg.MOS.NCSID = "device", "newsroom"
@@ -165,7 +346,7 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 		t.Fatal(err)
 	}
 	write(request, read("heartbeat", ""), "<heartbeat/>")
-	listing := `<roListAll><ro><roID>outside</roID></ro><ro><roID>first</roID><roSlug>First</roSlug></ro><ro><roID>second</roID><roSlug>Second</roSlug></ro></roListAll>`
+	listing := `<roListAll><ro><roID>first</roID><roSlug>First</roSlug></ro><ro><roID>second</roID><roSlug>Second</roSlug></ro></roListAll>`
 	firstRoster := `<roID>first</roID><roSlug>First</roSlug><story><storyID>story</storyID></story>`
 	body := `<roStorySend><roID>first</roID><storyID>story</storyID><storyBody/></roStorySend>`
 	initialEnumerationID := read("roReqAll", "")
@@ -185,6 +366,7 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 		t.Helper()
 		write(request, read("roReqAll", ""), listing)
 		currentRosterID := read("roReq", "first")
+		secondSettled := false
 		if checkRosterCorrelation {
 			beforeRoster, _ := stores["first"].Checkpoint()
 			write(request, initialRosterID, "<roList>"+firstRoster+"</roList>")
@@ -205,6 +387,9 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 			client.deps.walk.mu.Unlock()
 			write(request, "roster-recovery", "<keepAlive/>")
 			write(request, read("roReqAll", ""), listing)
+			// Finish the still-pending tail before retrying the timed-out first rundown.
+			write(request, read("roReq", "second"), `<roList><roID>second</roID><roSlug>Second</roSlug></roList>`)
+			secondSettled = true
 			currentRosterID = read("roReq", "first")
 			beforeRoster, _ = stores["first"].Checkpoint()
 			write(request, lateRosterID, "<roList>"+firstRoster+"</roList>")
@@ -216,7 +401,9 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 			checkRosterCorrelation = false
 		}
 		write(request, currentRosterID, "<roList>"+firstRoster+"</roList>")
-		write(request, read("roReq", "second"), `<roList><roID>second</roID><roSlug>Second</roSlug></roList>`)
+		if !secondSettled {
+			write(request, read("roReq", "second"), `<roList><roID>second</roID><roSlug>Second</roSlug></roList>`)
+		}
 		waitFor(t, time.Second, func() bool { return snapshot("second").Complete && !source.CatalogueNeedsRefresh() })
 	}
 	refresh()
@@ -240,6 +427,42 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 	push(replacement, "replacement-fresh-body", body, "<roStatus>OK</roStatus>")
 	if got := snapshot("first"); !got.Complete || got.Revision <= before.Revision || !snapshot("second").Complete || source.CatalogueNeedsRefresh() {
 		t.Fatal("automatic recovery failed to refresh both independent rundowns and catalogue")
+	}
+	// Unknown content on this already healthy passive connection must request a correlated
+	// enumeration on its existing request lane. The hint itself has no enrollment authority.
+	newIDs := []string{"new/../first", `new\first`}
+	push(replacement, "unknown-live-member", `<roCreate><roID>`+newIDs[0]+`</roID><roSlug>New member</roSlug></roCreate>`, "NACK")
+	if source.RetainsRundown(newIDs[0]) || !source.CatalogueNeedsRefresh() {
+		t.Fatal("unknown live content enrolled a member or failed to request catalogue recovery")
+	}
+	newListing := strings.TrimSuffix(listing, "</roListAll>")
+	for _, id := range newIDs {
+		newListing += `<ro><roID>` + id + `</roID><roSlug>Discovered</roSlug></ro>`
+	}
+	newListing += "</roListAll>"
+	write(request, read("roReqAll", ""), newListing)
+	write(request, read("roReq", "first"), "<roList>"+firstRoster+"</roList>")
+	write(request, read("roReq", "second"), `<roList><roID>second</roID><roSlug>Second</roSlug></roList>`)
+	for _, id := range newIDs {
+		requestID := read("roReq", id)
+		if !source.RetainsRundown(id) {
+			t.Fatal("discovery requested an unretained member")
+		}
+		member, err := catalogue.EnrollMember(id) // Already enrolled; returns the held store.
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[id] = member
+		if snapshot(id).Complete {
+			t.Fatal("catalogue membership certified a missing roster")
+		}
+		write(request, requestID, `<roList><roID>`+id+`</roID><roSlug>Discovered</roSlug></roList>`)
+	}
+	barrier("new-members-retained")
+	for _, id := range newIDs {
+		if !snapshot(id).Complete {
+			t.Fatal("new member's correlated roster did not become independently complete")
+		}
 	}
 	select {
 	case <-requestConnections:

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"airshift/openmos/internal/repository"
 	"airshift/openmos/pkg/logger"
 )
 
@@ -29,9 +30,8 @@ import (
 type discoveryWalk struct {
 	mu sync.Mutex
 
-	// pending holds advertised running orders not yet requested, in the order the NCS listed
-	// them. Order is preserved because the NCS's ordering is meaningful elsewhere in the
-	// protocol and there is no reason to discard it here.
+	// pending holds advertised running orders not yet requested. Refreshes preserve unfinished
+	// work first, then append the remaining advertised IDs in the order the NCS listed them.
 	pending []string
 
 	// inFlight is the running order whose roReq has been sent and not yet resolved. Empty
@@ -85,8 +85,17 @@ const (
 
 	// defaultWalkMax bounds the queue. A peer advertising an implausible number of running
 	// orders should not be able to commit us to an unbounded sequence of requests.
-	defaultWalkMax = 512
+	defaultWalkMax = repository.MaxSourceMembers
 )
+
+func (w *discoveryWalk) catalogueFits(count int) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return count <= w.max
+}
 
 func newDiscoveryWalk() *discoveryWalk {
 	return &discoveryWalk{timeout: defaultWalkTimeout, max: defaultWalkMax, degraded: true}
@@ -170,9 +179,9 @@ func (w *discoveryWalk) persistLocked() {
 
 // begin seeds the walk from a roListAll and returns the first running order to request.
 //
-// A fresh roListAll supersedes whatever was queued: it is a newer statement of what the NCS
-// holds, so continuing to work through a stale list would request running orders the NCS may
-// no longer have. Anything already in flight is left alone, because its answer is still coming.
+// A fresh roListAll removes absent IDs but preserves unfinished work ahead of another pass.
+// Otherwise periodic catalogue renewal can indefinitely starve the tail of a slow walk.
+// Anything already in flight is left alone, because its answer is still coming.
 //
 // dropped reports how many advertised identifiers did not fit the bound, so the caller can say
 // so rather than silently under-recovering.
@@ -188,16 +197,20 @@ func (w *discoveryWalk) begin(roIDs []string) (next string, ok bool, dropped int
 		w.catalogueInFlight, w.request = false, nil
 	}
 
-	// Deduplicate while preserving order. A malformed or duplicated list should not produce
-	// duplicate requests.
-	seen := make(map[string]bool, len(roIDs))
-	queue := make([]string, 0, len(roIDs))
+	listed := make(map[string]bool, len(roIDs))
 	for _, id := range roIDs {
-		if id == "" || seen[id] || id == w.inFlight {
-			continue
+		if id != "" && id != w.inFlight {
+			listed[id] = true
 		}
-		seen[id] = true
-		queue = append(queue, id)
+	}
+	queue := make([]string, 0, len(roIDs))
+	for _, ids := range [][]string{w.pending, roIDs} {
+		for _, id := range ids {
+			if listed[id] {
+				queue = append(queue, id)
+				delete(listed, id)
+			}
+		}
 	}
 
 	if len(queue) > w.max {

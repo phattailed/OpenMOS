@@ -444,6 +444,8 @@ func (s *WSServer) processMessage(ctx context.Context, sess *WSSession, data []b
 	case mosxml.KeepAlive:
 		// MOS 4 Profile 0: keepAlive produces NO response.
 		_ = m
+		refreshCatalogue(ctx, s.roDeps(), wsResponder{server: s, sess: sess, messageID: env.MessageID})
+		advanceWalk(ctx, s.roDeps(), wsResponder{server: s, sess: sess, messageID: env.MessageID})
 		return
 
 	case mosxml.ReqMachInfo:

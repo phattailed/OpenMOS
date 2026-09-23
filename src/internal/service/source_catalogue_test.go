@@ -3,12 +3,15 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	stdxml "encoding/xml"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -28,6 +31,10 @@ type sourceSetFixture struct {
 }
 
 func newSourceSetFixture(t *testing.T, destination string) *sourceSetFixture {
+	return newSourceSetWithIDs(t, destination, "rundown", "other")
+}
+
+func newSourceSetWithIDs(t *testing.T, destination string, ids ...string) *sourceSetFixture {
 	t.Helper()
 	if destination == "" {
 		destination = "http://127.0.0.1:1234/v1/openmos-snapshots"
@@ -35,7 +42,7 @@ func newSourceSetFixture(t *testing.T, destination string) *sourceSetFixture {
 	binding := repository.SourceBinding{SourceID: "source", MosID: "device", NCSID: "newsroom", Transport: "tcp", Destination: destination}
 	f := &sourceSetFixture{session: "connection", dirs: make(map[string]string), catalogueDir: t.TempDir()}
 	var sources []SourceRundownStore
-	for _, id := range []string{"rundown", "other"} {
+	for _, id := range ids {
 		binding.RundownID = id
 		f.dirs[id] = t.TempDir()
 		store, err := repository.OpenCommitted(f.dirs[id], binding, true)
@@ -110,7 +117,362 @@ func (f *sourceSetFixture) catalogue(t *testing.T) SourceCatalogue {
 	return snapshot
 }
 
-const twoShowCatalogue = `<roListAll><ro><roID>rundown</roID><roSlug> Show A </roSlug><roEdStart>2030-01-02T10:00:00</roEdStart></ro><ro><roID>other</roID><roSlug/></ro><ro><roID>outside</roID><roSlug>Outside configured set</roSlug></ro></roListAll>`
+const twoShowCatalogue = `<roListAll><ro><roID>rundown</roID><roSlug> Show A </roSlug><roEdStart>2030-01-02T10:00:00</roEdStart></ro><ro><roID>other</roID><roSlug/></ro></roListAll>`
+
+func sourceCatalogueXML(t *testing.T, ids ...string) string {
+	t.Helper()
+	listing := mosxml.ROListAll{}
+	for _, id := range ids {
+		listing.ROs = append(listing.ROs, mosxml.ROListAllItem{ID: id, Slug: "Synthetic show"})
+	}
+	raw, err := stdxml.Marshal(listing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestSourceSetEnrollsUnknownOpaqueMembers(t *testing.T) {
+	f := newSourceSetFixture(t, "")
+	ids := []string{"../unconfigured/show", `..\unconfigured\show`}
+	f.accept(t, sourceCatalogueXML(t, ids...))
+	got := f.catalogue(t)
+	if !got.Complete || len(got.Rundowns) != len(ids) {
+		t.Fatalf("authoritative enumeration omitted unconfigured members: %+v", got)
+	}
+	for i, id := range ids {
+		if got.Rundowns[i].ID != id || !f.group.RetainsRundown(id) {
+			t.Fatalf("opaque member was changed or not retained: %q", id)
+		}
+		if f.snapshot(t, id).Complete {
+			t.Fatal("membership alone certified a rundown snapshot")
+		}
+		path := filepath.Join(f.catalogueDir, "rundowns", fmt.Sprintf("%x", sha256.Sum256([]byte(id))), "source-checkpoint.json")
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("opaque identity did not retain a digest-keyed checkpoint under the root: %v", err)
+		}
+	}
+}
+
+func TestSourceSetRestartReopensEnrolledContentAndOriginalReceipts(t *testing.T) {
+	f := newSourceSetWithIDs(t, "") // No per-rundown binding or directory exists in configuration.
+	listing := sourceCatalogueXML(t, "rundown", "other")
+	if reply, err := f.send(t, "incidental", sourceRoster("story")); err != nil || !bytes.Contains(reply, []byte("NACK")) || f.group.RetainsRundown("rundown") {
+		t.Fatal("incidental traffic enrolled a member without catalogue authority")
+	}
+	if _, err := f.send(t, "enumeration", listing); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := f.send(t, "original", sourceRoster("story"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.accept(t, sourceBody("story", `<p>[CG :title\original]</p>`))
+	f.accept(t, `<roCreate><roID>other</roID><roSlug>Second</roSlug></roCreate>`)
+	before, _ := f.group.byRundown["rundown"].store.Checkpoint()
+	stateBefore, _ := readSourceState(before.State)
+	if !f.snapshot(t, "rundown").Complete || stateBefore.NextCue == 0 {
+		t.Fatal("fixture did not establish independent body coverage and cue identity")
+	}
+	if err := f.group.catalogue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := repository.OpenCatalogue(f.catalogueDir, f.group.binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalogue.Close() })
+	f.group, err = NewCommittedSourceSet(context.Background(), nil, catalogue, "synthetic-token", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := f.group.byRundown["rundown"].store.Checkpoint()
+	stateAfter, _ := readSourceState(after.State)
+	if after.Revision <= before.Revision || !reflect.DeepEqual(after.Receipts, before.Receipts) || stateAfter.NextCue != stateBefore.NextCue || stateAfter.RawRoster != stateBefore.RawRoster || stateAfter.Stories[0].Raw != stateBefore.Stories[0].Raw {
+		t.Fatal("restart lost accepted content, identities, counters or original receipts")
+	}
+	if cat := f.catalogue(t); cat.Complete || len(cat.Rundowns) != 2 || f.snapshot(t, "rundown").Complete || f.snapshot(t, "other").Complete {
+		t.Fatal("restart dropped retained membership or reused old coverage")
+	}
+	f.session = "replacement"
+	replayed, err := f.send(t, "original", sourceRoster("story"))
+	if err != nil || !bytes.Equal(replayed, ack) {
+		t.Fatal("restart changed the original acknowledgement")
+	}
+	if _, err := f.send(t, "enumeration", listing); err != nil || f.catalogue(t).Complete {
+		t.Fatal("replayed enumeration restored authority after restart")
+	}
+	f.accept(t, listing)
+	if !f.catalogue(t).Complete || f.snapshot(t, "rundown").Complete {
+		t.Fatal("fresh membership certified retained body coverage")
+	}
+	f.accept(t, sourceRoster("story"))
+	f.accept(t, sourceBody("story", `<p>[CG :title\updated while unselected]</p>`))
+	current := f.snapshot(t, "rundown")
+	if !current.Complete || current.Stories[0].Occurrences[0].ID != stateBefore.Stories[0].Occurrences[0].ID || (*current.Stories[0].Occurrences[0].Fields)[0] != "updated while unselected" {
+		t.Fatal("fresh recovery lost the retained member's independent update or cue identity")
+	}
+}
+
+func TestSourceSetUncertaintyAbsenceDeletionAndReappearanceAreDistinct(t *testing.T) {
+	f := newSourceSetFixture(t, "")
+	f.accept(t, twoShowCatalogue)
+	f.accept(t, sourceRoster("story"))
+	f.accept(t, sourceBody("story", sourceItem("video")))
+	f.accept(t, `<roCreate><roID>other</roID><roSlug>Second</roSlug></roCreate>`)
+	foreign := SourceInput{Transport: "tcp", NCSID: "foreign", Scope: "tcp:ro", Session: "foreign-session", MessageID: "foreign-enumeration", Content: []byte(sourceCatalogueXML(t, "foreign-member"))}
+	if err := f.group.Observe(context.Background(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.group.Apply(context.Background(), foreign, mosxml.ROListAll{}, func(msg mosxml.MOSMessage) ([]byte, error) { return stdxml.Marshal(msg) }); err == nil || f.group.RetainsRundown("foreign-member") || len(f.catalogue(t).Rundowns) != 2 {
+		t.Fatal("wrong-peer enumeration changed membership or enrolled a member")
+	}
+	f.group.Uncertain(f.session)
+	if cat := f.catalogue(t); cat.Complete || len(cat.Rundowns) != 2 {
+		t.Fatal("uncertainty removed retained members")
+	}
+	input := SourceInput{Transport: "tcp", NCSID: "newsroom", Scope: "tcp:ro", Session: f.session, MessageID: "partial", Content: []byte(`<roListAll><ro><roID>rundown</roID></ro>`)}
+	if _, err := f.group.Apply(context.Background(), input, mosxml.ROListAll{}, func(msg mosxml.MOSMessage) ([]byte, error) { return stdxml.Marshal(msg) }); err == nil || f.catalogue(t).Complete || len(f.catalogue(t).Rundowns) != 2 {
+		t.Fatal("partial enumeration removed members or restored completeness")
+	}
+	f.accept(t, twoShowCatalogue)
+	f.accept(t, sourceRoster("story"))
+	f.accept(t, sourceBody("story", sourceItem("video")))
+	retained, _ := f.group.byRundown["rundown"].store.Checkpoint()
+	f.accept(t, sourceCatalogueXML(t, "other"))
+	if cat := f.catalogue(t); !cat.Complete || len(cat.Rundowns) != 1 || cat.Rundowns[0].ID != "other" || f.snapshot(t, "rundown").Complete {
+		t.Fatal("fresh complete absence did not remove membership and invalidate its old snapshot")
+	}
+	absent, _ := f.group.byRundown["rundown"].store.Checkpoint()
+	oldState, _ := readSourceState(retained.State)
+	absentState, _ := readSourceState(absent.State)
+	if !reflect.DeepEqual(retained.Receipts, absent.Receipts) || oldState.RawRoster != absentState.RawRoster || oldState.Stories[0].Raw != absentState.Stories[0].Raw {
+		t.Fatal("absence destroyed retained content or acknowledgement history")
+	}
+	// A retained member still accepts updates while absent; these cannot establish membership.
+	f.accept(t, sourceRoster("story"))
+	f.accept(t, sourceBody("story", sourceItem("video")))
+	if cat := f.catalogue(t); cat.Complete || len(cat.Rundowns) != 1 {
+		t.Fatal("incidental roster traffic became a full membership enumeration")
+	}
+	f.accept(t, twoShowCatalogue)
+	if !f.catalogue(t).Complete || f.snapshot(t, "rundown").Complete {
+		t.Fatal("reappearance reused a snapshot from outside current membership")
+	}
+	f.accept(t, `<roListAll/>`)
+	if cat := f.catalogue(t); !cat.Complete || len(cat.Rundowns) != 0 || !f.group.RetainsRundown("rundown") || !f.group.RetainsRundown("other") {
+		t.Fatal("complete empty membership was confused with uncertainty or deleted retained stores")
+	}
+	f.accept(t, twoShowCatalogue)
+	deletion := `<roDelete><roID>other</roID></roDelete>`
+	ack, err := f.send(t, "delete", deletion)
+	if err != nil || !bytes.Contains(ack, []byte("<roStatus>OK</roStatus>")) {
+		t.Fatal("validated delete was not retained")
+	}
+	cat := f.catalogue(t)
+	if !cat.Complete || len(cat.Rundowns) != 1 || f.snapshot(t, "other").Active {
+		t.Fatal("validated delete did not remove membership")
+	}
+	replay, err := f.send(t, "delete", deletion)
+	if err != nil || !bytes.Equal(ack, replay) || f.catalogue(t).Revision != cat.Revision {
+		t.Fatal("delete replay changed the original receipt or membership revision")
+	}
+	f.accept(t, twoShowCatalogue)
+	if !f.catalogue(t).Complete || f.snapshot(t, "other").Complete {
+		t.Fatal("deleted member's reappearance bypassed independent snapshot recovery")
+	}
+}
+
+func TestSourceSetCapacityAndInterruptedEnrollmentWithholdAuthority(t *testing.T) {
+	f := newSourceSetFixture(t, "")
+	f.accept(t, twoShowCatalogue)
+	tooMany := make([]string, 101)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("new-%d", i)
+	}
+	if _, err := f.send(t, "over-capacity", sourceCatalogueXML(t, tooMany...)); err == nil || f.catalogue(t).Complete || len(f.group.members) != 2 {
+		t.Fatal("over-capacity enumeration partially enrolled or became complete")
+	}
+	// Fail the second enrollment after the first has become durable. The current catalogue
+	// must remain uncertain, and a restart must reopen that first store without inventing coverage.
+	root := filepath.Join(f.catalogueDir, "rundowns")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(root, fmt.Sprintf("%x", sha256.Sum256([]byte("new-second"))))
+	if err := os.WriteFile(blocked, []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	listing := sourceCatalogueXML(t, "rundown", "other", "new-first", "new-second")
+	if _, err := f.send(t, "interrupted", listing); err == nil || f.catalogue(t).Complete || !f.group.RetainsRundown("new-first") || f.group.RetainsRundown("new-second") {
+		t.Fatal("interrupted enrollment was treated as complete or lost the completed member")
+	}
+	first, _ := f.group.byRundown["new-first"].store.Checkpoint()
+	if err := f.group.catalogue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := repository.OpenCatalogue(f.catalogueDir, f.group.binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalogue.Close() })
+	var configured []SourceRundownStore
+	for _, id := range []string{"rundown", "other"} {
+		member := f.group.byRundown[id]
+		configured = append(configured, SourceRundownStore{Store: member.store, Binding: member.binding})
+	}
+	f.group, err = NewCommittedSourceSet(context.Background(), configured, catalogue, "synthetic-token", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := f.group.byRundown["new-first"].store.Checkpoint()
+	if after.Revision <= first.Revision || !reflect.DeepEqual(after.Receipts, first.Receipts) || f.catalogue(t).Complete {
+		t.Fatal("interrupted enrollment restart reused authority or reset a retained stream")
+	}
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	f.session = "replacement"
+	if _, err := f.send(t, "interrupted", listing); err != nil || f.catalogue(t).Complete || f.group.RetainsRundown("new-second") {
+		t.Fatal("replayed failed enumeration enrolled a member or restored authority")
+	}
+	f.accept(t, listing)
+	if cat := f.catalogue(t); !cat.Complete || len(cat.Rundowns) != 4 || f.snapshot(t, "new-second").Complete {
+		t.Fatal("fresh enumeration did not finish interrupted enrollment independently of snapshot readiness")
+	}
+	// Count all retained members, even after authoritative empty membership.
+	f.accept(t, `<roListAll/>`)
+	f.group.limit = len(f.group.members)
+	if _, err := f.send(t, "retained-capacity", sourceCatalogueXML(t, "another")); err == nil || f.catalogue(t).Complete || f.group.RetainsRundown("another") {
+		t.Fatal("inactive retained stores were evicted or ignored to make room")
+	}
+}
+
+func TestSourceSetPublisherIncludesMembersEnrolledDuringDelivery(t *testing.T) {
+	for _, endpoint := range []string{"/v1/openmos-snapshots", "/v2/source-sync"} {
+		t.Run(endpoint, func(t *testing.T) {
+			arrived, release := make(chan struct{}), make(chan struct{})
+			var first atomic.Bool
+			receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					return
+				}
+				if body["rundownId"] == "receipt-only" {
+					t.Error("unenrolled refusal store was published")
+				}
+				if first.CompareAndSwap(false, true) {
+					close(arrived)
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return
+					}
+				}
+				response := map[string]any{"sourceId": body["sourceId"], "rundownId": body["rundownId"], "revision": body["revision"], "acceptedRevision": body["revision"], "duplicate": false, "destinationApplied": false}
+				switch filepath.Base(r.URL.Path) {
+				case "start":
+					response["published"] = false
+				case "missing":
+					response["missing"] = body["hashes"]
+				case "parts":
+					response["hash"], response["stored"] = body["hash"], true
+				}
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer receiver.Close()
+			f := newSourceSetWithIDs(t, receiver.URL+endpoint)
+			if reply, err := f.send(t, "unknown-refusal", `<roCreate><roID>receipt-only</roID><roSlug>Unenrolled</roSlug></roCreate>`); err != nil || !bytes.Contains(reply, []byte("NACK")) {
+				t.Fatal("publisher fixture did not retain its unenrolled refusal")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			done := make(chan struct{})
+			go func() { f.group.RunPublisher(ctx); close(done) }()
+			defer func() { cancel(); <-done }()
+			select {
+			case <-arrived:
+			case <-ctx.Done():
+				t.Fatal("empty source set did not publish its catalogue")
+			}
+			f.accept(t, twoShowCatalogue)
+			f.accept(t, sourceRoster("story"))
+			f.accept(t, sourceBody("story", sourceItem("video")))
+			f.accept(t, `<roCreate><roID>other</roID><roSlug>Second</roSlug></roCreate>`)
+			close(release)
+			for {
+				cat, err := f.group.catalogue.Checkpoint()
+				a, aErr := f.group.byRundown["rundown"].store.Checkpoint()
+				b, bErr := f.group.byRundown["other"].store.Checkpoint()
+				if err != nil || aErr != nil || bErr != nil {
+					t.Fatalf("publisher lost retained state: %v %v %v", err, aErr, bErr)
+				}
+				if cat.AcceptedRevision == cat.Revision && a.AcceptedRevision == a.Revision && b.AcceptedRevision == b.Revision {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal("newly enrolled streams did not each receive their exact latest receipt")
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			// A live connection does not make an old membership enumeration fresh forever.
+			cancel()
+			<-done
+			if cp, err := f.group.unenrolled["receipt-only"].store.Checkpoint(); err != nil || cp.AcceptedRevision != 0 || f.group.RetainsRundown("receipt-only") {
+				t.Fatal("publishing enrolled members admitted the receipt-only store")
+			}
+			f.group.enumerated = time.Now().Add(-2 * time.Minute)
+			if !f.group.CatalogueNeedsRefresh() {
+				t.Fatal("live heartbeats hid an expired catalogue enumeration")
+			}
+			if err := f.group.publishCatalogueOnce(context.Background(), receiver.Client()); err != nil && !errors.Is(err, errSourceContinue) {
+				t.Fatal(err)
+			}
+			if cat := f.catalogue(t); cat.Complete || len(cat.Rundowns) != 2 || !f.snapshot(t, "rundown").Complete {
+				t.Fatal("expired catalogue destroyed membership or changed independent snapshot readiness")
+			}
+		})
+	}
+}
+
+func TestSourceSetV2CapacityIsBoundedWithoutTruncation(t *testing.T) {
+	f := newSourceSetWithIDs(t, "http://127.0.0.1:1234/v2/source-sync")
+	ids := make([]string, repository.MaxSourceMembers+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("rundown-%d", i)
+	}
+	if _, err := f.send(t, "over-limit", sourceCatalogueXML(t, ids...)); err == nil || f.catalogue(t).Complete || len(f.group.members) != 0 {
+		t.Fatal("v2 capacity failure silently omitted or partially enrolled members")
+	}
+}
+
+func TestSourceSetExpiredCatalogueReturnsToNormalRenewal(t *testing.T) {
+	var posts atomic.Int32
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body SourceCatalogue
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		posts.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"sourceId": body.SourceID, "acceptedRevision": body.Revision, "duplicate": false, "destinationApplied": false})
+	}))
+	defer receiver.Close()
+	f := newSourceSetWithIDs(t, receiver.URL+"/v1/openmos-snapshots")
+	f.accept(t, `<roListAll/>`)
+	f.group.enumerated = time.Now().Add(-2 * time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	f.group.RunPublisher(ctx)
+	cp, err := f.group.catalogue.Checkpoint()
+	if err != nil || f.catalogue(t).Complete || cp.AcceptedRevision != cp.Revision || posts.Load() == 0 {
+		t.Fatal("expired catalogue did not publish its incomplete revision")
+	}
+	if posts.Load() > 2 {
+		t.Fatal("expired catalogue repeatedly woke itself instead of waiting for normal renewal")
+	}
+}
 
 func TestSourceSetRetainsUnselectedEditsAndExactDisplayProperties(t *testing.T) {
 	f := newSourceSetFixture(t, "")
@@ -431,4 +793,162 @@ func TestSourceSetHaltedMemberDoesNotBlockHealthyReconnectOrRestart(t *testing.T
 			t.Fatal("healthy recovery silently resumed the halted publisher")
 		}
 	}
+}
+
+func TestSourceSetUnknownNackReplayAfterEnrollment(t *testing.T) {
+	f := newSourceSetWithIDs(t, "")
+	oldRoster := `<roCreate><roID>rundown</roID><roSlug>Before enrollment</roSlug></roCreate>`
+	original, err := f.send(t, "pre-enrollment", oldRoster)
+	if err != nil || !bytes.Contains(original, []byte("NACK")) {
+		t.Fatalf("initial unknown member did not receive NACK: %v %s", err, original)
+	}
+	refused := f.group.unenrolled["rundown"]
+	if refused == nil || f.group.RetainsRundown("rundown") || len(f.group.members) != 0 || len(f.catalogue(t).Rundowns) != 0 {
+		t.Fatal("unknown refusal was not retained separately from enrollment and publication")
+	}
+	beforeRefusal, _ := refused.store.Checkpoint()
+	state, _ := readSourceState(beforeRefusal.State)
+	if len(beforeRefusal.Receipts) != 1 || !bytes.Equal(beforeRefusal.Receipts[0].Response, original) || state.RawRoster != "" || len(state.Stories) != 0 || state.NextCue != 0 {
+		t.Fatal("refusal lost its original receipt or accepted unknown content")
+	}
+	if err := f.group.catalogue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := repository.OpenCatalogue(f.catalogueDir, f.group.binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalogue.Close() })
+	f.group, err = NewCommittedSourceSet(context.Background(), nil, catalogue, "synthetic-token", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.session = "replacement"
+	if f.group.RetainsRundown("rundown") || len(f.group.members) != 0 || f.group.unenrolled["rundown"] == nil {
+		t.Fatal("restart turned a retained refusal into enrollment")
+	}
+	reopened, _ := f.group.unenrolled["rundown"].store.Checkpoint()
+	if reopened.Revision <= beforeRefusal.Revision || !bytes.Equal(reopened.State, beforeRefusal.State) || !reflect.DeepEqual(reopened.Receipts, beforeRefusal.Receipts) {
+		t.Fatal("restart reset the receipt-only counter, state or original refusal")
+	}
+	if replay, err := f.send(t, "pre-enrollment", oldRoster); err != nil || !bytes.Equal(replay, original) {
+		t.Fatal("restart before enrollment changed the original NACK")
+	}
+	changed := strings.Replace(oldRoster, "Before enrollment", "Changed retry", 1)
+	if reply, _ := f.send(t, "pre-enrollment", changed); !bytes.Contains(reply, []byte("NACK")) {
+		t.Fatal("changed-content refusal retry was accepted before enrollment")
+	}
+	afterRefusal, _ := f.group.unenrolled["rundown"].store.Checkpoint()
+	if !reflect.DeepEqual(reopened, afterRefusal) {
+		t.Fatal("retry before enrollment changed the retained refusal checkpoint")
+	}
+	f.accept(t, sourceCatalogueXML(t, "rundown"))
+	if f.group.unenrolled["rundown"] != nil || catalogue.MemberUnenrolled("rundown") {
+		t.Fatal("authoritative enrollment did not promote the existing refusal store")
+	}
+	f.accept(t, sourceRoster("current-story"))
+	f.accept(t, sourceBody("current-story", sourceItem("current-video")))
+	before, err := f.group.byRundown["rundown"].store.Checkpoint()
+	if err != nil || !f.snapshot(t, "rundown").Complete {
+		t.Fatalf("current member coverage was not established: %v", err)
+	}
+	replay, err := f.send(t, "pre-enrollment", oldRoster)
+	if err != nil {
+		t.Fatalf("replay returned an execution error: %v", err)
+	}
+	after, err := f.group.byRundown["rundown"].store.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := f.snapshot(t, "rundown")
+	t.Logf("original=%s replay=%s revision=%d->%d storiesAfter=%d completeAfter=%t", original, replay, before.Revision, after.Revision, len(current.Stories), current.Complete)
+	if !bytes.Equal(original, replay) {
+		t.Error("same messageID/body lost its original pre-enrollment NACK after enrollment")
+	}
+	if after.Revision != before.Revision || !bytes.Equal(after.Pending, before.Pending) {
+		t.Error("retry of a rejected pre-enrollment message replaced freshly recovered rundown content")
+	}
+	if reply, err := f.send(t, "pre-enrollment", changed); err == nil || !bytes.Contains(reply, []byte("NACK")) {
+		t.Fatal("changed-content refusal retry was accepted after enrollment")
+	}
+	afterConflict, _ := f.group.byRundown["rundown"].store.Checkpoint()
+	oldState, _ := readSourceState(before.State)
+	currentState, _ := readSourceState(afterConflict.State)
+	if !reflect.DeepEqual(before.Receipts, afterConflict.Receipts) || oldState.RawRoster != currentState.RawRoster || oldState.NextCue != currentState.NextCue || len(currentState.Stories) != 1 || oldState.Stories[0].Raw != currentState.Stories[0].Raw || f.snapshot(t, "rundown").Complete {
+		t.Fatal("changed-content retry erased accepted content/receipts or kept conflicting coverage complete")
+	}
+	if replay, err := f.send(t, "pre-enrollment", oldRoster); err != nil || !bytes.Equal(replay, original) {
+		t.Fatal("conflicting retry replaced the original refusal")
+	}
+}
+
+func TestSourceSetUnknownRefusalFailureDoesNotAcknowledge(t *testing.T) {
+	t.Run("capacity includes refused members", func(t *testing.T) {
+		f := newSourceSetWithIDs(t, "")
+		original, err := f.send(t, "retained-refusal", sourceRoster("story"))
+		if err != nil || !bytes.Contains(original, []byte("NACK")) {
+			t.Fatal("initial refusal was not retained")
+		}
+		f.group.limit = 1
+		if reply, err := f.send(t, "unretained-refusal", `<roCreate><roID>other</roID><roSlug>Unknown</roSlug></roCreate>`); err == nil || len(reply) != 0 || len(f.group.unenrolled) != 1 {
+			t.Fatal("capacity failure sent an unretained refusal or discarded an existing receipt")
+		}
+		if _, err := f.send(t, "over-capacity", sourceCatalogueXML(t, "other")); err == nil || f.catalogue(t).Complete || f.group.RetainsRundown("other") {
+			t.Fatal("refused store was omitted from authoritative enrollment capacity")
+		}
+		f.accept(t, sourceCatalogueXML(t, "rundown"))
+		if reply, err := f.send(t, "retained-refusal", sourceRoster("story")); err != nil || !bytes.Equal(reply, original) {
+			t.Fatal("enrollment at capacity lost its retained refusal")
+		}
+	})
+	t.Run("checkpoint replacement failure", func(t *testing.T) {
+		f := newSourceSetWithIDs(t, "")
+		if _, err := f.send(t, "retained-refusal", sourceRoster("story")); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(f.catalogueDir, "rundowns", fmt.Sprintf("%x", sha256.Sum256([]byte("rundown"))), "source-checkpoint.json")
+		original, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path, path+".held-by-test"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if reply, err := f.send(t, "failed-refusal", sourceRoster("changed")); err == nil || len(reply) != 0 {
+			t.Fatal("storage failure sent a refusal without retaining its original response")
+		}
+		if reply, err := f.send(t, "failed-other", `<roCreate><roID>other</roID></roCreate>`); err == nil || len(reply) != 0 {
+			t.Fatal("unavailable cross-rundown receipts produced an unretained response")
+		}
+		if held, err := os.ReadFile(path + ".held-by-test"); err != nil || !bytes.Equal(held, original) {
+			t.Fatal("failed refusal replaced the original retained checkpoint")
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path+".held-by-test", path); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.group.catalogue.Close(); err != nil {
+			t.Fatal(err)
+		}
+		catalogue, err := repository.OpenCatalogue(f.catalogueDir, f.group.binding, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer catalogue.Close()
+		f.group, err = NewCommittedSourceSet(context.Background(), nil, catalogue, "synthetic-token", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.group.RetainsRundown("rundown") {
+			t.Fatal("storage recovery admitted an unenrolled member")
+		}
+		if reply, err := f.send(t, "failed-refusal", sourceRoster("changed")); err != nil || !bytes.Contains(reply, []byte("NACK")) {
+			t.Fatal("storage recovery did not retain the first emitted refusal")
+		}
+	})
 }

@@ -37,7 +37,7 @@ type CommittedSource struct {
 }
 
 // SourceReceiver keeps transport validation and envelopes shared by the single-rundown
-// implementation and the explicitly configured collection of independent rundown stores.
+// implementation and the discovered collection of independent rundown stores.
 type SourceReceiver interface {
 	CatalogueEnabled() bool
 	CatalogueNeedsRefresh() bool
@@ -89,8 +89,15 @@ type sourceState struct {
 }
 
 func ValidateSourceBinding(binding repository.SourceBinding) error {
-	if !sourceText(binding.SourceID, 512, true) || !sourceText(binding.RundownID, 512, true) || !sourceText(binding.MosID, 512, true) || !sourceText(binding.NCSID, 512, true) {
-		return errors.New("committed source requires bounded source, rundown and peer identities")
+	if !sourceText(binding.RundownID, 512, true) {
+		return errors.New("committed source requires a bounded rundown identity")
+	}
+	return ValidateSourceSetBinding(binding)
+}
+
+func ValidateSourceSetBinding(binding repository.SourceBinding) error {
+	if !sourceText(binding.SourceID, 512, true) || !sourceText(binding.MosID, 512, true) || !sourceText(binding.NCSID, 512, true) {
+		return errors.New("committed source requires bounded source and peer identities")
 	}
 	if binding.Transport != "tcp" && binding.Transport != "ws-server" && binding.Transport != "ws-client" {
 		return errors.New("source transport must be tcp, ws-server or ws-client")
