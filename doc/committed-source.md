@@ -77,13 +77,14 @@ temporarily selecting that exact `SOURCE_RUNDOWN_ID` and `SOURCE_STATE_DIR` and 
 it refuses existing catalogue or rundown state. A new catalogue-only source can instead omit
 `SOURCE_RUNDOWN_ID` and set `SOURCE_ADDITIONAL_RUNDOWNS=[]`, initialize the catalogue with that
 same command, and discover its first members at runtime. `SOURCE_STATE_DIR` is unused in that
-case. Normal startup opens every configured and previously enrolled store before starting any
+case. Normal startup opens every configured and previously retained store before starting any
 transport or publisher and refuses missing retained state.
 
 Each rundown keeps the existing version 1 checkpoint format, revision, original receipts,
 raw content and cue allocator. Catalogue state lives in `source-catalogue.json`, with its own
 lock, integrity check, revision and receipts. A separate integrity-checked `source-members.json`
-records enrolled IDs independently of active catalogue membership. Each discovered checkpoint
+records retained IDs independently of active catalogue membership. Its optional `unenrolled`
+list marks receipt-only stores that have never received authoritative enrollment. Each checkpoint
 lives at `<SOURCE_CATALOGUE_STATE_DIR>/rundowns/<sha256>/source-checkpoint.json`, where `sha256`
 is the lowercase SHA-256 hex digest of the exact UTF-8 rundown ID. IDs remain opaque and
 unchanged inside checkpoints and publication; path separators never become directory names.
@@ -93,9 +94,15 @@ beside member state fail closed.
 Enrollment writes and synchronizes an initial checkpoint in a fixed staging directory, installs
 it under the digest key, then durably records its ID before accepting input. An interrupted
 initial enrollment can resume after restart. Existing accepted member state is never
-reinitialized or replaced. Member removal from the active catalogue does not retire its store,
-raw content, counters or original receipts. The retained-store ceiling includes the primary,
-all explicit additions and all enrolled members, including inactive members: 100 for version 1
+reinitialized or replaced. Validated unknown input with a message ID retains its original NACK
+in an ordinary receipt-only checkpoint before sending it, without accepting the input's content.
+That store remains outside routing, discovery and publication until full enumeration admits it.
+Enrollment reuses the same checkpoint and receipts; restart preserves the unenrolled marker.
+If storage or capacity prevents durable refusal, the source returns an error without sending
+an unretained ACK. Inputs without a message ID retain the existing native retry limits below.
+Member removal from the active catalogue does not retire its store, raw content, counters or
+original receipts. The retained-store ceiling includes the primary, all explicit additions,
+all enrolled members including inactive members, and all receipt-only stores: 100 for version 1
 and 512 for version 2. Full enumeration is validated against publication and discovery capacity
 before enrollment; exhausted capacity produces an error and withholds completeness without
 eviction or a truncated authoritative list. A storage failure may leave safely retained
@@ -104,7 +111,7 @@ partial enrollment, but cannot certify the full enumeration. Recovery requires f
 The receiver must support the selected publication version. Startup always requires fresh
 authority and keeps previously retained catalogue rows as incomplete observations.
 
-All retained rundowns continue receiving and publishing edits regardless of which show the
+All enrolled rundowns continue receiving and publishing edits regardless of which show the
 application selects. Identical story, item or local cue IDs in different rundowns remain
 separate. Replay conflicts are checked across the retained set because a peer's message-ID
 sequence spans shows. There is still one native MOS identity and transport counter stream.
@@ -113,13 +120,13 @@ adds no selection endpoint or inbound application listener.
 
 ### Compatible configuration rollback
 
-The dynamically enrolled version 1 stores use the existing strict checkpoint schemas. A
-compatible older producer can reopen them when every enrolled member is explicitly configured.
+The retained version 1 stores use the existing strict checkpoint schemas. A compatible older
+producer can reopen them when every retained member is explicitly configured.
 Stop the current producer first, retain its complete current state, and derive the old
 configuration from the original explicit bindings plus **all** IDs in the current
-`source-members.json`, including inactive IDs. For each enrolled ID, use its exact string as
-`rundownId` and the digest directory above as `stateDir`; verify that the checkpoint binding
-matches. Deduplicate an ID only when it names the same current store. Keep the original primary
+`source-members.json`, including inactive and receipt-only IDs. For each retained ID, use its
+exact string as `rundownId` and the digest directory above as `stateDir`; verify that the
+checkpoint binding matches. Deduplicate an ID only when it names the same current store. Keep the original primary
 if present; otherwise choose one retained member as `SOURCE_RUNDOWN_ID`/`SOURCE_STATE_DIR` and
 put every remaining member in `SOURCE_ADDITIONAL_RUNDOWNS`. Preserve `SOURCE_ID`, MOS/NCS identity,
 transport, publication destination, credential, native `STATE_DIR` and catalogue directory.
@@ -129,8 +136,12 @@ Reopen the current checkpoints, never pre-cutover copies or `.pre-v2` backups. R
 catalogue or additional bindings, disabling committed-source mode, or restoring an earlier
 checkpoint would stop retaining members or lose accepted receipts and is not this rollback
 route. The independent inventory must stay alongside the catalogue for a later upgrade; the
-older producer leaves it alone. Further unknown members require explicit provisioning while
-running the older version. Its ordinary startup still requires fresh roster/body authority.
+older producer leaves it alone. An older binary does not enforce the `unenrolled` marker:
+explicitly configured receipt-only stores follow its existing configured-member admission
+rules, while their original NACKs still replay unchanged. Upgrading again restores the marker's
+enrollment gate until fresh full enumeration arrives. Further unknown members require explicit
+provisioning while running the older version. Its ordinary startup still requires fresh
+roster/body authority.
 This route applies only to a version known to understand all current checkpoint fields and
 the selected publication format; a version 1-only producer cannot reopen version 2 state.
 
@@ -173,6 +184,9 @@ that validates after the first catalogue reply queues another enumeration. Lost 
 use the existing bounded discovery timeout, checked when validated traffic arrives; Profile 0
 traffic can advance catalogue recovery too. A quiet connection with no MOS input leaves that
 walk waiting, while normal source liveness checks continue to fence publication.
+An enumeration refresh preserves queued, still-advertised rosters ahead of another pass,
+removes absent IDs and appends other advertised IDs once. A slow walk therefore keeps making
+progress even when catalogue freshness expires before all its rosters have arrived.
 
 A catalogue or roster response must match the actual request type, rundown, sending scope,
 connection and MOS 4 request ID. The request is registered before writing, and its slot stays
@@ -355,8 +369,8 @@ select the new protocol. Deploy a compatible receiver first. New directories use
 the existing initialization commands. Existing committed directories require an
 explicit offline `--upgrade-source-sync` for each rundown and
 `--upgrade-catalogue-sync` for the catalogue, using their exact original bindings
-and the new URL. Include every enrolled member in `source-members.json`, not only the
-explicit configuration. The inventory is bound to source/peer/transport identity and stays
+and the new URL. Include every retained member in `source-members.json`, including receipt-only
+stores, as well as every explicitly configured rundown. The inventory is bound to source/peer/transport identity and stays
 unchanged; the individual checkpoints enforce the publication destination. Each operation
 takes the existing ownership lock, preserves
 counters and original replay receipts, saves the exact old checkpoint as `.pre-v2`,
@@ -373,7 +387,7 @@ Unchanged objects are reused, interrupted delivery resumes, and the receiver
 publishes only after every required object is retained and validated. A published
 unchanged revision renews through a small heartbeat. A newer pending revision
 inhibits preparation; it never makes missing parts authoritative deletion.
-Four workers give each retained show one bounded request per turn in both publication versions.
+Four workers give each enrolled show one bounded request per turn in both publication versions.
 Newly enrolled members join that scheduler without a restart, even during an in-flight delivery.
 
 V2 removes the legacy aggregate story, occurrence and catalogue byte limits while
@@ -383,6 +397,6 @@ a preparation receipt does not rewrite unchanged story content. Input applicatio
 still stages the complete logical rundown and scans retained receipts. Very large
 receipt histories and sustained ingress remain qualification concerns. MOS framing
 and per-field limits are unchanged. The 512 retained-store ceiling matches the existing
-serialized discovery bound and includes explicit and inactive members. Neither source
+serialized discovery bound and includes explicit, inactive and receipt-only members. Neither source
 acceptance nor the synthetic capacity checks qualify a destination's physical capacity or
 rendering.

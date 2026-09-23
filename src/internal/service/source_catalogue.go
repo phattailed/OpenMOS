@@ -48,6 +48,7 @@ type CommittedSourceSet struct {
 	mu         sync.Mutex
 	members    []*CommittedSource
 	byRundown  map[string]*CommittedSource
+	unenrolled map[string]*CommittedSource
 	catalogue  *repository.Catalogue
 	binding    repository.SourceBinding
 	sessions   map[string]time.Time
@@ -87,7 +88,7 @@ func NewCommittedSourceSet(ctx context.Context, retained []SourceRundownStore, c
 	if catalogue == nil || ValidateSourceSetBinding(catalogue.MemberBinding("")) != nil || token == "" || strings.ContainsAny(token, "\r\n") || timeout <= 0 {
 		return nil, errors.New("source set requires a valid catalogue binding, credential and positive timeout")
 	}
-	g := &CommittedSourceSet{byRundown: make(map[string]*CommittedSource), catalogue: catalogue,
+	g := &CommittedSourceSet{byRundown: make(map[string]*CommittedSource), unenrolled: make(map[string]*CommittedSource), catalogue: catalogue,
 		binding: catalogue.Binding(), token: token, timeout: timeout, limit: repository.MaxSourceMembers,
 		sessions: make(map[string]time.Time), owners: make(map[string]string), wake: make(chan struct{}, 1)}
 	if !strings.HasSuffix(g.binding.Destination, "/v2/source-sync") {
@@ -121,6 +122,14 @@ func NewCommittedSourceSet(ctx context.Context, retained []SourceRundownStore, c
 		return nil, errors.New("retained source set exceeds its capacity")
 	}
 	for _, entry := range retained {
+		if catalogue.MemberUnenrolled(entry.Binding.RundownID) {
+			member, err := newCommittedSource(ctx, entry.Store, entry.Binding, g.token, g.timeout, true)
+			if err != nil {
+				return nil, err
+			}
+			g.unenrolled[entry.Binding.RundownID] = member
+			continue
+		}
 		if err := g.addMember(ctx, entry.Store, entry.Binding); err != nil {
 			return nil, err
 		}
@@ -132,9 +141,13 @@ func NewCommittedSourceSet(ctx context.Context, retained []SourceRundownStore, c
 }
 
 func (g *CommittedSourceSet) addMember(ctx context.Context, store *repository.Durable, binding repository.SourceBinding) error {
-	member, err := newCommittedSource(ctx, store, binding, g.token, g.timeout, true)
-	if err != nil {
-		return err
+	member := g.unenrolled[binding.RundownID]
+	if member == nil {
+		var err error
+		member, err = newCommittedSource(ctx, store, binding, g.token, g.timeout, true)
+		if err != nil {
+			return err
+		}
 	}
 	// Enrollment joins already validated lanes without treating the next roster as a new
 	// connection. The new checkpoint remains incomplete until its own fresh roster and bodies.
@@ -145,6 +158,7 @@ func (g *CommittedSourceSet) addMember(ctx context.Context, store *repository.Du
 	}
 	g.members = append(g.members, member)
 	g.byRundown[binding.RundownID] = member
+	delete(g.unenrolled, binding.RundownID)
 	return nil
 }
 
@@ -322,9 +336,9 @@ func (g *CommittedSourceSet) uncertain(session string) {
 // Receipts are retained per rundown, but a peer's messageID sequence spans the whole source.
 // Check other stores before routing so a reused ID cannot escape conflict detection by changing RO.
 // ponytail: scan the bounded source set; index receipts if measured retained volume warrants it.
-func (g *CommittedSourceSet) crossReceipt(input SourceInput, response bool, target *CommittedSource) error {
+func (g *CommittedSourceSet) crossReceipt(input SourceInput, response bool, target *CommittedSource) (bool, error) {
 	if input.MessageID == "" {
-		return nil
+		return false, nil
 	}
 	conflict := func(receipts []repository.InputReceipt) bool {
 		for _, receipt := range receipts {
@@ -334,28 +348,30 @@ func (g *CommittedSourceSet) crossReceipt(input SourceInput, response bool, targ
 		}
 		return false
 	}
-	for _, member := range g.members {
-		if member == target {
-			continue
-		}
-		cp, err := member.store.Checkpoint()
-		if err != nil {
-			return err
-		}
-		if conflict(cp.Receipts) {
-			return errors.New("messageID conflicts with another rundown's retained receipt")
+	for _, members := range []map[string]*CommittedSource{g.byRundown, g.unenrolled} {
+		for _, member := range members {
+			if member == target {
+				continue
+			}
+			cp, err := member.store.Checkpoint()
+			if err != nil {
+				return false, err
+			}
+			if conflict(cp.Receipts) {
+				return true, nil
+			}
 		}
 	}
 	if target != nil {
 		cp, err := g.catalogue.Checkpoint()
 		if err != nil {
-			return err
+			return false, err
 		}
 		if conflict(cp.Receipts) {
-			return errors.New("messageID conflicts with a retained catalogue receipt")
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (g *CommittedSourceSet) Apply(ctx context.Context, input SourceInput, msg mosxml.MOSMessage, render func(mosxml.MOSMessage) ([]byte, error)) (SourceResult, error) {
@@ -376,19 +392,70 @@ func (g *CommittedSourceSet) Apply(ctx context.Context, input SourceInput, msg m
 		return reject("message is outside the configured source set or current connection")
 	}
 	target := g.byRundown[roID]
-	if !catalogue && target == nil {
-		if err := g.invalidateCatalogue(); err != nil {
-			return SourceResult{}, err
-		}
-		return reject("rundown requires authoritative catalogue enrollment")
+	if target == nil {
+		target = g.unenrolled[roID]
 	}
-	if err := g.crossReceipt(input, catalogue || roster, target); err != nil {
+	conflict, err := g.crossReceipt(input, catalogue || roster, target)
+	if err != nil {
+		return SourceResult{}, err
+	}
+	if conflict {
 		g.uncertain(input.Session)
-		return reject(err.Error())
+		return reject("messageID conflicts with another retained receipt")
 	}
 	if catalogue {
 		fresh, err := g.applyCatalogue(ctx, input)
 		return SourceResult{Applied: fresh}, err
+	}
+	if g.byRundown[roID] == nil {
+		sum := sha256.Sum256(input.Content)
+		hash := hex.EncodeToString(sum[:])
+		if target != nil && input.MessageID != "" {
+			cp, err := target.store.Checkpoint()
+			if err != nil {
+				return SourceResult{}, err
+			}
+			for _, receipt := range cp.Receipts {
+				if receipt.Scope == input.Scope && receipt.NCSID == input.NCSID && receipt.MessageID == input.MessageID && (len(receipt.Response) == 0) == roster {
+					if receipt.Hash == hash {
+						return SourceResult{Reply: bytes.Clone(receipt.Response)}, nil
+					}
+					g.uncertain(input.Session)
+					return reject("messageID conflicts with a retained refusal")
+				}
+			}
+		}
+		if err := g.invalidateCatalogue(); err != nil {
+			return SourceResult{}, err
+		}
+		if !sourceText(roID, 512, true) || input.MessageID == "" {
+			return reject("rundown requires authoritative catalogue enrollment")
+		}
+		out, refusal := reject("rundown requires authoritative catalogue enrollment")
+		if !roster && refusal != nil {
+			return SourceResult{}, refusal
+		}
+		if target == nil {
+			if len(g.members)+len(g.unenrolled) >= g.limit {
+				return SourceResult{}, errors.New("retained rundown capacity exhausted; refusal cannot be retained")
+			}
+			store, err := g.catalogue.RetainMember(roID)
+			if err != nil {
+				return SourceResult{}, err
+			}
+			target, err = newCommittedSource(ctx, store, g.catalogue.MemberBinding(roID), g.token, g.timeout, true)
+			if err != nil {
+				return SourceResult{}, err
+			}
+			g.unenrolled[roID] = target
+		}
+		if err := target.store.Commit(ctx, func(_ repository.Repository, cp *repository.SourceCheckpoint) error {
+			rememberSource(cp, input, hash, out.Reply)
+			return nil
+		}); err != nil {
+			return SourceResult{}, err // No ACK may escape without its durable refusal.
+		}
+		return out, refusal
 	}
 	out, err := target.Apply(ctx, input, msg, render)
 	if err != nil || out.Recover {
@@ -440,9 +507,9 @@ func (g *CommittedSourceSet) applyCatalogue(ctx context.Context, input SourceInp
 	if _, err := marshalCatalogue(proposed); err != nil {
 		return false, g.rejectCatalogue(input, hash, err)
 	}
-	count := len(g.members)
+	count := len(g.members) + len(g.unenrolled)
 	for _, row := range rows {
-		if g.byRundown[row.ID] == nil {
+		if g.byRundown[row.ID] == nil && g.unenrolled[row.ID] == nil {
 			count++
 		}
 	}

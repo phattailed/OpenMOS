@@ -125,6 +125,28 @@ func TestCatalogueDiscoversUnknownMembersThroughTCPAndWebSocket(t *testing.T) {
 			write("initial-health", `<keepAlive/>`)
 			enumerationID := request("roReqAll", "")
 			ids := []string{"new/../one", `new\two`}
+			unknown := `<roCreate><roID>` + ids[1] + `</roID><roSlug>Before enrollment</roSlug></roCreate>`
+			write("pre-enrollment", unknown)
+			refusal := read()
+			if !bytes.Contains(decode(refusal), []byte("NACK")) || source.RetainsRundown(ids[1]) {
+				t.Fatal("unknown traffic was accepted or established enrollment")
+			}
+			path := filepath.Join(root, "rundowns", fmt.Sprintf("%x", sha256.Sum256([]byte(ids[1]))), "source-checkpoint.json")
+			retained, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved struct {
+				Binding repository.SourceBinding
+				Source  repository.SourceCheckpoint
+			}
+			if err := json.Unmarshal(retained, &saved); err != nil || len(saved.Source.Receipts) != 1 {
+				t.Fatal("unknown NACK preceded durable refusal retention")
+			}
+			heldRefusal, err := mosxml.EncodeUCS2BE(saved.Source.Receipts[0].Response)
+			if err != nil || !bytes.Equal(heldRefusal, refusal) {
+				t.Fatal("unknown NACK wire differs from its durably retained response")
+			}
 			listing := `<roListAll><ro><roID>` + ids[0] + `</roID></ro><ro><roID>` + ids[1] + `</roID></ro></roListAll>`
 			write(enumerationID, listing)
 			for _, id := range ids {
@@ -140,14 +162,9 @@ func TestCatalogueDiscoversUnknownMembersThroughTCPAndWebSocket(t *testing.T) {
 			if raw := decode(ack); !bytes.Contains(raw, []byte("<roStatus>OK</roStatus>")) {
 				t.Fatalf("discovered member body was not accepted: %s", raw)
 			}
-			path := filepath.Join(root, "rundowns", fmt.Sprintf("%x", sha256.Sum256([]byte(ids[1]))), "source-checkpoint.json")
 			raw, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
-			}
-			var saved struct {
-				Binding repository.SourceBinding
-				Source  repository.SourceCheckpoint
 			}
 			if err := json.Unmarshal(raw, &saved); err != nil || saved.Binding.RundownID != ids[1] || len(saved.Source.Receipts) == 0 {
 				t.Fatal("successful ACK preceded durable enrollment/content/receipt retention")
@@ -162,6 +179,13 @@ func TestCatalogueDiscoversUnknownMembersThroughTCPAndWebSocket(t *testing.T) {
 			}
 			if after, _ := os.ReadFile(path); !bytes.Equal(after, raw) {
 				t.Fatal("replay rewrote the discovered member checkpoint")
+			}
+			write("pre-enrollment", unknown)
+			if replay := read(); !bytes.Equal(replay, refusal) {
+				t.Fatal("enrollment changed the original refusal wire bytes")
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, raw) {
+				t.Fatal("pre-enrollment refusal replay changed recovered content")
 			}
 			before, _ := catalogue.Checkpoint()
 			write("unsolicited-empty", `<roListAll/>`)
@@ -342,6 +366,7 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 		t.Helper()
 		write(request, read("roReqAll", ""), listing)
 		currentRosterID := read("roReq", "first")
+		secondSettled := false
 		if checkRosterCorrelation {
 			beforeRoster, _ := stores["first"].Checkpoint()
 			write(request, initialRosterID, "<roList>"+firstRoster+"</roList>")
@@ -362,6 +387,9 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 			client.deps.walk.mu.Unlock()
 			write(request, "roster-recovery", "<keepAlive/>")
 			write(request, read("roReqAll", ""), listing)
+			// Finish the still-pending tail before retrying the timed-out first rundown.
+			write(request, read("roReq", "second"), `<roList><roID>second</roID><roSlug>Second</roSlug></roList>`)
+			secondSettled = true
 			currentRosterID = read("roReq", "first")
 			beforeRoster, _ = stores["first"].Checkpoint()
 			write(request, lateRosterID, "<roList>"+firstRoster+"</roList>")
@@ -373,7 +401,9 @@ func TestSourceSetPassiveSessionRefreshesCatalogueAndEveryRetainedRundown(t *tes
 			checkRosterCorrelation = false
 		}
 		write(request, currentRosterID, "<roList>"+firstRoster+"</roList>")
-		write(request, read("roReq", "second"), `<roList><roID>second</roID><roSlug>Second</roSlug></roList>`)
+		if !secondSettled {
+			write(request, read("roReq", "second"), `<roList><roID>second</roID><roSlug>Second</roSlug></roList>`)
+		}
 		waitFor(t, time.Second, func() bool { return snapshot("second").Complete && !source.CatalogueNeedsRefresh() })
 	}
 	refresh()

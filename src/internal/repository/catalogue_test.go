@@ -82,6 +82,74 @@ func TestCatalogueProvisioningPersistenceAndBinding(t *testing.T) {
 	}
 }
 
+func TestCatalogueReceiptOnlyStoreRequiresDurableEnrollment(t *testing.T) {
+	dir := t.TempDir()
+	binding := SourceBinding{SourceID: "source", MosID: "device", NCSID: "newsroom", Transport: "tcp", Destination: "http://127.0.0.1:1234/v1/openmos-catalogue"}
+	catalogue, err := OpenCatalogue(dir, binding, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalogue.OpenMembers(nil); err != nil {
+		t.Fatal(err)
+	}
+	store, err := catalogue.RetainMember("unknown")
+	if err != nil || !catalogue.MemberUnenrolled("unknown") {
+		t.Fatalf("receipt-only storage granted enrollment: %v", err)
+	}
+	checkpoint, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalogue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err = OpenCatalogue(dir, binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalogue.OpenMembers(nil); err != nil || !catalogue.MemberUnenrolled("unknown") {
+		t.Fatalf("restart lost the unenrolled marker: %v", err)
+	}
+	path := filepath.Join(dir, "source-members.json")
+	if err := os.Rename(path, path+".held-by-test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalogue.EnrollMember("unknown"); err == nil || !catalogue.MemberUnenrolled("unknown") {
+		t.Fatal("failed inventory replacement admitted an unenrolled member")
+	}
+	if err := catalogue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".held-by-test", path); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err = OpenCatalogue(dir, binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalogue.Close()
+	if _, err := catalogue.OpenMembers(nil); err != nil || !catalogue.MemberUnenrolled("unknown") {
+		t.Fatalf("failed enrollment did not survive reopening as unenrolled: %v", err)
+	}
+	catalogue.memberLimit = 1
+	if _, err := catalogue.RetainMember("another"); err == nil {
+		t.Fatal("receipt-only store was not counted against retained capacity")
+	}
+	store, err = catalogue.EnrollMember("unknown")
+	if err != nil || catalogue.MemberUnenrolled("unknown") {
+		t.Fatalf("durable enrollment did not reuse the receipt-only store at capacity: %v", err)
+	}
+	if got, err := os.ReadFile(store.path); err != nil || !bytes.Equal(got, checkpoint) {
+		t.Fatal("admission rewrote the retained checkpoint")
+	}
+}
+
 func TestCatalogueMemberEnrollmentRecoversStagingAndRejectsPathAliases(t *testing.T) {
 	for _, endpoint := range []string{"/v1/openmos-catalogue", "/v2/source-sync"} {
 		t.Run(endpoint, func(t *testing.T) {

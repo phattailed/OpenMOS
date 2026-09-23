@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,7 @@ type Catalogue struct {
 	content       *checkpointContent
 	members       map[string]*Durable
 	memberIDs     []string
+	unenrolled    map[string]bool
 	ownedMembers  []*Durable
 	memberLimit   int
 	retainedCount int
@@ -53,13 +55,20 @@ type Catalogue struct {
 const MaxSourceMembers = 512
 
 type sourceMembersFile struct {
-	Version  int           `json:"version"`
-	Binding  SourceBinding `json:"binding"`
-	Rundowns []string      `json:"rundowns"`
-	Digest   string        `json:"digest"`
+	Version    int           `json:"version"`
+	Binding    SourceBinding `json:"binding"`
+	Rundowns   []string      `json:"rundowns"`
+	Unenrolled []string      `json:"unenrolled,omitempty"`
+	Digest     string        `json:"digest"`
 }
 
 func (c *Catalogue) Binding() SourceBinding { return c.binding }
+
+func (c *Catalogue) MemberUnenrolled(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.unenrolled[id]
+}
 
 func (c *Catalogue) MemberBinding(id string) SourceBinding {
 	binding := c.binding
@@ -84,7 +93,7 @@ func (c *Catalogue) membersBinding() SourceBinding {
 	return binding
 }
 
-// OpenMembers reopens the complete enrollment inventory, including members no longer active.
+// OpenMembers reopens every retained store, including inactive members and unenrolled refusals.
 // A missing checkpoint is an error, never permission to initialize its counters again. Supplied
 // stores may already own these exact paths after a reversible explicit-configuration cutover.
 func (c *Catalogue) OpenMembers(configured map[string]*Durable) (map[string]*Durable, error) {
@@ -104,7 +113,7 @@ func (c *Catalogue) OpenMembers(configured map[string]*Durable) (map[string]*Dur
 		if _, err := os.Lstat(c.memberRoot()); !os.IsNotExist(err) {
 			return nil, errors.New("member inventory is missing beside retained enrollment state")
 		}
-		if err := c.saveMembers(file.Rundowns); err != nil {
+		if err := c.saveMembers(file.Rundowns, nil); err != nil {
 			return nil, err
 		}
 	} else {
@@ -169,7 +178,15 @@ func (c *Catalogue) OpenMembers(configured map[string]*Durable) (map[string]*Dur
 		members[id] = store
 		owned = append(owned, store)
 	}
+	unenrolled := make(map[string]bool, len(file.Unenrolled))
+	for _, id := range file.Unenrolled {
+		if members[id] == nil || unenrolled[id] {
+			return nil, errors.New("unenrolled inventory contains an unretained or repeated identity")
+		}
+		unenrolled[id] = true
+	}
 	c.members, c.memberIDs, c.ownedMembers = members, file.Rundowns, owned
+	c.unenrolled = unenrolled
 	c.memberLimit, c.retainedCount = limit, retainedCount
 	opened = true
 	return members, nil
@@ -187,16 +204,36 @@ func (c *Catalogue) checkMemberPath(id string) error {
 	return nil
 }
 
-// EnrollMember installs an ordinary committed checkpoint before recording its identity. The
-// fixed staging directory can be resumed after interruption, but can never receive MOS input.
-// Existing stores are opened with their exact binding and are never initialized or replaced.
+// EnrollMember admits a retained store only after authoritative enumeration. A receipt-only
+// store keeps its original checkpoint and ACKs when its unenrolled marker is removed.
 func (c *Catalogue) EnrollMember(id string) (*Durable, error) {
+	return c.retainMember(id, true)
+}
+
+// RetainMember provides an ordinary checkpoint for refusals without admitting the member to
+// routing or publication. It counts toward the same retained-store ceiling as enrolled members.
+func (c *Catalogue) RetainMember(id string) (*Durable, error) {
+	return c.retainMember(id, false)
+}
+
+// The fixed staging directory can resume after interruption, but can never receive MOS input.
+// Existing stores are opened with their exact binding and are never initialized or replaced.
+func (c *Catalogue) retainMember(id string, enroll bool) (*Durable, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.degraded || c.members == nil || id == "" || !utf8.ValidString(id) || utf8.RuneCountInString(id) > 512 {
 		return nil, errors.New("member enrollment is unavailable or identity is invalid")
 	}
 	if store := c.members[id]; store != nil {
+		if enroll && c.unenrolled[id] {
+			unenrolled := maps.Clone(c.unenrolled)
+			delete(unenrolled, id)
+			if err := c.saveMembers(c.memberIDs, unenrolled); err != nil {
+				c.degraded = true
+				return nil, err
+			}
+			c.unenrolled = unenrolled
+		}
 		return store, nil
 	}
 	if c.retainedCount >= c.memberLimit {
@@ -253,9 +290,14 @@ func (c *Catalogue) EnrollMember(id string) (*Durable, error) {
 	}
 	if err == nil {
 		ids := append(append([]string(nil), c.memberIDs...), id)
-		err = c.saveMembers(ids)
+		unenrolled := maps.Clone(c.unenrolled)
+		if !enroll {
+			unenrolled[id] = true
+		}
+		err = c.saveMembers(ids, unenrolled)
 		if err == nil {
 			c.memberIDs = ids
+			c.unenrolled = unenrolled
 			c.retainedCount++
 			c.members[id] = store
 			c.ownedMembers = append(c.ownedMembers, store)
@@ -269,8 +311,13 @@ func (c *Catalogue) EnrollMember(id string) (*Durable, error) {
 	return nil, err
 }
 
-func (c *Catalogue) saveMembers(ids []string) error {
+func (c *Catalogue) saveMembers(ids []string, unenrolled map[string]bool) error {
 	file := sourceMembersFile{Version: 1, Binding: c.membersBinding(), Rundowns: ids}
+	for _, id := range ids {
+		if unenrolled[id] {
+			file.Unenrolled = append(file.Unenrolled, id)
+		}
+	}
 	raw, err := json.Marshal(file)
 	if err != nil {
 		return err

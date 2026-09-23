@@ -385,13 +385,13 @@ func TestCatalogueDiscoverySharesTheRequestQueueAndSurvivesRestart(t *testing.T)
 	if _, ok := walk.enqueueUrgent("second"); ok {
 		t.Fatal("rundown recovery overlapped the catalogue request")
 	}
-	if id, ok, _ := walk.begin([]string{"first", "second"}); !ok || id != "first" {
-		t.Fatal("catalogue response did not start sequential rundown discovery")
+	if id, ok, _ := walk.begin([]string{"first", "second"}); !ok || id != "second" {
+		t.Fatal("catalogue response did not preserve the queued recovery ahead of rundown discovery")
 	}
 	if _, ok := walk.requestCatalogue(); ok {
 		t.Fatal("catalogue refresh bypassed an outstanding rundown")
 	}
-	if id, ok := walk.resolved("first"); !ok || id != "" {
+	if id, ok := walk.resolved("second"); !ok || id != "" {
 		t.Fatal("queued catalogue refresh did not take the next request slot")
 	}
 	if walk.registerRequest("", "ws:ro", "session", "request-a", false) == nil {
@@ -471,5 +471,112 @@ func TestCatalogueAndRosterNativeTimeoutRequireAnotherConnection(t *testing.T) {
 				t.Fatal("native discovery response was not correlated to its sole outstanding session")
 			}
 		})
+	}
+}
+
+func TestCatalogueRefreshPreservesUnfinishedRosters(t *testing.T) {
+	ctx := context.Background()
+	binding := repository.SourceBinding{SourceID: "source", MosID: "device", NCSID: "newsroom", Transport: "ws-client", Destination: "http://127.0.0.1:1234/v1/openmos-snapshots"}
+	catalogue, err := repository.OpenCatalogue(t.TempDir(), service.SourceCatalogueBinding(binding), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalogue.Close()
+	source, err := service.NewCommittedSourceSet(ctx, nil, catalogue, "synthetic-token", 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps, walk := walkDeps(t)
+	deps.service.Source = source
+	r := &catalogueOnlyResponder{}
+	input := service.SourceInput{Transport: "ws-client", NCSID: "newsroom", Scope: "ws-client:ro:standard", Session: "session"}
+	answer := func(messageID string, msg mosxml.MOSMessage) {
+		t.Helper()
+		if walk.registerRequest(service.SourceRundown(msg), input.Scope, input.Session, messageID, false) == nil {
+			t.Fatal("HARNESS: response has no reserved request")
+		}
+		input.MessageID = messageID
+		input.Content, err = stdxml.Marshal(msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := source.Observe(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+		if handled, err := dispatchRunningOrder(context.WithValue(ctx, sourceInputKey{}, input), deps, r, msg); err != nil || !handled {
+			t.Fatalf("HARNESS: correlated response was not applied: %v", err)
+		}
+	}
+	listing := listAllOf("first", "tail")
+	walk.requestCatalogue()
+	answer("catalogue-initial", listing)
+	reachedTail := func() bool {
+		for _, id := range roIDsRequested(&r.recordingResponder) {
+			if id == "tail" {
+				return true
+			}
+		}
+		return false
+	}
+	for cycle := 0; cycle < 3 && !reachedTail(); cycle++ {
+		deadline := time.Now().Add(2 * time.Second)
+		for !source.CatalogueNeedsRefresh() && time.Now().Before(deadline) {
+			source.RefreshSession(input.Session)
+			time.Sleep(5 * time.Millisecond)
+		}
+		cp, err := catalogue.Checkpoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snapshot service.SourceCatalogue
+		if err := json.Unmarshal(cp.Pending, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if !snapshot.Complete || !source.CatalogueNeedsRefresh() {
+			t.Fatal("HARNESS: enumeration did not expire independently of healthy transport liveness")
+		}
+		refreshCatalogue(ctx, deps, r)
+		id := walk.inFlightID()
+		if id == "" {
+			t.Fatal("HARNESS: refresh lost the outstanding roster request")
+		}
+		answer(fmt.Sprintf("roster-%d", cycle), mosxml.ROList{ID: id, Slug: "Slug " + id})
+		if walk.catalogueInFlight {
+			answer(fmt.Sprintf("catalogue-%d", cycle), listing)
+		}
+	}
+	requested := roIDsRequested(&r.recordingResponder)
+	t.Logf("roster requests after periodic authoritative renewals: %v", requested)
+	if !reachedTail() {
+		t.Fatalf("SPEC: periodic catalogue renewal repeatedly restarted the stable roster walk and starved tail: %v", requested)
+	}
+}
+
+func TestCatalogueRefreshReconcilesMembershipWithoutLosingProgress(t *testing.T) {
+	dir := t.TempDir()
+	walk := openDiscoveryWalk(dir)
+	if id, ok, _ := walk.begin([]string{"first", "removed", "tail", "later"}); !ok || id != "first" {
+		t.Fatal("initial discovery did not start")
+	}
+	if _, ok := walk.requestCatalogue(); ok {
+		t.Fatal("catalogue refresh overlapped the unfinished roster")
+	}
+	if id, ok := walk.resolved("first"); !ok || id != "" {
+		t.Fatal("catalogue refresh did not take the next serialized slot")
+	}
+	if id, ok, dropped := walk.begin([]string{"first", "added", "later", "tail", "added"}); !ok || id != "tail" || dropped != 0 {
+		t.Fatalf("refresh did not preserve unfinished progress after removal/addition: next=%q ok=%t dropped=%d", id, ok, dropped)
+	}
+	walk = openDiscoveryWalk(dir)
+	if id, ok := walk.nudge(); !ok || id != "tail" {
+		t.Fatal("restart lost the preserved unfinished roster")
+	}
+	for _, pair := range [][2]string{{"tail", "later"}, {"later", "first"}, {"first", "added"}} {
+		if id, ok := walk.resolved(pair[0]); !ok || id != pair[1] {
+			t.Fatalf("reconciled discovery requested %q after %q, want %q", id, pair[0], pair[1])
+		}
+	}
+	if _, ok := walk.resolved("added"); ok {
+		t.Fatal("removed or duplicate member remained in the refreshed walk")
 	}
 }

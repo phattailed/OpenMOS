@@ -359,6 +359,9 @@ func TestSourceSetPublisherIncludesMembersEnrolledDuringDelivery(t *testing.T) {
 					t.Error(err)
 					return
 				}
+				if body["rundownId"] == "receipt-only" {
+					t.Error("unenrolled refusal store was published")
+				}
 				if first.CompareAndSwap(false, true) {
 					close(arrived)
 					select {
@@ -380,6 +383,9 @@ func TestSourceSetPublisherIncludesMembersEnrolledDuringDelivery(t *testing.T) {
 			}))
 			defer receiver.Close()
 			f := newSourceSetWithIDs(t, receiver.URL+endpoint)
+			if reply, err := f.send(t, "unknown-refusal", `<roCreate><roID>receipt-only</roID><roSlug>Unenrolled</roSlug></roCreate>`); err != nil || !bytes.Contains(reply, []byte("NACK")) {
+				t.Fatal("publisher fixture did not retain its unenrolled refusal")
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			done := make(chan struct{})
 			go func() { f.group.RunPublisher(ctx); close(done) }()
@@ -413,6 +419,9 @@ func TestSourceSetPublisherIncludesMembersEnrolledDuringDelivery(t *testing.T) {
 			// A live connection does not make an old membership enumeration fresh forever.
 			cancel()
 			<-done
+			if cp, err := f.group.unenrolled["receipt-only"].store.Checkpoint(); err != nil || cp.AcceptedRevision != 0 || f.group.RetainsRundown("receipt-only") {
+				t.Fatal("publishing enrolled members admitted the receipt-only store")
+			}
 			f.group.enumerated = time.Now().Add(-2 * time.Minute)
 			if !f.group.CatalogueNeedsRefresh() {
 				t.Fatal("live heartbeats hid an expired catalogue enumeration")
@@ -784,4 +793,162 @@ func TestSourceSetHaltedMemberDoesNotBlockHealthyReconnectOrRestart(t *testing.T
 			t.Fatal("healthy recovery silently resumed the halted publisher")
 		}
 	}
+}
+
+func TestSourceSetUnknownNackReplayAfterEnrollment(t *testing.T) {
+	f := newSourceSetWithIDs(t, "")
+	oldRoster := `<roCreate><roID>rundown</roID><roSlug>Before enrollment</roSlug></roCreate>`
+	original, err := f.send(t, "pre-enrollment", oldRoster)
+	if err != nil || !bytes.Contains(original, []byte("NACK")) {
+		t.Fatalf("initial unknown member did not receive NACK: %v %s", err, original)
+	}
+	refused := f.group.unenrolled["rundown"]
+	if refused == nil || f.group.RetainsRundown("rundown") || len(f.group.members) != 0 || len(f.catalogue(t).Rundowns) != 0 {
+		t.Fatal("unknown refusal was not retained separately from enrollment and publication")
+	}
+	beforeRefusal, _ := refused.store.Checkpoint()
+	state, _ := readSourceState(beforeRefusal.State)
+	if len(beforeRefusal.Receipts) != 1 || !bytes.Equal(beforeRefusal.Receipts[0].Response, original) || state.RawRoster != "" || len(state.Stories) != 0 || state.NextCue != 0 {
+		t.Fatal("refusal lost its original receipt or accepted unknown content")
+	}
+	if err := f.group.catalogue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, err := repository.OpenCatalogue(f.catalogueDir, f.group.binding, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalogue.Close() })
+	f.group, err = NewCommittedSourceSet(context.Background(), nil, catalogue, "synthetic-token", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.session = "replacement"
+	if f.group.RetainsRundown("rundown") || len(f.group.members) != 0 || f.group.unenrolled["rundown"] == nil {
+		t.Fatal("restart turned a retained refusal into enrollment")
+	}
+	reopened, _ := f.group.unenrolled["rundown"].store.Checkpoint()
+	if reopened.Revision <= beforeRefusal.Revision || !bytes.Equal(reopened.State, beforeRefusal.State) || !reflect.DeepEqual(reopened.Receipts, beforeRefusal.Receipts) {
+		t.Fatal("restart reset the receipt-only counter, state or original refusal")
+	}
+	if replay, err := f.send(t, "pre-enrollment", oldRoster); err != nil || !bytes.Equal(replay, original) {
+		t.Fatal("restart before enrollment changed the original NACK")
+	}
+	changed := strings.Replace(oldRoster, "Before enrollment", "Changed retry", 1)
+	if reply, _ := f.send(t, "pre-enrollment", changed); !bytes.Contains(reply, []byte("NACK")) {
+		t.Fatal("changed-content refusal retry was accepted before enrollment")
+	}
+	afterRefusal, _ := f.group.unenrolled["rundown"].store.Checkpoint()
+	if !reflect.DeepEqual(reopened, afterRefusal) {
+		t.Fatal("retry before enrollment changed the retained refusal checkpoint")
+	}
+	f.accept(t, sourceCatalogueXML(t, "rundown"))
+	if f.group.unenrolled["rundown"] != nil || catalogue.MemberUnenrolled("rundown") {
+		t.Fatal("authoritative enrollment did not promote the existing refusal store")
+	}
+	f.accept(t, sourceRoster("current-story"))
+	f.accept(t, sourceBody("current-story", sourceItem("current-video")))
+	before, err := f.group.byRundown["rundown"].store.Checkpoint()
+	if err != nil || !f.snapshot(t, "rundown").Complete {
+		t.Fatalf("current member coverage was not established: %v", err)
+	}
+	replay, err := f.send(t, "pre-enrollment", oldRoster)
+	if err != nil {
+		t.Fatalf("replay returned an execution error: %v", err)
+	}
+	after, err := f.group.byRundown["rundown"].store.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := f.snapshot(t, "rundown")
+	t.Logf("original=%s replay=%s revision=%d->%d storiesAfter=%d completeAfter=%t", original, replay, before.Revision, after.Revision, len(current.Stories), current.Complete)
+	if !bytes.Equal(original, replay) {
+		t.Error("same messageID/body lost its original pre-enrollment NACK after enrollment")
+	}
+	if after.Revision != before.Revision || !bytes.Equal(after.Pending, before.Pending) {
+		t.Error("retry of a rejected pre-enrollment message replaced freshly recovered rundown content")
+	}
+	if reply, err := f.send(t, "pre-enrollment", changed); err == nil || !bytes.Contains(reply, []byte("NACK")) {
+		t.Fatal("changed-content refusal retry was accepted after enrollment")
+	}
+	afterConflict, _ := f.group.byRundown["rundown"].store.Checkpoint()
+	oldState, _ := readSourceState(before.State)
+	currentState, _ := readSourceState(afterConflict.State)
+	if !reflect.DeepEqual(before.Receipts, afterConflict.Receipts) || oldState.RawRoster != currentState.RawRoster || oldState.NextCue != currentState.NextCue || len(currentState.Stories) != 1 || oldState.Stories[0].Raw != currentState.Stories[0].Raw || f.snapshot(t, "rundown").Complete {
+		t.Fatal("changed-content retry erased accepted content/receipts or kept conflicting coverage complete")
+	}
+	if replay, err := f.send(t, "pre-enrollment", oldRoster); err != nil || !bytes.Equal(replay, original) {
+		t.Fatal("conflicting retry replaced the original refusal")
+	}
+}
+
+func TestSourceSetUnknownRefusalFailureDoesNotAcknowledge(t *testing.T) {
+	t.Run("capacity includes refused members", func(t *testing.T) {
+		f := newSourceSetWithIDs(t, "")
+		original, err := f.send(t, "retained-refusal", sourceRoster("story"))
+		if err != nil || !bytes.Contains(original, []byte("NACK")) {
+			t.Fatal("initial refusal was not retained")
+		}
+		f.group.limit = 1
+		if reply, err := f.send(t, "unretained-refusal", `<roCreate><roID>other</roID><roSlug>Unknown</roSlug></roCreate>`); err == nil || len(reply) != 0 || len(f.group.unenrolled) != 1 {
+			t.Fatal("capacity failure sent an unretained refusal or discarded an existing receipt")
+		}
+		if _, err := f.send(t, "over-capacity", sourceCatalogueXML(t, "other")); err == nil || f.catalogue(t).Complete || f.group.RetainsRundown("other") {
+			t.Fatal("refused store was omitted from authoritative enrollment capacity")
+		}
+		f.accept(t, sourceCatalogueXML(t, "rundown"))
+		if reply, err := f.send(t, "retained-refusal", sourceRoster("story")); err != nil || !bytes.Equal(reply, original) {
+			t.Fatal("enrollment at capacity lost its retained refusal")
+		}
+	})
+	t.Run("checkpoint replacement failure", func(t *testing.T) {
+		f := newSourceSetWithIDs(t, "")
+		if _, err := f.send(t, "retained-refusal", sourceRoster("story")); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(f.catalogueDir, "rundowns", fmt.Sprintf("%x", sha256.Sum256([]byte("rundown"))), "source-checkpoint.json")
+		original, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path, path+".held-by-test"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if reply, err := f.send(t, "failed-refusal", sourceRoster("changed")); err == nil || len(reply) != 0 {
+			t.Fatal("storage failure sent a refusal without retaining its original response")
+		}
+		if reply, err := f.send(t, "failed-other", `<roCreate><roID>other</roID></roCreate>`); err == nil || len(reply) != 0 {
+			t.Fatal("unavailable cross-rundown receipts produced an unretained response")
+		}
+		if held, err := os.ReadFile(path + ".held-by-test"); err != nil || !bytes.Equal(held, original) {
+			t.Fatal("failed refusal replaced the original retained checkpoint")
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path+".held-by-test", path); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.group.catalogue.Close(); err != nil {
+			t.Fatal(err)
+		}
+		catalogue, err := repository.OpenCatalogue(f.catalogueDir, f.group.binding, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer catalogue.Close()
+		f.group, err = NewCommittedSourceSet(context.Background(), nil, catalogue, "synthetic-token", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.group.RetainsRundown("rundown") {
+			t.Fatal("storage recovery admitted an unenrolled member")
+		}
+		if reply, err := f.send(t, "failed-refusal", sourceRoster("changed")); err != nil || !bytes.Contains(reply, []byte("NACK")) {
+			t.Fatal("storage recovery did not retain the first emitted refusal")
+		}
+	})
 }
