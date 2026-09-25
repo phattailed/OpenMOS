@@ -155,6 +155,35 @@ type Config struct {
 		SampleRate       float64
 		TracesSampleRate float64
 	}
+
+	// Gateway configuration (private timing-control HTTP API,
+	// POST /api/timing/play, from the separately maintained
+	// automatrix.local/mosgateway module). Disabled by default so an
+	// existing config.yaml that predates this feature behaves exactly as
+	// before -- same convention as Source.Enabled above. Enabling this adds
+	// no second MOS session and no second registered device: it reuses the
+	// same mosService and the same cfg.WSClient.PeerURL/MOS.ID/MOS.NCSID
+	// this process already constructs, sending one short-lived non-passive
+	// connection per request (see internal/timingsend, mirroring
+	// StoryActionClient's already-reviewed one-shot lifecycle) alongside
+	// -- never instead of -- the standing passive WSClient connection.
+	Gateway struct {
+		Enabled bool
+		// BindAddr defaults to 127.0.0.1:8091 when empty. Refused at
+		// startup if it resolves to a non-loopback host.
+		BindAddr string
+		// AuthTokens: "caller1:token1,caller2:token2". Read from
+		// config/env only, never logged. Startup refuses to serve with
+		// zero tokens configured.
+		AuthTokens string `yaml:"-"`
+		// StatePath is the durable idempotency/outcome log for in-flight
+		// and completed play requests. Defaults under State.Dir.
+		StatePath string
+		// SourceID is the gateway's own application-facing source
+		// identity (timingplay.SourceBinding.SourceID) -- distinct from
+		// MOS.ID. Required when Gateway.Enabled is true.
+		SourceID string
+	}
 }
 
 // LoadConfig loads configuration from environment variables and a YAML file if available
@@ -329,6 +358,12 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("SOURCE_ADDITIONAL_RUNDOWNS has trailing data")
 		}
 	}
+
+	config.Gateway.Enabled = getEnvAsBool("GATEWAY_ENABLED", config.Gateway.Enabled)
+	config.Gateway.BindAddr = getEnv("GATEWAY_BIND_ADDR", config.Gateway.BindAddr)
+	config.Gateway.AuthTokens = getEnv("GATEWAY_AUTH_TOKENS", "")
+	config.Gateway.StatePath = getEnv("GATEWAY_STATE_PATH", config.Gateway.StatePath)
+	config.Gateway.SourceID = getEnv("GATEWAY_SOURCE_ID", config.Gateway.SourceID)
 
 	// MongoDB config
 	if envVal := getEnv("MONGODB_URI", ""); envVal != "" || !yamlLoaded {
