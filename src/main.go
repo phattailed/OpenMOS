@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,11 +15,16 @@ import (
 	"airshift/openmos/internal/config"
 	"airshift/openmos/internal/db"
 	"airshift/openmos/internal/events"
+	"airshift/openmos/internal/gatewayintegration"
 	"airshift/openmos/internal/repository"
 	"airshift/openmos/internal/server"
 	"airshift/openmos/internal/service"
+	"airshift/openmos/internal/timingsend"
 	mosxml "airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
+
+	"automatrix.local/mosgateway/pkg/httpapi"
+	"automatrix.local/mosgateway/pkg/timingplay"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -391,6 +397,105 @@ func main() {
 		defer func() { cancel(); <-publisherDone }()
 	}
 
+	// Private timing-control HTTP API (POST /api/timing/play), gated by
+	// cfg.Gateway.Enabled and off by default. Reuses the SAME mosService
+	// this process already constructed above -- no second MOSService, no
+	// second registered MOS device. The outbound send itself
+	// (internal/timingsend.Client) opens its own short-lived, one-shot,
+	// non-passive connection per call, alongside -- never instead of --
+	// the standing WSClient passive connection below: this mirrors the
+	// already-reviewed StoryActionClient lifecycle and the already-shipped
+	// WSClient.RequestLane pattern (a second non-passive connection is a
+	// supported MOS 4 shape, not a novel one). See
+	// internal/gatewayintegration's doc for why the adapter types are a
+	// verbatim move from automatrix-mos-gateway's cmd/gateway, not a
+	// reimplementation.
+	//
+	// gatewayDispatchTimeout bounds how long timingplay.Service will wait for
+	// one outbound send before giving up and marking the request Uncertain
+	// (never resending it) -- see timingplay.NewService's timeout parameter.
+	// gatewayShutdownGrace is deliberately longer than this: an in-flight
+	// request already inside the HTTP handler is genuinely allowed to run to
+	// its own natural conclusion during shutdown, rather than being raced by
+	// a shorter server-shutdown deadline and then having its store closed out
+	// from under it (see the gwStore.Close placement below, and
+	// TestGatewayIntegrationEntrypoint's shutdown/store-lifetime coverage).
+	const gatewayDispatchTimeout = 30 * time.Second
+	const gatewayShutdownGrace = gatewayDispatchTimeout + 10*time.Second
+	var gatewayHTTPServer *http.Server
+	var gwStore *timingplay.Store
+	// gatewayShutdownErr records whether gatewayHTTPServer.Shutdown drained
+	// in time. A non-nil value here means net/http's own documented
+	// contract puts a handler potentially still running in the background
+	// (Shutdown's deadline does not sever it) -- see its use below, which
+	// is why gwStore.Close is conditioned on this being nil, not called
+	// unconditionally once Shutdown returns.
+	var gatewayShutdownErr error
+	if cfg.Gateway.Enabled {
+		binding := timingplay.SourceBinding{SourceID: cfg.Gateway.SourceID, MosID: cfg.MOS.ID}
+		if binding.SourceID == "" || binding.MosID == "" {
+			log.Fatal("Gateway.SourceID and MOS.ID must both be set when Gateway.Enabled is true")
+		}
+		resolver := timingplay.NewResolver(
+			gatewayintegration.MOSServiceLookup{Svc: mosService},
+			gatewayintegration.SingleSourceAuthorizer{SourceID: binding.SourceID},
+			binding,
+		)
+		statePath := cfg.Gateway.StatePath
+		if statePath == "" {
+			statePath = server.StateSubdir(cfg.State.Dir, "timingplay") + "/timingplay.jsonl"
+		}
+		if dir := filepath.Dir(statePath); dir != "." {
+			if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil {
+				log.Fatalf("create timingplay state directory %s: %v", dir, mkdirErr)
+			}
+		}
+		var err error
+		gwStore, err = timingplay.NewFileStore(statePath)
+		if err != nil {
+			log.Fatalf("open timingplay store %s: %v", statePath, err)
+		}
+		// NOT deferred here: closing this store is only safe once
+		// gatewayHTTPServer.Shutdown has genuinely finished waiting for every
+		// in-flight handler, which happens later, further down main(). A bare
+		// defer at this point would run at main()'s exit regardless of
+		// whether Shutdown actually managed to drain in time, closing the
+		// file out from under a handler goroutine that outlived a too-short
+		// shutdown deadline -- exactly the bug gatewayShutdownGrace and the
+		// explicit Close call below (not a defer) are here to prevent.
+		gwSender := gatewayintegration.TimingSendAdapter{Client: timingsend.New(cfg)}
+		gwSvc := timingplay.NewService(gwStore, resolver, gwSender, gatewayDispatchTimeout)
+		if recovered, err := gwSvc.RecoverUncertain("process restarted with outcome unknown"); err != nil {
+			log.Fatalf("gateway restart recovery: %v", err)
+		} else if len(recovered) > 0 {
+			log.Warningf("Gateway restart recovery: %d request(s) moved from pending to uncertain", len(recovered))
+		}
+		gwTokens, err := gatewayintegration.ParseAuthTokens(cfg.Gateway.AuthTokens)
+		if err != nil {
+			log.Fatalf("Gateway.AuthTokens: %v", err)
+		}
+		if len(gwTokens) == 0 {
+			log.Fatal("Gateway.AuthTokens must name at least one caller:token pair; the gateway refuses to serve with no authorized callers")
+		}
+		gwBindAddr := cfg.Gateway.BindAddr
+		if gwBindAddr == "" {
+			gwBindAddr = "127.0.0.1:8091"
+		}
+		if !gatewayintegration.IsLocalBind(gwBindAddr) {
+			log.Fatalf("Gateway.BindAddr %q is not a local/loopback address; refusing to bind a non-local listener without a reviewed decision to do so", gwBindAddr)
+		}
+		gatewayHTTPServer = &http.Server{Addr: gwBindAddr, Handler: httpapi.NewServer(gwSvc, gwTokens).Handler()}
+		go func() {
+			log.Infof("Timing-play gateway listening on %s (source=%s, mosID=%s)", gwBindAddr, binding.SourceID, binding.MosID)
+			if startErr := gatewayHTTPServer.ListenAndServe(); startErr != nil && startErr != http.ErrServerClosed {
+				log.Errorf("Timing-play gateway HTTP server error: %v", startErr)
+				cancel()
+			}
+		}()
+	} else {
+		log.Info("Timing-play gateway disabled by configuration")
+	}
+
 	// The outbound MOS 4 client counts as a transport. A device that only dials out is a
 	// legitimate and, for MOS 4.0, an important configuration: passive mode exists precisely so
 	// that a device behind a firewall can open the connection itself and receive NCS-initiated
@@ -481,6 +586,60 @@ func main() {
 	if tcpServer != nil {
 		if shutdownErr := tcpServer.Shutdown(context.Background()); shutdownErr != nil {
 			log.Errorf("TCP server shutdown error: %v", shutdownErr)
+		}
+	}
+	if gatewayHTTPServer != nil {
+		// http.Server.Shutdown blocks until in-flight handlers return (or the
+		// timeout elapses), so a request already inside POST /api/timing/play
+		// completes and its response reaches the caller normally -- it is
+		// never forcibly severed, and nothing here re-sends or replays it.
+		// A request that arrives after this point is refused with a
+		// connection error, not accepted and dropped.
+		//
+		// gatewayShutdownGrace (dispatch timeout + margin) is used here, not
+		// a short fixed duration: a shorter grace could let Shutdown give up
+		// and return while a handler is still legitimately waiting on its
+		// own bounded outbound send, and closing gwStore right after would
+		// then race that still-running handler's later
+		// TransitionSent/TransitionUncertain call against an already-closed
+		// journal file. Close is called explicitly below, only after
+		// Shutdown has returned -- never via an unconditional defer set up
+		// earlier, which would run at main()'s exit regardless of whether
+		// Shutdown actually finished draining.
+		gwShutdownCtx, gwCancelShutdown := context.WithTimeout(context.Background(), gatewayShutdownGrace)
+		gatewayShutdownErr = gatewayHTTPServer.Shutdown(gwShutdownCtx)
+		if gatewayShutdownErr != nil {
+			// Per net/http's documented contract, a non-nil error here means
+			// the deadline was hit BEFORE draining completed -- i.e. a
+			// handler may still be running right now, in the background,
+			// even though Shutdown itself has returned. Shutdown's timeout
+			// does not stop or sever that handler; only Close or process
+			// exit would. Closing gwStore here would race that still-running
+			// handler's later store write against an already-closed file --
+			// exactly the bug this whole grace/close-ordering exists to
+			// avoid, just reached via the error path instead of the happy
+			// one. So gwStore is deliberately left open below: at worst its
+			// file descriptor is reclaimed by process exit a moment later,
+			// which is safe, whereas closing it here is not.
+			log.Errorf("Timing-play gateway HTTP server shutdown error (a handler may still be running): %v", gatewayShutdownErr)
+			// Reachability note: gatewayDispatchTimeout (30s) is always
+			// shorter than gatewayShutdownGrace (30s+10s margin) BY
+			// CONSTRUCTION, so a slow MOS peer alone cannot make Shutdown's
+			// own deadline fire first -- SendPlay always gives up and
+			// returns (TimedOut, not an error) before this branch could be
+			// reached that way; TestGatewayIntegrationEntrypoint's slow-
+			// in-flight-request subtest confirms the happy path this
+			// guarantees. This branch remains correct defense for what is
+			// NOT bounded by that dispatch timeout -- a slow gwStore write
+			// (disk contention) or scheduler/GC stall -- which is why the
+			// guard below is unconditional on gatewayShutdownErr's value,
+			// not narrowed to "can currently happen".
+		}
+		gwCancelShutdown()
+	}
+	if gwStore != nil && gatewayShutdownErr == nil {
+		if closeErr := gwStore.Close(); closeErr != nil {
+			log.Errorf("Timing-play gateway store close error: %v", closeErr)
 		}
 	}
 
