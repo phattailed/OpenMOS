@@ -12,6 +12,7 @@ import (
 	"airshift/openmos/internal/events"
 	"airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
+	"airshift/openmos/pkg/utils"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -208,8 +209,8 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 		err = c.handleHeartbeat(ctx, msg)
 	case xml.ReqRunningOrderList:
 		err = c.handleReqRunningOrderList(ctx, msg)
-	case xml.ReqRunningOrder:
-		err = c.handleReqRunningOrder(ctx, msg)
+	case xml.ROReqAll:
+		err = c.handleROReqAll(ctx)
 	case xml.RunningOrderInfo:
 		err = c.handleRunningOrderInfo(ctx, msg)
 	case xml.MOSAck:
@@ -276,65 +277,29 @@ func (c *ClientConnection) handleReqRunningOrderList(ctx context.Context, req xm
 	return c.Write(data)
 }
 
-// handleReqRunningOrder processes a request for a specific running order
-func (c *ClientConnection) handleReqRunningOrder(ctx context.Context, req xml.ReqRunningOrder) error {
-	logger.Infof("Received running order request from client %s for RO %s", c.id, req.ROID)
+// handleROReqAll returns running order summaries for discovery.
+func (c *ClientConnection) handleROReqAll(ctx context.Context) error {
+	logger.Infof("Received roReqAll from client %s", c.id)
 
-	// Get the running order from the server
-	ro, stories, err := c.server.service.GetRunningOrderWithStories(ctx, req.ROID)
+	runningOrders, err := c.server.service.ListRunningOrders(ctx)
 	if err != nil {
-		return c.sendErrorAck(req.RequestID, "ERROR", fmt.Sprintf("Failed to get running order: %v", err))
+		return fmt.Errorf("failed to list running orders: %w", err)
 	}
 
-	// Convert to StoryInfo
-	storyInfos := make([]xml.StoryInfo, 0, len(stories))
-	for _, story := range stories {
-		// Get items for this story
-		items, err := c.server.service.GetItemsForStory(ctx, story.ID)
-		if err != nil {
-			logger.Warningf("Failed to get items for story %s: %v", story.ID, err)
-			continue
-		}
-
-		// Convert items
-		itemInfos := make([]xml.ItemInfo, 0, len(items))
-		for _, item := range items {
-			itemInfos = append(itemInfos, xml.ItemInfo{
-				ID:       item.ID,
-				Slug:     item.Slug,
-				Duration: fmt.Sprintf("%d", item.Duration),
-				ObjectID: item.ObjectID,
-			})
-		}
-
-		// Add story info
-		storyInfos = append(storyInfos, xml.StoryInfo{
-			ID:       story.ID,
-			Slug:     story.Slug,
-			Number:   story.Number,
-			Duration: fmt.Sprintf("%d", story.Duration),
-			Items:    itemInfos,
+	items := make([]xml.ROListAllItem, 0, len(runningOrders))
+	for _, ro := range runningOrders {
+		items = append(items, xml.ROListAllItem{
+			ID:       ro.ID,
+			Slug:     ro.Slug,
+			Channel:  ro.Channel,
+			Duration: utils.FormatDuration(ro.Duration),
 		})
 	}
 
-	// Create response
-	response := xml.CreateRunningOrderInfo(
-		c.config.MOS.ID,
-		req.RequestID,
-		ro.ID,
-		ro.Slug,
-		ro.Channel,
-		"", // EditTime
-		"", // StartTime
-		fmt.Sprintf("%d", ro.Duration),
-		storyInfos,
-	)
-
-	data, err := xml.GenerateMessage(response)
+	data, err := xml.GenerateMessage(xml.CreateROListAll(items))
 	if err != nil {
-		return fmt.Errorf("failed to generate running order response: %w", err)
+		return fmt.Errorf("failed to generate roListAll: %w", err)
 	}
-
 	return c.Write(data)
 }
 

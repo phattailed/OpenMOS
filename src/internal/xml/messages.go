@@ -72,18 +72,32 @@ func (r RunningOrderList) GetMessageType() string {
 	return "roList"
 }
 
-// ReqRunningOrder represents a request for a specific running order
-type ReqRunningOrder struct {
+// ROReqAll requests summaries of all running orders.
+type ROReqAll struct {
 	XMLName   xml.Name `xml:"roReqAll"`
 	RequestID string   `xml:"requestID,attr,omitempty"`
 	Timestamp string   `xml:"timestamp,attr,omitempty"`
 	Source    string   `xml:"source,attr,omitempty"`
-	ROID      string   `xml:"roID"`
 }
 
 // GetMessageType returns the type of the message
-func (r ReqRunningOrder) GetMessageType() string {
+func (r ROReqAll) GetMessageType() string {
 	return "roReqAll"
+}
+
+// ROListAll returns summaries for roReqAll; full stories require roReq.
+type ROListAll struct {
+	XMLName       xml.Name        `xml:"roListAll"`
+	RunningOrders []ROListAllItem `xml:"ro"`
+}
+
+func (r ROListAll) GetMessageType() string { return "roListAll" }
+
+type ROListAllItem struct {
+	ID       string `xml:"roID"`
+	Slug     string `xml:"roSlug"`
+	Channel  string `xml:"roChannel,omitempty"`
+	Duration string `xml:"roEdDur,omitempty"`
 }
 
 // RunningOrderInfo represents a full running order with stories and items
