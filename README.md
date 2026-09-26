@@ -1,116 +1,27 @@
-# OpenMOS Media Object Server
+# OpenMOS
 
-![MOS Project Official Logo](/res/mosproject-logo.jpg)
+OpenMOS is a small Media Object Server implementation with one MOS message core and two receive transports.
 
-An implementation of Media Object Server using MOS Protocol 4.0 with TCP socket communication.
-The project will aim at compliance with Profile 7.
+| Transport | Framing | Envelope and response |
+| --- | --- | --- |
+| MOS 2.8.4 TCP | UCS-2 big-endian XML stream on the configured receive port | Requires `<mos>`, `mosID`, and `ncsID`; expects `messageID` but tolerates a missing inbound ID for compatibility and echoes supplied IDs in replies. |
+| MOS 4 WebSocket | Binary UCS-2 big-endian frames on `/mos?mosID=...&ncsID=...&channel=ro` | Requires the same identities and a `messageID` except on `keepAlive`; replies echo the request ID. |
 
-> [!NOTE]
-> The MOS protocol specification requires TCP socket connections (default port 10540). At initial stages, message attributes differ from the protocol specification due to practical reasons.
+Both transports process `roCreate` through the same service and send `roAck` only after storage succeeds. A retry with the same message ID replays the original response without applying the operation again. The in-memory retry record is bounded and does not survive a process restart. Nested `mosExternalMetadata` is stored as opaque XML with its scope and schema. MOS 2.x TCP also answers `roReqAll` with `roListAll` summaries.
 
-Implementation status:
-* [x]  Core
-* [x]  MongoDB Data Repository
-* [x]  Sentry Observability
-* [x]  TCP Socket Server
-* [ ]  Profile 0 - Basic Communication
-* [ ]  Profile 1 - Basic Object Based Workflow
-* [ ]  Profile 2 - Basic Running Order / Content List Workflow
-* [ ]  Profile 3 - Advanced Object Based Workflow
-* [ ]  Profile 4 - Advanced RO/Content List Workflow
-* [ ]  Profile 5 - Item Control
-* [ ]  Profile 6 - MOS Redirection
-* [ ]  Profile 7 - MOS RO/Content List Modification
+Profile 0 handles `keepAlive` (no reply), `heartbeat` (correlated reply with reflection protection), `reqMachInfo`, and `listMachInfo`. Machine info advertises Profile 0 only. Other profiles are not claimed. Local tests verify protocol framing and message handling; they do not establish interoperability with a live NCS.
 
-## Architecture
+## Run
 
-OpenMOS implements the MOS protocol using:
-- **TCP Socket Server**: Maintains persistent connections with MOS clients (NCS systems)
-- **MongoDB**: Stores running orders, stories, items, and MOS objects
-- **Sentry**: Provides error tracking and performance monitoring
+From `src/`:
 
-The server handles multiple concurrent client connections, processes MOS XML messages, and manages the lifecycle of running orders and their associated content.
-
-## Experimental Features
-
-As an experimental feature, the Profile 5 roCtrl will be implemented in a way that it can support IoT device
-control using MQTT protocol. An example use case is the red light control. In the future this could be expanded to actual machine controls with protocols like Ember+ (https://github.com/Lawo/ember-plus) or VDCP.
-
-## More Information
-
-For more information about the MOS protocol, see https://www.mosprotocol.com
-
-This project is not affiliated with MOS Group and will use the word compliance according to the requirements set by the MOS Group.
-
-Logging system utilizes Sentry observability layer. Developer subscription is available for free at https://www.sentry.io
-
-When the maturity level reaches early beta, the project shall make available a Docker image. Dependencies are to be kept as minimal as possible, using frameworks that are still maintained and active.
-
-## Configuration
-
-### Configuration file:
-
-```yaml
-app:
-    name: OpenMOS
-    version: 1.0.0
-    environment: development
-server:
-    host: 0.0.0.0
-    port: 10540
-    readtimeout: 5s
-    writetimeout: 5s
-    shutdowntimeout: 30s
-mongo:
-    uri: "mongodb+srv://localhost"
-    database: openmosdb01
-    timeout: 10s
-mos:
-    id: mos01.station.com
-    heartbeatinterval: 30s
-    clienttimeout: 2m0s
-logging:
-    level: info
-sentry:
-    dsn: ""
-    environment: development
-    debug: false
-    attachstacktrace: true
-    samplerate: 1
-    tracessamplerate: 0.2
+```sh
+go build ./...
+go test ./...
+go run . --generate-config=config.yaml
+go run . --config=config.yaml
 ```
 
-### Generate default configuration file:
-```bash
-./openmos --generate-config=config.yaml
-```
+The default configuration enables MOS 2.x TCP on port 10541 and keeps MOS 4 WebSocket disabled. Set `WS_ENABLED=true` and `WS_PORT` to enable WebSocket; configure TLS certificate and key paths for a secure listener. `MOS_ID` sets the local identity, and optional `MOS_NCS_ID` restricts the accepted peer identity. WebSocket upgrades currently identify peers by URL parameters, so restrict listener access to trusted peers. The in-memory retry record is not durable.
 
-## Running OpenMOS
-
-```bash
-# With default configuration search
-./openmos
-
-# With specific configuration file
-./openmos --config=/path/to/config.yaml
-
-# Generate default configuration
-./openmos --generate-config=config.yaml
-```
-
-## Building from Source
-
-```bash
-cd src
-go build -o openmos
-```
-
-## Requirements
-
-- Go 1.24.1 or later
-- MongoDB 4.4 or later
-- Network access on port 10540 (default MOS port)
-
-## License
-
-See LICENSE file for details.
+The protocol sources and implementation boundaries are described in [the protocol synthesis](doc/mos-protocol-source-synthesis.md). See [LICENSE](LICENSE) for licensing.

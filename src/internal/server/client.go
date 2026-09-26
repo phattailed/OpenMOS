@@ -2,17 +2,17 @@ package server
 
 import (
 	"context"
+	xmlstd "encoding/xml"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"airshift/openmos/internal/config"
-	"airshift/openmos/internal/events"
 	"airshift/openmos/internal/xml"
 	"airshift/openmos/pkg/logger"
-	"airshift/openmos/pkg/utils"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -24,10 +24,14 @@ type ClientConnection struct {
 	server     *TCPServer // Forward declaration - TCPServer is defined in server.go
 	heartbeat  *xml.HeartbeatMonitor
 	parser     *xml.MessageParser
+	framer     *xml.UCS2BEFramer
 	closeChan  chan struct{}
 	closeOnce  sync.Once
 	writeMutex sync.Mutex
 	config     *config.Config
+
+	lastHeartbeatReply   xml.Heartbeat
+	lastHeartbeatReplyID string
 }
 
 // NewClientConnection creates a new client connection
@@ -39,6 +43,7 @@ func NewClientConnection(conn net.Conn, server *TCPServer, cfg *config.Config) *
 		id:        clientID,
 		server:    server,
 		parser:    xml.NewMessageParser(),
+		framer:    xml.NewUCS2BEFramer(),
 		closeChan: make(chan struct{}),
 		config:    cfg,
 	}
@@ -63,28 +68,6 @@ func (c *ClientConnection) Start(ctx context.Context) {
 	monitorCtx, cancelMonitor := context.WithCancel(ctx)
 	defer cancelMonitor()
 	go c.heartbeat.Start(monitorCtx)
-
-	// Subscribe to relevant events if event bus is available
-	if c.server.eventBus != nil {
-		roEvents := c.server.eventBus.Subscribe(events.RunningOrderUpdated, 10)
-
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-c.closeChan:
-					return
-				case event, ok := <-roEvents:
-					if !ok {
-						return
-					}
-					// Send notification to this client
-					c.handleRunningOrderUpdate(ctx, event)
-				}
-			}
-		}()
-	}
 
 	// Create a Sentry span for this client connection
 	span := sentry.StartSpan(ctx, "client_connection")
@@ -126,25 +109,26 @@ func (c *ClientConnection) Start(ctx context.Context) {
 
 			// Process the data
 			if n > 0 {
-				c.parser.AppendData(buffer[:n])
+				if err := c.framer.Append(buffer[:n]); err != nil {
+					c.trackError(err, "parse", nil)
+					return
+				}
 
-				// Try to parse and handle complete messages
-				for c.parser.HasCompleteMessage() {
-					message, remaining, err := c.parser.Parse()
+				for {
+					frame, complete, err := c.framer.Next()
 					if err != nil {
-						if err == xml.ErrIncompleteXML {
-							// Wait for more data
-							break
-						}
-						// Get the current buffer content for the error details
-						bufferContent := string(buffer[:n])
-						c.trackError(err, "parse", map[string]interface{}{
-							"data": bufferContent,
-						})
-						// Continue parsing, discard this message
-						c.parser.Clear()
-						c.parser.AppendData(remaining)
-						continue
+						c.trackError(err, "parse", nil)
+						return
+					}
+					if !complete {
+						break
+					}
+					c.parser.Clear()
+					c.parser.AppendData(frame)
+					message, _, err := c.parser.Parse()
+					if err != nil {
+						c.trackError(err, "parse", nil)
+						return
 					}
 
 					// Handle the message
@@ -153,6 +137,7 @@ func (c *ClientConnection) Start(ctx context.Context) {
 						c.trackError(err, "handle_message", map[string]interface{}{
 							"message_type": message.GetMessageType(),
 						})
+						return
 					}
 				}
 			}
@@ -194,8 +179,25 @@ func (c *ClientConnection) trackError(err error, operationType string, details m
 	return err
 }
 
-// handleMessage processes a parsed MOS message
+// handleMessage processes a parsed MOS message.
+//
+// MOS 2.8.4 defines messageID, but this receive path tolerates its absence as
+// an intentional inbound compatibility seam. See xml.ValidateEnvelope.
 func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMessage) error {
+	envelope, ok := message.(xml.Envelope)
+	if !ok {
+		return fmt.Errorf("MOS envelope required")
+	}
+
+	inner, err := xml.ValidateEnvelope(envelope, xml.Gen2x, c.config.MOS.ID, c.config.MOS.NCSID)
+	if err != nil {
+		return err
+	}
+
+	return c.handlePayload(context.WithValue(ctx, envelopeContextKey{}, envelope), inner)
+}
+
+func (c *ClientConnection) handlePayload(ctx context.Context, message xml.MOSMessage) error {
 	// Create a span for this message handling
 	span := sentry.StartSpan(ctx, "handle_message")
 	span.SetTag("message_type", message.GetMessageType())
@@ -205,18 +207,24 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	var err error
 
 	switch msg := message.(type) {
+	// Profile 0: Basic Communication
 	case xml.Heartbeat:
 		err = c.handleHeartbeat(ctx, msg)
-	case xml.ReqRunningOrderList:
-		err = c.handleReqRunningOrderList(ctx, msg)
+	case xml.KeepAlive:
+		err = c.handleKeepAlive(ctx, msg)
+	case xml.ReqMachInfo:
+		err = c.handleReqMachInfo(ctx, msg)
+	case xml.ListMachInfo:
+		err = c.handleListMachInfo(ctx, msg)
+
+	// Running Order messages (existing)
 	case xml.ROReqAll:
 		err = c.handleROReqAll(ctx)
 	case xml.RunningOrderInfo:
 		err = c.handleRunningOrderInfo(ctx, msg)
 	case xml.MOSAck:
 		err = c.handleMOSAck(ctx, msg)
-	case xml.NCSReqStoryAction:
-		err = c.handleNCSReqStoryAction(ctx, msg)
+
 	default:
 		err = fmt.Errorf("unknown message type: %T", message)
 	}
@@ -229,92 +237,136 @@ func (c *ClientConnection) handleMessage(ctx context.Context, message xml.MOSMes
 	return err
 }
 
-// handleHeartbeat processes a heartbeat message
-func (c *ClientConnection) handleHeartbeat(ctx context.Context, heartbeat xml.Heartbeat) error {
-	logger.Infof("Received heartbeat from client %s, source: %s", c.id, heartbeat.Source)
+type envelopeContextKey struct{}
 
-	// Record the heartbeat
-	c.heartbeat.RecordHeartbeat()
-
-	// Send response
-	response, err := c.heartbeat.CreateHeartbeatResponse(heartbeat.RequestID)
-	if err != nil {
-		return fmt.Errorf("failed to create heartbeat response: %w", err)
+// buildMessage wraps a message in the MOS envelope for the current request,
+// returning the bytes that would be sent.
+func (c *ClientConnection) buildMessage(ctx context.Context, message xml.MOSMessage) ([]byte, error) {
+	envelope, ok := ctx.Value(envelopeContextKey{}).(xml.Envelope)
+	if !ok {
+		return nil, fmt.Errorf("MOS envelope context required")
 	}
 
+	ncsID := envelope.NcsID
+	if c.config.MOS.NCSID != "" {
+		ncsID = c.config.MOS.NCSID
+	}
+	return xml.GenerateEnvelope(c.config.MOS.ID, ncsID, envelope.MessageID, message)
+}
+
+func (c *ClientConnection) writeMessage(ctx context.Context, message xml.MOSMessage) error {
+	data, err := c.buildMessage(ctx, message)
+	if err != nil {
+		return err
+	}
+	return c.Write(data)
+}
+
+// handleHeartbeat processes a heartbeat message (Profile 0).
+//
+// The spec's workflow is "Send a <heartbeat> message to another application and
+// receive a <heartbeat> message in response", so a heartbeat is answered with a
+// heartbeat. An exact reflection of our last response is ignored to prevent
+// a reply loop without dropping a distinct rapid request.
+func (c *ClientConnection) handleHeartbeat(ctx context.Context, heartbeat xml.Heartbeat) error {
+	logger.Infof("Received heartbeat from client %s", c.id)
+
+	// Record the heartbeat so the connection is not reaped as idle.
+	c.heartbeat.RecordHeartbeat()
+
+	envelope, _ := ctx.Value(envelopeContextKey{}).(xml.Envelope)
+	if heartbeat == c.lastHeartbeatReply && envelope.MessageID == c.lastHeartbeatReplyID {
+		return nil
+	}
+	reply := xml.CreateHeartbeatResponse(heartbeat.RequestID)
+	c.lastHeartbeatReply = reply
+	c.lastHeartbeatReplyID = envelope.MessageID
+	return c.writeMessage(ctx, reply)
+}
+
+// handleRunningOrderInfo processes a running order create/update message.
+//
+// Retried messageIDs are made idempotent: a re-delivery replays the original ack
+// without applying the operation again, and a messageID reused with different
+// content is rejected. See MOS 4.0 §4.1.6 for why this matters -- an NCS that
+// times out resends the same request, and applying it twice "will lead to an
+// unwanted result in many cases".
+func (c *ClientConnection) handleRunningOrderInfo(ctx context.Context, roInfo xml.RunningOrderInfo) error {
+	response, err := c.prepareRunningOrderAck(ctx, roInfo)
+	if err != nil {
+		return err
+	}
 	return c.Write(response)
 }
 
-// handleReqRunningOrderList processes a request for running order list
-func (c *ClientConnection) handleReqRunningOrderList(ctx context.Context, req xml.ReqRunningOrderList) error {
-	logger.Infof("Received running order list request from client %s", c.id)
-
-	// Get running orders from the server
-	runningOrders, err := c.server.service.ListRunningOrders(ctx)
-	if err != nil {
-		return c.sendErrorAck(req.RequestID, "ERROR", fmt.Sprintf("Failed to list running orders: %v", err))
-	}
-
-	// Convert to ROListItem
-	items := make([]xml.ROListItem, 0, len(runningOrders))
-	for _, ro := range runningOrders {
-		items = append(items, xml.ROListItem{
-			ID:       ro.ID,
-			Slug:     ro.Slug,
-			Channel:  ro.Channel,
-			Status:   string(ro.Status),
-			Duration: fmt.Sprintf("%d", ro.Duration),
-		})
-	}
-
-	// Create response
-	response := xml.CreateRunningOrderList(c.config.MOS.ID, req.RequestID, items)
-	data, err := xml.GenerateMessage(response)
-	if err != nil {
-		return fmt.Errorf("failed to generate running order list response: %w", err)
-	}
-
-	return c.Write(data)
-}
-
-// handleROReqAll returns running order summaries for discovery.
-func (c *ClientConnection) handleROReqAll(ctx context.Context) error {
-	logger.Infof("Received roReqAll from client %s", c.id)
-
-	runningOrders, err := c.server.service.ListRunningOrders(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list running orders: %w", err)
-	}
-
-	items := make([]xml.ROListAllItem, 0, len(runningOrders))
-	for _, ro := range runningOrders {
-		items = append(items, xml.ROListAllItem{
-			ID:       ro.ID,
-			Slug:     ro.Slug,
-			Channel:  ro.Channel,
-			Duration: utils.FormatDuration(ro.Duration),
-		})
-	}
-
-	data, err := xml.GenerateMessage(xml.CreateROListAll(items))
-	if err != nil {
-		return fmt.Errorf("failed to generate roListAll: %w", err)
-	}
-	return c.Write(data)
-}
-
-// handleRunningOrderInfo processes a running order create/update message
-func (c *ClientConnection) handleRunningOrderInfo(ctx context.Context, roInfo xml.RunningOrderInfo) error {
+func (c *ClientConnection) prepareRunningOrderAck(ctx context.Context, roInfo xml.RunningOrderInfo) ([]byte, error) {
 	logger.Infof("Received running order info from client %s for RO %s", c.id, roInfo.ID)
 
-	// Process the running order creation/update
-	err := c.server.service.ProcessRunningOrderInfo(ctx, roInfo)
-	if err != nil {
-		return c.sendErrorAck(roInfo.RequestID, "ERROR", fmt.Sprintf("Failed to process running order: %v", err))
+	envelope, hasEnvelope := ctx.Value(envelopeContextKey{}).(xml.Envelope)
+
+	// A missing inbound ID cannot be used to recognize a retry.
+	dedupable := hasEnvelope && envelope.MessageID != "" && c.server != nil && c.server.dedup != nil
+	if dedupable {
+		c.server.roMu.Lock()
+		defer c.server.roMu.Unlock()
 	}
 
-	// Send acknowledgment
-	return c.sendSuccessAck(roInfo.RequestID, "Running order processed successfully")
+	if dedupable {
+		// Hash the operation only, not the envelope, so a re-delivery that differs
+		// in envelope whitespace is a duplicate rather than a conflict. Marshalling
+		// the parsed payload normalises formatting for free.
+		content, err := xmlstd.Marshal(roInfo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash running order for deduplication: %w", err)
+		}
+
+		switch result := c.server.dedup.Check(c.dedupScope(), envelope.NcsID, envelope.MessageID, content); result {
+		case DedupDuplicate:
+			logger.Infof("Re-delivery of messageID=%s from ncsID=%s; replaying the original ack",
+				envelope.MessageID, envelope.NcsID)
+			if original, ok := c.server.dedup.Response(c.dedupScope(), envelope.NcsID, envelope.MessageID); ok {
+				return original, nil
+			}
+			// The lock rules out an in-flight first attempt. A previous attempt
+			// failed before producing a response, so retry the operation.
+			logger.Warningf("No stored ack for messageID=%s; processing as new", envelope.MessageID)
+		case DedupConflict:
+			logger.Errorf("Message-ID conflict on messageID=%s from ncsID=%s: same ID, different content",
+				envelope.MessageID, envelope.NcsID)
+			return c.buildMessage(ctx, xml.CreateROAck(roInfo.ID, "NACK: messageID conflict, same ID with different content", nil))
+		}
+	}
+
+	// Process the running order creation/update
+	err := c.server.service.ProcessRunningOrderInfo(ctx, roInfo, c.config.MOS.ID)
+	if err != nil {
+		logger.Errorf("Failed to process running order %s: %v", roInfo.ID, err)
+		return c.buildMessage(ctx, xml.CreateROAck(roInfo.ID, roNackStatus(err), nil))
+	}
+
+	// Acknowledge only after the running order is persisted.
+	ack, err := c.buildMessage(ctx, xml.CreateROAck(roInfo.ID, "OK", nil))
+	if err != nil {
+		return nil, err
+	}
+	if dedupable {
+		c.server.dedup.Remember(c.dedupScope(), envelope.NcsID, envelope.MessageID, ack)
+	}
+	return ack, nil
+}
+
+// dedupScope namespaces dedup keys for this transport. The WebSocket transport
+// runs concurrently and each sender increments its own messageID sequence per
+// channel, so the same value can legitimately mean different things.
+func (c *ClientConnection) dedupScope() string {
+	return "tcp:ro"
+}
+
+func roNackStatus(err error) string {
+	if strings.Contains(err.Error(), " is required") {
+		return "NACK: " + err.Error()
+	}
+	return "NACK: running order storage failed"
 }
 
 // handleMOSAck processes an acknowledgment message
@@ -324,37 +376,25 @@ func (c *ClientConnection) handleMOSAck(ctx context.Context, ack xml.MOSAck) err
 	return nil
 }
 
-// sendErrorAck sends an error acknowledgment
-func (c *ClientConnection) sendErrorAck(requestID, status, description string) error {
-	ack := xml.CreateMOSAck(c.config.MOS.ID, requestID, status, description)
-	data, err := xml.GenerateMessage(ack)
-	if err != nil {
-		return fmt.Errorf("failed to generate error ack: %w", err)
-	}
-
-	return c.Write(data)
-}
-
-// sendSuccessAck sends a success acknowledgment
-func (c *ClientConnection) sendSuccessAck(requestID, description string) error {
-	return c.sendErrorAck(requestID, "ACK", description)
-}
-
 // Write sends data to the client
 func (c *ClientConnection) Write(data []byte) error {
+	wireData, err := xml.EncodeUCS2BE(data)
+	if err != nil {
+		return c.trackError(err, "encode", nil)
+	}
 	c.writeMutex.Lock()
 	defer c.writeMutex.Unlock()
 
 	// Set write deadline
-	err := c.conn.SetWriteDeadline(time.Now().Add(c.config.Server.WriteTimeout))
+	err = c.conn.SetWriteDeadline(time.Now().Add(c.config.Server.WriteTimeout))
 	if err != nil {
 		return c.trackError(err, "set_write_deadline", nil)
 	}
 
-	_, err = c.conn.Write(data)
+	_, err = c.conn.Write(wireData)
 	if err != nil {
 		return c.trackError(err, "write", map[string]interface{}{
-			"data_length": len(data),
+			"data_length": len(wireData),
 		})
 	}
 
@@ -385,75 +425,4 @@ func (c *ClientConnection) Close() {
 // ID returns the client ID
 func (c *ClientConnection) ID() string {
 	return c.id
-}
-
-// handleRunningOrderUpdate sends a running order update notification to the client
-func (c *ClientConnection) handleRunningOrderUpdate(ctx context.Context, event events.Event) {
-	roID, ok := event.Payload.(string)
-	if !ok {
-		logger.Warningf("Invalid running order ID in event payload for client %s", c.id)
-		return
-	}
-
-	logger.Infof("Sending running order update notification to client %s for RO %s", c.id, roID)
-
-	// Get the updated running order from the service
-	ro, stories, err := c.server.service.GetRunningOrderWithStories(ctx, roID)
-	if err != nil {
-		logger.Errorf("Failed to get running order %s for notification: %v", roID, err)
-		return
-	}
-
-	// Convert stories to StoryInfo
-	storyInfos := make([]xml.StoryInfo, 0, len(stories))
-	for _, story := range stories {
-		// Get items for this story
-		items, err := c.server.service.GetItemsForStory(ctx, story.ID)
-		if err != nil {
-			logger.Warningf("Failed to get items for story %s: %v", story.ID, err)
-			continue
-		}
-
-		// Convert items
-		itemInfos := make([]xml.ItemInfo, 0, len(items))
-		for _, item := range items {
-			itemInfos = append(itemInfos, xml.ItemInfo{
-				ID:       item.ID,
-				Slug:     item.Slug,
-				Duration: fmt.Sprintf("%d", item.Duration),
-				ObjectID: item.ObjectID,
-			})
-		}
-
-		storyInfos = append(storyInfos, xml.StoryInfo{
-			ID:       story.ID,
-			Slug:     story.Slug,
-			Number:   story.Number,
-			Duration: fmt.Sprintf("%d", story.Duration),
-			Items:    itemInfos,
-		})
-	}
-
-	// Create and send the running order update message
-	response := xml.CreateRunningOrderInfo(
-		c.config.MOS.ID,
-		"", // No request ID for push notifications
-		ro.ID,
-		ro.Slug,
-		ro.Channel,
-		"",
-		"",
-		fmt.Sprintf("%d", ro.Duration),
-		storyInfos,
-	)
-
-	data, err := xml.GenerateMessage(response)
-	if err != nil {
-		logger.Errorf("Failed to generate running order notification for client %s: %v", c.id, err)
-		return
-	}
-
-	if err := c.Write(data); err != nil {
-		logger.Errorf("Failed to send running order notification to client %s: %v", c.id, err)
-	}
 }

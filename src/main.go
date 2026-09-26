@@ -127,54 +127,77 @@ func main() {
 	// Create event bus for pub-sub messaging
 	eventBus := events.NewEventBus()
 
-	// Create service
+	// One shared service and message core behind every transport. Transports own
+	// framing only; they must not own message semantics.
 	mosService := service.NewMOSService(runningOrderRepo, storyRepo, itemRepo, objectRepo, eventBus)
 
-	// Create and start TCP server
-	log.Info("Starting TCP server...")
-	tcpServer, err := server.NewTCPServer(cfg, mosService, eventBus)
-	if err != nil {
-		log.CaptureException(err, map[string]string{
-			"component": "server",
-			"action":    "start",
-		}, nil)
-		log.Fatalf("Failed to create TCP server: %v", err)
+	if !cfg.Server.Enabled && !cfg.WebSocket.Enabled {
+		log.Fatal("No transport enabled: set server.enabled and/or websocket.enabled")
 	}
 
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start server monitoring
-	serverSpan := log.StartTransaction("server_lifecycle", "server")
-	serverSpan.SetTag("server_address", cfg.GetServerAddress())
-
-	// Start server in a goroutine
-	go func() {
-		defer serverSpan.Finish()
-
-		if err := tcpServer.Start(ctx); err != nil {
-			// Set error status on span
-			serverSpan.Status = sentry.SpanStatusInternalError
-
-			// Log and capture the error
+	// MOS 2.x raw TCP transport. Per the MOS spec the MOS device listens on the
+	// Upper Port (10541) and the NCS connects to it.
+	var tcpServer *server.TCPServer
+	if cfg.Server.Enabled {
+		log.Info("Starting MOS 2.x TCP server...")
+		tcpServer, err = server.NewTCPServer(cfg, mosService, eventBus)
+		if err != nil {
 			log.CaptureException(err, map[string]string{
-				"component": "server",
-				"action":    "run",
+				"component": "tcp-server",
+				"action":    "start",
 			}, nil)
-			log.Errorf("Server error: %v", err)
-			cancel()
+			log.Fatalf("Failed to create TCP server: %v", err)
 		}
-	}()
+		go func() {
+			if startErr := tcpServer.Start(ctx); startErr != nil {
+				log.Errorf("TCP server error: %v", startErr)
+				cancel()
+			}
+		}()
+		log.Infof("MOS 2.x TCP transport listening on %s", cfg.GetServerAddress())
+	} else {
+		log.Info("MOS 2.x TCP transport disabled by configuration")
+	}
 
-	log.Infof("OpenMOS server is running on %s", cfg.GetServerAddress())
+	// MOS 4.0 WebSocket transport.
+	var wsServer *server.WSServer
+	if cfg.WebSocket.Enabled {
+		log.Info("Starting MOS 4 WebSocket server...")
+		dedupStore := server.NewMemoryDedupStore()
+		wsServer = server.NewWSServer(cfg, mosService, dedupStore)
+		go func() {
+			if startErr := wsServer.Start(ctx); startErr != nil {
+				log.Errorf("WebSocket server error: %v", startErr)
+				cancel()
+			}
+		}()
+		log.Infof("MOS 4 WebSocket transport listening on %s", cfg.GetWebSocketAddress())
+	} else {
+		log.Info("MOS 4 WebSocket transport disabled by configuration")
+	}
 
-	// Wait for shutdown signal
-	sig := <-sigCh
-	log.Infof("Received signal: %v", sig)
+	// Wait for a signal or a transport failure.
+	select {
+	case sig := <-sigCh:
+		log.Infof("Received signal: %v", sig)
+	case <-ctx.Done():
+		log.Error("Transport stopped")
+	}
 
-	// Cancel the server context to start the graceful shutdown
+	// Cancel the shared context to begin graceful shutdown of both transports.
 	cancel()
+	if wsServer != nil {
+		wsServer.Shutdown()
+	}
+	if tcpServer != nil {
+		if shutdownErr := tcpServer.Shutdown(context.Background()); shutdownErr != nil {
+			log.Errorf("TCP server shutdown error: %v", shutdownErr)
+		}
+	}
 
 	// Flush Sentry events before exiting
 	defer sentry.Flush(2 * time.Second)

@@ -3,6 +3,8 @@ package xml
 import (
 	"encoding/xml"
 	"fmt"
+
+	"airshift/openmos/internal/config"
 )
 
 // GenerateMessage serializes a MOS message to XML
@@ -17,21 +19,43 @@ func GenerateMessage(message MOSMessage) ([]byte, error) {
 	return result, nil
 }
 
+// GenerateEnvelope serializes a receive-side MOS acknowledgment frame.
+func GenerateEnvelope(mosID, ncsID, messageID string, message MOSMessage) ([]byte, error) {
+	envelope := Envelope{MosID: mosID, NcsID: ncsID, MessageID: messageID}
+	switch value := message.(type) {
+	case ROAck:
+		envelope.ROAck = &value
+	case Heartbeat:
+		envelope.Heartbeat = &value
+	case ListMachInfo:
+		envelope.ListMachInfo = &value
+	case KeepAlive:
+		envelope.KeepAlive = &value
+	case ROListAll:
+		envelope.ROListAll = &value
+	default:
+		return nil, fmt.Errorf("unsupported enveloped message type %T", message)
+	}
+
+	data, err := xml.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal MOS envelope: %w", err)
+	}
+	return append([]byte(xml.Header), data...), nil
+}
+
 // CreateHeartbeat creates a heartbeat message
-func CreateHeartbeat(source string, requestID string) Heartbeat {
+func CreateHeartbeat() Heartbeat {
 	return Heartbeat{
-		RequestID: requestID,
-		Timestamp: Now(),
-		Source:    source,
+		Time: Now(),
 	}
 }
 
 // CreateHeartbeatResponse creates a heartbeat response message
-func CreateHeartbeatResponse(source string, requestID string) Heartbeat {
+func CreateHeartbeatResponse(requestID string) Heartbeat {
 	return Heartbeat{
 		RequestID: requestID,
-		Timestamp: Now(),
-		Source:    source,
+		Time:      Now(),
 	}
 }
 
@@ -54,11 +78,6 @@ func CreateRunningOrderList(source string, requestID string, items []ROListItem)
 		Source:       source,
 		RunningOrder: items,
 	}
-}
-
-// CreateROListAll creates the summary response to roReqAll.
-func CreateROListAll(items []ROListAllItem) ROListAll {
-	return ROListAll{RunningOrders: items}
 }
 
 // CreateRunningOrderInfo creates a full running order message
@@ -91,4 +110,59 @@ func CreateStoryResponse(requestID, source, status, description string) ([]byte,
 	}
 
 	return GenerateMessage(ack)
+}
+
+// MOS protocol revisions advertised in listMachInfo. The value is a property of
+// the transport answering the request, not of the process: the raw TCP transport
+// speaks the 2.x family, the WebSocket transport speaks 4.0.
+const (
+	MosRev28 = "2.8.4"
+	MosRev40 = "4.0.0"
+)
+
+// CreateListMachInfo creates a listMachInfo response message from config (Profile 0).
+//
+// mosRev must be supplied by the calling transport -- see MosRev28 / MosRev40.
+func CreateListMachInfo(cfg *config.Config, mosRev string) ListMachInfo {
+	profiles := make([]MosProfile, 8)
+	for i := 0; i < 8; i++ {
+		profiles[i] = MosProfile{
+			Number: i,
+			Value:  YesNo(i == 0), // Only Profile 0 is advertised.
+		}
+	}
+
+	return ListMachInfo{
+		Manufacturer: cfg.MOS.Manufacturer,
+		Model:        cfg.MOS.Model,
+		HwRev:        cfg.MOS.HwRev,
+		SwRev:        cfg.MOS.SwRev,
+		DOM:          cfg.MOS.DOM,
+		SN:           cfg.MOS.SN,
+		ID:           cfg.MOS.ID,
+		Time:         Now(),
+		MosRev:       mosRev,
+		SupportedProfiles: SupportedProfiles{
+			DeviceType: "MOS",
+			Profiles:   profiles,
+		},
+	}
+}
+
+// --- Profile 2 generators ---
+
+// CreateROAck creates a running order acknowledgment message (Profile 2)
+func CreateROAck(roID, roStatus string, stories []ROAckStory) ROAck {
+	return ROAck{
+		ID:      roID,
+		Status:  roStatus,
+		Stories: stories,
+	}
+}
+
+// CreateROListAll creates a roListAll response message (Profile 2)
+func CreateROListAll(items []ROListAllItem) ROListAll {
+	return ROListAll{
+		ROs: items,
+	}
 }

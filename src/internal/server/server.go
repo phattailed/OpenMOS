@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -15,14 +16,23 @@ import (
 
 // TCPServer represents the TCP socket server
 type TCPServer struct {
-	listener   net.Listener
-	clients    map[string]*ClientConnection
-	clientsMu  sync.RWMutex
-	service    *service.MOSService
-	config     *config.Config
-	eventBus   *events.EventBus
-	wg         sync.WaitGroup
-	shutdownCh chan struct{}
+	listener     net.Listener
+	clients      map[string]*ClientConnection
+	clientsMu    sync.RWMutex
+	service      *service.MOSService
+	config       *config.Config
+	eventBus     *events.EventBus
+	wg           sync.WaitGroup
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
+	// dedup makes retried messageIDs idempotent. Shared across all connections
+	// so a retry that arrives on a reconnected socket is still recognised --
+	// which is the usual case, since the spec has the NCS reset the connection
+	// before retrying.
+	dedup *MemoryDedupStore
+	// ponytail: serialize writes until their replay receipts exist; use per-ID
+	// locks only if concurrent running-order throughput becomes necessary.
+	roMu sync.Mutex
 }
 
 // NewTCPServer creates a new TCP server instance
@@ -35,6 +45,7 @@ func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *
 
 	server := &TCPServer{
 		listener:   listener,
+		dedup:      NewMemoryDedupStore(),
 		clients:    make(map[string]*ClientConnection),
 		service:    mosService,
 		config:     cfg,
@@ -47,8 +58,6 @@ func NewTCPServer(cfg *config.Config, mosService *service.MOSService, eventBus *
 
 // Start begins accepting connections
 func (s *TCPServer) Start(ctx context.Context) error {
-	defer s.wg.Done()
-	s.wg.Add(1)
 
 	address := s.listener.Addr().String()
 	logger.Infof("Server listening on %s", address)
@@ -70,6 +79,9 @@ func (s *TCPServer) Start(ctx context.Context) error {
 
 				conn, err := s.listener.Accept()
 				if err != nil {
+					if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+						return
+					}
 					if opErr, ok := err.(*net.OpError); ok && opErr.Timeout() {
 						// This is just a timeout from our deadline, continue
 						continue
@@ -95,7 +107,7 @@ func (s *TCPServer) Start(ctx context.Context) error {
 	}()
 
 	<-ctx.Done()
-	return s.Shutdown(context.Background())
+	return nil
 }
 
 // Shutdown gracefully shuts down the server
@@ -103,7 +115,7 @@ func (s *TCPServer) Shutdown(ctx context.Context) error {
 	logger.Info("Shutting down server...")
 
 	// Signal all goroutines to stop
-	close(s.shutdownCh)
+	s.shutdownOnce.Do(func() { close(s.shutdownCh) })
 
 	// Close listener
 	if s.listener != nil {
@@ -111,11 +123,15 @@ func (s *TCPServer) Shutdown(ctx context.Context) error {
 	}
 
 	// Close all client connections
-	s.clientsMu.Lock()
+	s.clientsMu.RLock()
+	clients := make([]*ClientConnection, 0, len(s.clients))
 	for _, client := range s.clients {
+		clients = append(clients, client)
+	}
+	s.clientsMu.RUnlock()
+	for _, client := range clients {
 		client.Close()
 	}
-	s.clientsMu.Unlock()
 
 	// Wait for all goroutines to finish with a timeout
 	shutdownCtx, cancel := context.WithTimeout(ctx, s.config.Server.ShutdownTimeout)

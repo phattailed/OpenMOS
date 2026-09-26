@@ -6,6 +6,7 @@ require (
 	github.com/getsentry/sentry-go v0.31.1
 	go.mongodb.org/mongo-driver v1.17.3
 	gopkg.in/yaml.v3 v3.0.1
+	nhooyr.io/websocket v1.8.17
 )
 
 require (

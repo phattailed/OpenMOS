@@ -62,9 +62,16 @@ func (p *MessageParser) HasCompleteMessage() bool {
 
 	tagName := string(p.buffer[start+1 : start+nameEnd])
 
-	// Check for self-closing tag like <heartbeat/>
-	selfClosingEnd := bytes.Index(p.buffer[start:], []byte("/>"))
-	if selfClosingEnd != -1 {
+	// Determine where the root opening tag ends (first > or />).
+	// Only treat /> as self-closing if it is part of the root tag itself,
+	// not a child self-closing element like <mosExternalMetadata/>.
+	afterName := p.buffer[start+nameEnd:]
+	closeBracket := bytes.IndexByte(afterName, '>')
+	if closeBracket == -1 {
+		return false
+	}
+	// Check if the root tag is self-closing: the > is preceded by /
+	if closeBracket > 0 && afterName[closeBracket-1] == '/' {
 		return true
 	}
 
@@ -93,6 +100,18 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 
 	// Parse based on message type
 	switch messageType {
+	case "mos":
+		var envelope Envelope
+		remaining, err := p.parseMessage(&envelope)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		if _, err := envelope.Message(); err != nil {
+			return nil, remaining, err
+		}
+		message = envelope
+		p.buffer = remaining
+
 	case "heartbeat":
 		var heartbeat Heartbeat
 		remaining, err := p.parseMessage(&heartbeat)
@@ -102,13 +121,31 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		message = heartbeat
 		p.buffer = remaining
 
-	case "roReq":
-		var roReq ReqRunningOrderList
-		remaining, err := p.parseMessage(&roReq)
+	case "keepAlive":
+		var keepAlive KeepAlive
+		remaining, err := p.parseMessage(&keepAlive)
 		if err != nil {
 			return nil, p.buffer, err
 		}
-		message = roReq
+		message = keepAlive
+		p.buffer = remaining
+
+	case "reqMachInfo":
+		var reqMachInfo ReqMachInfo
+		remaining, err := p.parseMessage(&reqMachInfo)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = reqMachInfo
+		p.buffer = remaining
+
+	case "listMachInfo":
+		var listMachInfo ListMachInfo
+		remaining, err := p.parseMessage(&listMachInfo)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = listMachInfo
 		p.buffer = remaining
 
 	case "roReqAll":
@@ -147,13 +184,22 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		message = mosAck
 		p.buffer = remaining
 
-	case "ncsReqStoryAction":
-		var ncsReqStoryAction NCSReqStoryAction
-		remaining, err := p.parseMessage(&ncsReqStoryAction)
+	case "roListAll":
+		var roListAll ROListAll
+		remaining, err := p.parseMessage(&roListAll)
 		if err != nil {
 			return nil, p.buffer, err
 		}
-		message = ncsReqStoryAction
+		message = roListAll
+		p.buffer = remaining
+
+	case "roAck":
+		var roAck ROAck
+		remaining, err := p.parseMessage(&roAck)
+		if err != nil {
+			return nil, p.buffer, err
+		}
+		message = roAck
 		p.buffer = remaining
 
 	default:
@@ -185,46 +231,15 @@ func (p *MessageParser) detectMessageType() (string, error) {
 
 // parseMessage parses the buffer into the given message type and returns the remaining data
 func (p *MessageParser) parseMessage(message interface{}) ([]byte, error) {
-	// Find the complete message
-	messageType, err := p.detectMessageType()
-	if err != nil {
-		return p.buffer, err
-	}
-
-	// Find the end of the message
-	var messageEnd int
-
-	// Check for self-closing tag
-	selfClosingEnd := bytes.Index(p.buffer, []byte("/>"))
-	if selfClosingEnd != -1 && bytes.IndexAny(p.buffer[:selfClosingEnd], "<") == bytes.IndexByte(p.buffer, '<') {
-		// This is a self-closing tag
-		messageEnd = selfClosingEnd + 2
-	} else {
-		// Look for closing tag
-		closingTag := fmt.Sprintf("</%s>", messageType)
-		closingTagIndex := bytes.Index(p.buffer, []byte(closingTag))
-		if closingTagIndex == -1 {
+	decoder := xml.NewDecoder(bytes.NewReader(p.buffer))
+	if err := decoder.Decode(message); err != nil {
+		var syntax *xml.SyntaxError
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &syntax) && syntax.Msg == "unexpected EOF" {
 			return p.buffer, ErrIncompleteXML
 		}
-		messageEnd = closingTagIndex + len(closingTag)
-	}
-
-	// Parse the message
-	if messageEnd > len(p.buffer) {
-		return p.buffer, ErrIncompleteXML
-	}
-
-	err = xml.Unmarshal(p.buffer[:messageEnd], message)
-	if err != nil {
 		return p.buffer, fmt.Errorf("failed to unmarshal XML: %w", err)
 	}
-
-	// Return the remaining data
-	if messageEnd >= len(p.buffer) {
-		return []byte{}, nil
-	}
-
-	return p.buffer[messageEnd:], nil
+	return p.buffer[decoder.InputOffset():], nil
 }
 
 // ParseMessage parses a complete XML string into a MOS message
