@@ -56,6 +56,11 @@ func CreateRunningOrderList(source string, requestID string, items []ROListItem)
 	}
 }
 
+// CreateROListAll creates the summary response to roReqAll.
+func CreateROListAll(items []ROListAllItem) ROListAll {
+	return ROListAll{RunningOrders: items}
+}
+
 // CreateRunningOrderInfo creates a full running order message
 func CreateRunningOrderInfo(source string, requestID string, id string, slug string,
 	channel string, editTime string, startTime string, duration string,

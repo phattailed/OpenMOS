@@ -112,7 +112,7 @@ func (p *MessageParser) Parse() (MOSMessage, []byte, error) {
 		p.buffer = remaining
 
 	case "roReqAll":
-		var roReqAll ReqRunningOrder
+		var roReqAll ROReqAll
 		remaining, err := p.parseMessage(&roReqAll)
 		if err != nil {
 			return nil, p.buffer, err
